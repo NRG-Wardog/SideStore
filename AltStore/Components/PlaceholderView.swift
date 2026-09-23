@@ -16,21 +16,13 @@ public class PlaceholderView: UIView {
     public let detailTextLabel = UILabel()
     
     public override init(frame: CGRect) {
-        if #available(iOS 13.0, tvOS 13.0, *) {
-            self.activityIndicatorView = UIActivityIndicatorView(style: .medium)
-        } else {
-            self.activityIndicatorView = UIActivityIndicatorView(style: .gray)
-        }
+        self.activityIndicatorView = UIActivityIndicatorView(style: .medium)
         super.init(frame: frame)
         initialize()
     }
     
     public required init?(coder: NSCoder) {
-        if #available(iOS 13.0, tvOS 13.0, *) {
-            self.activityIndicatorView = UIActivityIndicatorView(style: .medium)
-        } else {
-            self.activityIndicatorView = UIActivityIndicatorView(style: .gray)
-        }
+        self.activityIndicatorView = UIActivityIndicatorView(style: .medium)
         super.init(coder: coder)
         initialize()
     }

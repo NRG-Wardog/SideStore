@@ -123,7 +123,7 @@ class ClearAppCacheOperation: BaseStandaloneOperation<StandaloneOperationContext
     
     private func removeUninstalledAppBackupDirectories() async throws {
         guard let backupsDirectory = FileManager.default.appBackupsDirectory else {
-            throw OperationError.missingAppGroup
+            throw OperationError.missingAppGroup(name: Bundle.baseAltStoreAppGroupID)
         }
         
         let installedAppBundleIDs = await DatabaseManager.shared.persistentContainer.performBackgroundTask { context in

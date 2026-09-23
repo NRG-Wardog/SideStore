@@ -160,7 +160,7 @@ struct MachOResourceViewer: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ProgressView("Parsing Mach-O\u{2026}")
+                ProgressView("Parsing Mach-O...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -179,7 +179,7 @@ struct MachOResourceViewer: View {
             }
         }
         .sheet(isPresented: $showingShareSheet) {
-            ActivityView(items: [dumpText])
+            ActivityViewController(items: [dumpText])
         }
         #else
         .listStyle(GroupedListStyle())

@@ -16,8 +16,6 @@ import SideSign
 final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContext, InstalledApp>, @unchecked Sendable {
     let storeApp: StoreApp?
     
-    private var didCleanUp = false
-    
     init(context: InstallAppOperationContext, app: any AppProtocol) throws {
         self.storeApp = app as? StoreApp
         try super.init(context: context)
@@ -33,8 +31,7 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
         }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         
-        defer{
-            self.cleanUp()
+        defer {
             self.removeRefreshedIPA()
         }
         
@@ -50,7 +47,7 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
 
         #if !targetEnvironment(simulator)
         guard resignedAppBundle.provisioningProfile != nil else {
-            throw OperationError.invalidApp
+            throw OperationError.missingProvisioningProfile(reason: "Resigned app bundle '\(resignedAppBundle.bundleIdentifier)' is missing its embedded provisioning profile.")
         }
         #endif
 
@@ -60,14 +57,17 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
         let backgroundContext = self.context.dbBackgroundContext
         
         self.setProgress(10)
+        let authTeam = try await AuthManager.shared.getAuthenticatedTeam()
         do {
             let installedApp = try await installApp(
                 in: backgroundContext,
                 certificate: certificate,
                 resignedAppBundle: resignedAppBundle,
                 provisioningProfiles: provisioningProfiles,
-                storeBuildVersion: storeBuildVersion
+                storeBuildVersion: storeBuildVersion,
+                authTeam: authTeam
             )
+            self.context.installedApp = installedApp
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
             return installedApp
         } catch {
@@ -77,17 +77,14 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
     }
     
     private func removeRefreshedIPA() {
-        if let appBundle = context.targetAppBundle {
-            let updatedApp = AnyApp(from: appBundle, bundleId: self.context.targetBundleIdentifier)
-            let fileURL = InstalledApp.refreshedIPAURL(for: updatedApp)
-            
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                do {
-                    try FileManager.default.removeItem(at: fileURL)
-                    debugLog("[InstallAppOperation] Removed refreshed IPA")
-                } catch {
-                    debugLog("[InstallAppOperation] Failed to remove refreshed .ipa: \(error)")
-                }
+        guard let fileURL = self.context.installedApp?.refreshedIPAURL else { return }
+        
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+                debugLog("[InstallAppOperation] Removed refreshed IPA")
+            } catch {
+                debugLog("[InstallAppOperation] Failed to remove refreshed .ipa: \(error)")
             }
         }
     }
@@ -96,15 +93,33 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
                             certificate: ALTCertificate,
                             resignedAppBundle: ALTApplication,
                             provisioningProfiles: [String: ALTProvisioningProfile],
-                            storeBuildVersion: String?) async throws -> InstalledApp
+                            storeBuildVersion: String?,
+                            authTeam: ALTTeam) async throws -> InstalledApp
     {
-        let (installedApp, isDifferentSideStore, bundleID, isSelfReinstall) = try await backgroundContext.perform {
+        let (installedApp, isDifferentSideStore, bundleID, isSelfReinstall, isSideBackup) = try await backgroundContext.perform {
+            let utis = resignedAppBundle.infoPlist[Bundle.Info.exportedUTIs] as? [[String: Any]]
+            let isSideBackup = utis?.first?["UTTypeDescription"] as? String == "SideStore Backup App"
+            
+            if isSideBackup {
+                let installedApp = try self.context.installedApp.flatMap { app in
+                    backgroundContext.object(with: app.objectID) as? InstalledApp
+                } ?? self.fetchOrCreateApp(
+                    in: backgroundContext,
+                    certificate: certificate,
+                    resignedAppBundle: resignedAppBundle,
+                    storeBuildVersion: storeBuildVersion,
+                    authTeam: authTeam
+                )
+                return (installedApp, false, self.context.targetBundleIdentifier, false, true)
+            }
+
             /* App */
             let installedApp = try self.fetchOrCreateApp(
                 in: backgroundContext,
                 certificate: certificate,
                 resignedAppBundle: resignedAppBundle,
-                storeBuildVersion: storeBuildVersion
+                storeBuildVersion: storeBuildVersion,
+                authTeam: authTeam
             )
             
             let isDifferentSideStore = Self.isDifferentSideStoreContainer(installedApp, resignedAppBundle)
@@ -159,13 +174,10 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
                 }
             }
             
-            return (installedApp, isDifferentSideStore, self.context.targetBundleIdentifier, isSelfReinstall)
+            return (installedApp, isDifferentSideStore, self.context.targetBundleIdentifier, isSelfReinstall, false)
         }
         
         self.setProgress(30)
-        
-        // Temporary directory and resigned .ipa no longer needed — delete now before AltStore quits.
-        cleanUp()
         
         // Self-reinstall background suspension
         if isSelfReinstall {
@@ -182,7 +194,7 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
         self.setProgress(90)
         
         // Phase 3: Post-install CoreData write — update refreshedDate
-        if !isDifferentSideStore && !isSelfReinstall {
+        if !isDifferentSideStore && !isSelfReinstall && !isSideBackup {
             await backgroundContext.perform {
                 installedApp.refreshedDate = Date()
             }
@@ -199,34 +211,43 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
 
     private func fetchOrCreateApp(in backgroundContext: NSManagedObjectContext,
                                   certificate: ALTCertificate,
-                                  resignedAppBundle: ALTApplication, storeBuildVersion: String?) throws -> InstalledApp
+                                  resignedAppBundle: ALTApplication,
+                                  storeBuildVersion: String?,
+                                  authTeam: ALTTeam) throws -> InstalledApp
     {
+        guard let appBundleFingerprint = self.context.appBundleFingerprint else {
+            throw OperationError.invalidParameters("InstallAppOperation: context.appBundleFingerprint is nil. CacheAppOperation must guarantee a fingerprint reference.")
+        }
+        
         let target = self.context.targetBundleIdentifier
         let predicate = NSPredicate(
             format: "(%K == %@) OR (%K == %@)",
             #keyPath(InstalledApp.customBundleIdentifier), target,
             #keyPath(InstalledApp.resignedBundleIdentifier), resignedAppBundle.bundleIdentifier
         )
+        let customCertSerial = self.context.overrideSigningCertificate?.serialNumber
         let installedApp = try InstalledApp.first(
                                 satisfying: predicate,
                                 in: backgroundContext
                             ) ?? InstalledApp(
                                 resignedAppBundle: resignedAppBundle,
                                 originalBundleIdentifier: self.context.bundleIdentifier,
-                                certificateSerialNumber: certificate.serialNumber,
+                                certificateSerialNumber: customCertSerial,
                                 storeBuildVersion: storeBuildVersion,
                                 context: backgroundContext
                             )
         if !Self.isDifferentSideStoreContainer(installedApp, resignedAppBundle) {
             installedApp.update(
                 resignedAppBundle: resignedAppBundle,
-                certificateSerialNumber: certificate.serialNumber,
+                certificateSerialNumber: customCertSerial,
                 storeBuildVersion: storeBuildVersion
             )
             installedApp.certificateStatus = self.context.targetCertStatus ?? installedApp.certificateStatus
             installedApp.customBundleIdentifier = context.customBundleIdentifier
             installedApp.useMainProfile = context.useMainProfile
-            if let team = DatabaseManager.shared.activeTeam(in: backgroundContext) {
+            installedApp.appBundleFingerprint = appBundleFingerprint
+            let teamPredicate = NSPredicate(format: "%K == %@", #keyPath(Team.identifier), authTeam.identifier)
+            if let team = Team.first(satisfying: teamPredicate, in: backgroundContext) {
                 installedApp.team = team
             }
             if let storeApp {
@@ -265,6 +286,11 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
                 case .preserve:
                     break
             }
+
+            if let overrideProfile = self.context.overrideProvisioningProfile {
+                ProfileManager.shared.assignProfile(uuid: overrideProfile.uuid, for: installedApp.bundleIdentifier)
+                self.debugLog("[InstallAppOperation] Assigned profile '\(overrideProfile.name)' to installed app '\(installedApp.bundleIdentifier)'")
+            }
         }
 
         return installedApp
@@ -285,52 +311,41 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
 
         var installedExtensions = Set<InstalledExtension>()
         
-        if let bundle = Bundle(url: resignedAppBundle.fileURL),
-            let directory = bundle.builtInPlugInsURL,
-            let enumerator = FileManager.default.enumerator(
-                at: directory,
-                includingPropertiesForKeys: nil,
-                options: [.skipsSubdirectoryDescendants])
-        {
-            for case let fileURL as URL in enumerator {
-                guard let appExtensionBundle = Bundle(url: fileURL) else { continue }
-                guard let resignedAppExtensionBundle = ALTApplication(fileURL: appExtensionBundle.bundleURL) else { continue }
-                
-                let filename = fileURL.lastPathComponent
-                guard let originalExtension = originalExtensionsByFilename[filename] else {
-                    throw OperationError.invalidParameters("InstallAppOperation: extension '\(filename)' not found in targetAppBundle.")
-                }
-                
-                let targetParentBundleID = context.targetBundleIdentifier
-                let resignedParentBundleID = resignedAppBundle.bundleIdentifier
-                
-                let originalAppExBundleID = originalExtension.bundleIdentifier
-                let resignedBundleID = resignedAppExtensionBundle.bundleIdentifier
-                var customAppExBundleID: String? = nil
-                if context.customBundleIdentifier != nil {
-                    customAppExBundleID = resignedBundleID.replacingOccurrences(of: resignedParentBundleID, with: targetParentBundleID)
-                }
-                
-                self.debugLog("""
-                [InstallAppOperation] Extension Bundle Mapping:
-                  • targetParentBundleID   : \(targetParentBundleID)
-                  • resignedParentBundleID : \(resignedParentBundleID)
-                  • originalAppExBundleID  : \(originalAppExBundleID)
-                  • customAppExBundleID    : \(customAppExBundleID ?? "nil")
-                  • resignedAppExBundleID  : \(resignedBundleID)
-                """)
-                
-                let installedExtension = try installedApp.appExtensions
-                                                .first(where: { $0.resignedBundleIdentifier == resignedBundleID })
-                                            ?? InstalledExtension(
-                                                resignedAppExtensionBundle: resignedAppExtensionBundle,
-                                                originalBundleIdentifier: originalAppExBundleID,
-                                                context: backgroundContext
-                                            )
-                installedExtension.customBundleIdentifier = customAppExBundleID
-                installedExtension.update(resignedAppExtensionBundle: resignedAppExtensionBundle)
-                installedExtensions.insert(installedExtension)
+        for resignedAppExtensionBundle in resignedAppBundle.appExtensions {
+            let filename = resignedAppExtensionBundle.fileURL.lastPathComponent
+            guard let originalExtension = originalExtensionsByFilename[filename] else {
+                throw OperationError.invalidParameters("InstallAppOperation: extension '\(filename)' not found in targetAppBundle.")
             }
+            
+            let targetParentBundleID = context.targetBundleIdentifier
+            let resignedParentBundleID = resignedAppBundle.bundleIdentifier
+            
+            let originalAppExBundleID = originalExtension.bundleIdentifier
+            let resignedBundleID = resignedAppExtensionBundle.bundleIdentifier
+            var customAppExBundleID: String? = nil
+            if context.customBundleIdentifier != nil {
+                customAppExBundleID = resignedBundleID.replacingOccurrences(of: resignedParentBundleID, with: targetParentBundleID)
+            }
+            
+            self.debugLog("""
+            [InstallAppOperation] Extension Bundle Mapping:
+              • targetParentBundleID   : \(targetParentBundleID)
+              • resignedParentBundleID : \(resignedParentBundleID)
+              • originalAppExBundleID  : \(originalAppExBundleID)
+              • customAppExBundleID    : \(customAppExBundleID ?? "nil")
+              • resignedAppExBundleID  : \(resignedBundleID)
+            """)
+            
+            let installedExtension = try installedApp.appExtensions
+                                            .first(where: { $0.resignedBundleIdentifier == resignedBundleID })
+                                        ?? InstalledExtension(
+                                            resignedAppExtensionBundle: resignedAppExtensionBundle,
+                                            originalBundleIdentifier: originalAppExBundleID,
+                                            context: backgroundContext
+                                        )
+            installedExtension.customBundleIdentifier = customAppExBundleID
+            installedExtension.update(resignedAppExtensionBundle: resignedAppExtensionBundle)
+            installedExtensions.insert(installedExtension)
         }
 
         return installedExtensions
@@ -432,14 +447,5 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
         }
     }
     
-    private func cleanUp() {
-        guard !didCleanUp else { return }
-        didCleanUp = true
-        
-        do {
-            try FileManager.default.removeItem(at: context.temporaryDirectory)
-        } catch {
-            debugLog("[InstallAppOperation] Failed to remove temporary directory. \(error)")
-        }
-    }
+
 }

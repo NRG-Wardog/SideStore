@@ -29,7 +29,7 @@ struct DevicesListView: View {
     @State private var showRegisterSheet = false
     @State private var newDeviceName = ""
     @State private var newDeviceUDID = ""
-    @State private var selectedDeviceType: ALTDeviceType = .iphone
+    @State private var selectedDeviceType: ALTDeviceType = DeveloperPortalProxy.currentDeviceType
     @State private var isFetchingUDID = false
 
     @State private var deviceToEdit: ALTDevice? = nil
@@ -104,6 +104,7 @@ struct DevicesListView: View {
                             }
                             .padding(.vertical, 2)
                         }
+                        #if !os(tvOS)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             SwiftUI.Button(role: .destructive) {
                                 activeAlert = .delete(device)
@@ -128,7 +129,7 @@ struct DevicesListView: View {
                             }
                             .tint(.blue)
                         }
-                        #if !os(tvOS)
+                        #endif
                         .contextMenu {
                             SwiftUI.Button {
                                 editDeviceName = device.name
@@ -136,11 +137,13 @@ struct DevicesListView: View {
                             } label: {
                                 Label("Edit Name", systemImage: "pencil")
                             }
+                            #if !os(tvOS)
                             SwiftUI.Button {
                                 UIPasteboard.general.string = device.identifier
                             } label: {
                                 Label("Copy UDID", systemImage: "doc.on.doc")
                             }
+                            #endif
                             if device.status != "d" {
                                 SwiftUI.Button {
                                     activeAlert = .disable(device)
@@ -154,7 +157,6 @@ struct DevicesListView: View {
                                 Label("Delete Device", systemImage: "trash")
                             }
                         }
-                        #endif
                     }
                 }
             }
@@ -224,11 +226,7 @@ struct DevicesListView: View {
                             Task {
                                 isFetchingUDID = true
                                 defer { isFetchingUDID = false }
-                                var udid = try? await fetchUDID()
-                                if udid == nil || udid?.isEmpty == true {
-                                    udid = try? await fetchUDID(useStatic: true)
-                                }
-                                if let foundUDID = udid, !foundUDID.isEmpty, foundUDID != "XXXXX-XXXX-XXXXX-XXXX" {
+                                if let foundUDID = try? await safeFetchUDID() {
                                     newDeviceUDID = foundUDID
                                     if newDeviceName.isEmpty {
                                         #if !os(tvOS)

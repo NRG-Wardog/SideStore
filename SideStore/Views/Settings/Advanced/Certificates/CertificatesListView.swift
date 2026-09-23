@@ -103,9 +103,22 @@ private struct CertGroupHeaderView: View {
     @State private var showGroupDialog: Bool = false
     #endif
     
+    private var headerTitle: String {
+        if group.name == "Certificates" {
+            let localCount = viewModel.certificates.count
+            if viewModel.hasFetchedRemote {
+                let remoteCount = viewModel.remoteSerials.count
+                return "Certificates \(localCount)(\(remoteCount)R)"
+            } else {
+                return "Certificates \(localCount)"
+            }
+        }
+        return group.name
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            Text(group.name)
+            Text(headerTitle)
             Spacer()
             #if !os(tvOS)
             Menu {

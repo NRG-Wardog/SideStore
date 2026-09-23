@@ -180,33 +180,3 @@ struct CacheItemRow: View {
         }
     }
 }
-
-#if !os(tvOS)
-struct ActivityViewController: UIViewControllerRepresentable {
-    var activityItems: [Any]
-    var applicationActivities: [UIActivity]? = nil
-    
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        let controller = UIActivityViewController(activityItems: activityItems, applicationActivities: applicationActivities)
-        return controller
-    }
-    
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-#else
-struct ActivityViewController: UIViewControllerRepresentable {
-    var activityItems: [Any]
-    
-    func makeUIViewController(context: Context) -> UIViewController {
-        let vc = UIViewController()
-        if let fileURL = activityItems.first(where: { $0 is URL }) as? URL {
-            DispatchQueue.main.async {
-                TVWebFileTransferManager.shared.startExport(fileURL: fileURL, title: "Export Cache File", presentingVC: vc)
-            }
-        }
-        return vc
-    }
-    
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
-}
-#endif

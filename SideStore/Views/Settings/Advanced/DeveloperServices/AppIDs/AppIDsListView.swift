@@ -83,7 +83,17 @@ struct AppIDsListView: View {
                             }
                             .padding(.vertical, 2)
                         }
+                        #if !os(tvOS)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            SwiftUI.Button(role: .destructive) {
+                                appIDToDelete = appID
+                                showDeleteConfirmation = true
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                        #endif
+                        .contextMenu {
                             SwiftUI.Button(role: .destructive) {
                                 appIDToDelete = appID
                                 showDeleteConfirmation = true

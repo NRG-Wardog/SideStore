@@ -10,6 +10,42 @@
 import Foundation
 import SideSign
 
+public enum AppExtensionCustomization: String, CaseIterable, Identifiable, Sendable {
+    case promptUser     = "prompt-user"
+    case removeAll      = "remove-all"
+    case keepAll        = "keep-all"
+    case useMainProfile = "use-main-profile"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .promptUser:
+            return "Prompt User"
+        case .removeAll:
+            return "Remove All"
+        case .keepAll:
+            return "Keep All"
+        case .useMainProfile:
+            return "Use Main Profile"
+        }
+    }
+
+    var fixedDecision: ExtensionRemovalDecision? {
+        switch self {
+        case .promptUser:
+            return nil
+        case .removeAll:
+            return .removeAll
+        case .keepAll:
+            return .keepAll(useMainProfile: false)
+        case .useMainProfile:
+            return .keepAll(useMainProfile: true)
+        }
+    }
+}
+
+
 final class RemoveAppExtensionsOperation: BasePipelineOperation<InstallAppOperationContext, ALTApplication>, @unchecked Sendable {
     let localAppExtensions: Set<ALTApplication>?
     
@@ -42,37 +78,34 @@ final class RemoveAppExtensionsOperation: BasePipelineOperation<InstallAppOperat
         let excessExtensions = processExtensionsInfo(from: targetAppBundle, localAppExtensions: localAppExtensions)
         
         let handler = self.context.handler.extensionRemovalHandler
-        guard UserDefaults.standard.customizeAppExtensions else {
-            // perform silent extensions cleanup for those that aren't already present in existing app
-            // background mode: remove only the excess extensions automatically for re-installs
-            //                  keep all extensions for fresh install (localAppBundle = nil)
-            try self.removeExtensions(from: excessExtensions, endPercent: 100)
-            return targetAppBundle
+        let decision: ExtensionRemovalDecision
+        if let preset = UserDefaults.standard.customizeAppExtensions.fixedDecision {
+            decision = preset
+        } else {
+            self.setProgress(50)
+            decision = try await handler.selectAppExtensionsToRemove(
+                appBundle: targetAppBundle,
+                localAppExtensions: Array(localAppExtensions ?? []),
+                excessExtensions: excessExtensions
+            )
         }
-        
-        self.setProgress(50)
-        let decision = try await handler.selectAppExtensionsToRemove(
-            appBundle: targetAppBundle,
-            localAppExtensions: Array(localAppExtensions ?? []),
-            excessExtensions: excessExtensions
-        )
-        
+
         switch decision {
-        case .cancel:
-            throw OperationError.cancelled
-            
-        case .keepAll(let useMainProfile):
-            self.context.useMainProfile = useMainProfile
-            self.setProgress(100)
-            
-        case .removeAll:
-            try self.removeExtensions(from: targetAppBundle.appExtensions, endPercent: 85)
-            try self.updateManifest()
-            self.setProgress(100)
-            
-        case .removeSelected(let selection):
-            try self.removeExtensions(from: selection, endPercent: 100)
-            self.setProgress(100)
+            case .cancel:
+                throw OperationError.cancelled
+
+            case .keepAll(let useMainProfile):
+                self.context.useMainProfile = useMainProfile
+                self.setProgress(100)
+
+            case .removeAll:
+                try self.removeExtensions(from: targetAppBundle.appExtensions, endPercent: 85)
+                try self.updateManifest()
+                self.setProgress(100)
+
+            case .removeSelected(let selection):
+                try self.removeExtensions(from: selection, endPercent: 100)
+                self.setProgress(100)
         }
         
         return targetAppBundle

@@ -32,7 +32,7 @@ final class RemoveBackupDataOperation: BasePipelineOperation<InstallAppOperation
             self.backupDirectoryURL(for: installedApp)
         }
         guard let backupDirectoryURL else {
-            throw OperationError.missingAppGroup
+            throw OperationError.missingAppGroup(name: installedApp.bundleIdentifier)
         }
         
         guard FileManager.default.fileExists(atPath: backupDirectoryURL.path) else {

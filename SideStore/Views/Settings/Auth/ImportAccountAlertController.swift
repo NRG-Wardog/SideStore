@@ -70,21 +70,23 @@ class ImportAccountAlertController: UIAlertController {
             guard let presentingVC = presentingViewController,
                   let password = alertVC?.passwordTextField.text,
                   !password.isEmpty else { return }
-            do {
-                let account = try ImportExport.importAccount(data, filePassword: password)
-                UserDefaults.standard.acctFileChecksum = checksum
-                let toastView = ToastView(
-                    text: NSLocalizedString("Successfully imported '\(account.email)'!", comment: ""),
-                    detailText: "SideStore should be fully operational!"
-                )
-                toastView.show(in: presentingVC)
-            } catch {
-                debugLog("[ImportAccountAlertController] Failed to import account configuration: \(error)")
-                let toastView = ToastView(
-                    text: NSLocalizedString("Failed to import account configuration!", comment: ""),
-                    detailText: error.localizedDescription
-                )
-                toastView.show(in: presentingVC)
+            Task { @MainActor in
+                do {
+                    let account = try await ImportExport.importAccount(data, filePassword: password)
+                    UserDefaults.standard.acctFileChecksum = checksum
+                    let toastView = ToastView(
+                        text: NSLocalizedString("Successfully imported '\(account.email)'!", comment: ""),
+                        detailText: "SideStore should be fully operational!"
+                    )
+                    toastView.show(in: presentingVC)
+                } catch {
+                    debugLog("[ImportAccountAlertController] Failed to import account configuration: \(error)")
+                    let toastView = ToastView(
+                        text: NSLocalizedString("Failed to import account configuration!", comment: ""),
+                        detailText: error.localizedDescription
+                    )
+                    toastView.show(in: presentingVC)
+                }
             }
         }
         

@@ -27,12 +27,10 @@ class DeveloperServicesViewModel: ObservableObject {
     @Published var toastMessage: String = ""
     @Published var showToast = false
 
-    var team: ALTTeam? {
-        AuthManager.shared.team
-    }
+    @Published var team: ALTTeam?
 
     var isPaidAccount: Bool {
-        guard let team = AuthManager.shared.team else { return false }
+        guard let team = self.team else { return false }
         return team.isPaid
     }
 
@@ -47,11 +45,9 @@ class DeveloperServicesViewModel: ObservableObject {
         defer { self.isLoading = false }
 
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
+            self.team = try await AuthManager.shared.getAuthenticatedTeam()
             async let fetchedAppIDs = DeveloperPortalProxy.shared.fetchAppIDs()
-            async let fetchedProfiles = DeveloperPortalProxy.shared.fetchProvisioningProfiles()
+            async let fetchedProfiles = DeveloperPortalProxy.shared.listProvisioningProfiles()
             async let fetchedGroups = DeveloperPortalProxy.shared.fetchAppGroups()
             async let fetchedDevices = DeveloperPortalProxy.shared.fetchDevices(types: .all)
             async let fetchedCerts = DeveloperPortalProxy.shared.fetchCertificates()
@@ -74,9 +70,6 @@ class DeveloperServicesViewModel: ObservableObject {
         self.isLoading = true
         defer { self.isLoading = false }
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
             let certs = try await DeveloperPortalProxy.shared.fetchCertificates()
             self.certificates = certs.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         } catch {
@@ -106,9 +99,6 @@ class DeveloperServicesViewModel: ObservableObject {
         self.isLoading = true
         defer { self.isLoading = false }
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
             let ids = try await DeveloperPortalProxy.shared.fetchAppIDs()
             self.appIDs = ids.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         } catch {
@@ -167,10 +157,7 @@ class DeveloperServicesViewModel: ObservableObject {
         self.isLoading = true
         defer { self.isLoading = false }
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
-            let profs = try await DeveloperPortalProxy.shared.fetchProvisioningProfiles()
+            let profs = try await DeveloperPortalProxy.shared.listProvisioningProfiles()
             self.profiles = profs.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         } catch {
             debugLog("[DeveloperServices] fetchProfiles failed: \(error)")
@@ -180,13 +167,17 @@ class DeveloperServicesViewModel: ObservableObject {
         }
     }
 
-    func downloadProfile(for appID: ALTAppID, presentingViewController: UIViewController? = nil) async -> Bool {
+    func downloadProfile(for appID: ALTAppID, type: ALTProfileType? = nil, presentingViewController: UIViewController? = nil) async -> Bool {
         self.isActionLoading = true
         defer { self.isActionLoading = false }
         do {
-            _ = try await DeveloperPortalProxy.shared.downloadProvisioningProfile(for: appID, deviceType: .iphone)
+            if let type = type {
+                _ = try await DeveloperPortalProxy.shared.downloadProvisioningProfile(for: appID, type: type)
+            } else {
+                _ = try await DeveloperPortalProxy.shared.downloadProvisioningProfile(for: appID, deviceType: DeveloperPortalProxy.currentDeviceType)
+            }
             await self.fetchProfiles(presentingViewController: presentingViewController)
-            self.showToastMessage("Profile synced for '\(appID.name)'")
+            self.showToastMessage("Profile generated for '\(appID.name)'")
             return true
         } catch {
             debugLog("[DeveloperServices] downloadProfile failed: \(error)")
@@ -195,11 +186,11 @@ class DeveloperServicesViewModel: ObservableObject {
         }
     }
 
-    func createManualProfile(name: String, appID: ALTAppID, certificateIDs: [String], deviceIDs: [String], presentingViewController: UIViewController? = nil) async -> Bool {
+    func createManualProfile(name: String, appID: ALTAppID, certificateIDs: [String], deviceIDs: [String], type: ALTProfileType = .iOS, presentingViewController: UIViewController? = nil) async -> Bool {
         self.isActionLoading = true
         defer { self.isActionLoading = false }
         do {
-            _ = try await DeveloperPortalProxy.shared.createProvisioningProfile(name: name, appID: appID, certificateIDs: certificateIDs, deviceIDs: deviceIDs)
+            _ = try await DeveloperPortalProxy.shared.createProvisioningProfile(name: name, appID: appID, certificateIDs: certificateIDs, deviceIDs: deviceIDs, type: type)
             await self.fetchProfiles(presentingViewController: presentingViewController)
             self.showToastMessage("Created profile '\(name)'")
             return true
@@ -210,7 +201,7 @@ class DeveloperServicesViewModel: ObservableObject {
         }
     }
 
-    func updateProfile(_ profile: ALTListedProvisioningProfile, name: String, appIDId: String, certificateIDs: [String], deviceIDs: [String], presentingViewController: UIViewController? = nil) async -> Bool {
+    func updateProfile(_ profile: ALTListedProvisioningProfile, name: String, appIDId: String, certificateIDs: [String], deviceIDs: [String], type: ALTProfileType? = nil, presentingViewController: UIViewController? = nil) async -> Bool {
         guard let profileID = profile.identifier else {
             self.errorMessage = "Profile identifier missing"
             return false
@@ -218,13 +209,24 @@ class DeveloperServicesViewModel: ObservableObject {
         self.isActionLoading = true
         defer { self.isActionLoading = false }
         do {
-            _ = try await DeveloperPortalProxy.shared.updateProvisioningProfile(
-                profileID: profileID,
-                name: name,
-                appIDId: appIDId,
-                certificateIDs: certificateIDs,
-                deviceIDs: deviceIDs
-            )
+            if let type = type {
+                _ = try await DeveloperPortalProxy.shared.updateProvisioningProfile(
+                    profileID: profileID,
+                    name: name,
+                    appIDId: appIDId,
+                    certificateIDs: certificateIDs,
+                    deviceIDs: deviceIDs,
+                    type: type
+                )
+            } else {
+                _ = try await DeveloperPortalProxy.shared.updateProvisioningProfile(
+                    profileID: profileID,
+                    name: name,
+                    appIDId: appIDId,
+                    certificateIDs: certificateIDs,
+                    deviceIDs: deviceIDs
+                )
+            }
             await self.fetchProfiles(presentingViewController: presentingViewController)
             self.showToastMessage("Updated profile '\(name)'")
             return true
@@ -253,10 +255,14 @@ class DeveloperServicesViewModel: ObservableObject {
     }
 
     func deleteProfile(_ profile: ALTListedProvisioningProfile, presentingViewController: UIViewController? = nil) async -> Bool {
+        guard let profileID = profile.identifier else {
+            self.errorMessage = "Profile identifier is missing"
+            return false
+        }
         self.isActionLoading = true
         defer { self.isActionLoading = false }
         do {
-            _ = try await DeveloperPortalProxy.shared.deleteProvisioningProfile(profile)
+            _ = try await DeveloperPortalProxy.shared.deleteProvisioningProfile(profileID: profileID)
             self.profiles.removeAll { $0.uuid == profile.uuid }
             self.showToastMessage("Deleted profile '\(profile.name)'")
             return true
@@ -274,8 +280,12 @@ class DeveloperServicesViewModel: ObservableObject {
             var deleted = 0
             var failed = 0
             for profile in self.profiles {
+                guard let profileID = profile.identifier else {
+                    failed += 1
+                    continue
+                }
                 do {
-                    _ = try await DeveloperPortalProxy.shared.deleteProvisioningProfile(profile)
+                    _ = try await DeveloperPortalProxy.shared.deleteProvisioningProfile(profileID: profileID)
                     deleted += 1
                 } catch {
                     debugLog("[DeveloperServices] deleteProfile '\(profile.name)' failed: \(error)")
@@ -296,9 +306,6 @@ class DeveloperServicesViewModel: ObservableObject {
         self.isLoading = true
         defer { self.isLoading = false }
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
             let groups = try await DeveloperPortalProxy.shared.fetchAppGroups()
             self.appGroups = groups.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         } catch {
@@ -360,9 +367,6 @@ class DeveloperServicesViewModel: ObservableObject {
         self.isLoading = true
         defer { self.isLoading = false }
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
             let devs = try await DeveloperPortalProxy.shared.fetchDevices(types: .all)
             self.devices = devs.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         } catch {

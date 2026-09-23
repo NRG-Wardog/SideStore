@@ -39,6 +39,8 @@ class CertificatesViewModel: ObservableObject {
     @Published var alertMessage: String? = nil
     @Published var showAlert = false
     @Published var remoteSerials: Set<String> = []
+    @Published var hasFetchedRemote: Bool = false
+    @Published var shareURL: URL? = nil
     
     @Published var currentSort: SortOption   = .creationDate
     @Published var isAscending: Bool         = false
@@ -87,6 +89,10 @@ class CertificatesViewModel: ObservableObject {
         guard let team = self.team else { return false }
         return team.type != .free && team.type != .unknown
     }
+
+    var availableCertificateTypes: [CertificateType] {
+        CertificateType.allCases
+    }
     
     var isActiveCertThirdParty: Bool {
         guard let activeCert = activeLocalCert,
@@ -117,6 +123,23 @@ class CertificatesViewModel: ObservableObject {
         if let existing = self.certificates.first(where: { $0.serialNumber == cert.serialNumber }) {
             if cert.machineName == nil { cert.machineName = existing.machineName }
             if cert.machineIdentifier == nil { cert.machineIdentifier = existing.machineIdentifier }
+            if cert.certificateType == nil { cert.certificateType = existing.certificateType }
+            if cert.certificateTypeName == nil { cert.certificateTypeName = existing.certificateTypeName }
+            if cert.certificateTypeId == nil { cert.certificateTypeId = existing.certificateTypeId }
+            if cert.requesterEmail == nil { cert.requesterEmail = existing.requesterEmail }
+            if cert.requesterFirstName == nil { cert.requesterFirstName = existing.requesterFirstName }
+            if cert.requesterLastName == nil { cert.requesterLastName = existing.requesterLastName }
+            if cert.displayName == nil { cert.displayName = existing.displayName }
+            if cert.ownerName == nil { cert.ownerName = existing.ownerName }
+            if cert.ownerId == nil { cert.ownerId = existing.ownerId }
+            if cert.platform == nil { cert.platform = existing.platform }
+            if cert.platformName == nil { cert.platformName = existing.platformName }
+            if cert.isManaged == nil { cert.isManaged = existing.isManaged }
+            if cert.status == nil { cert.status = existing.status }
+            if cert.autoRotationEnabled == nil { cert.autoRotationEnabled = existing.autoRotationEnabled }
+            if cert.requestedDate == nil { cert.requestedDate = existing.requestedDate }
+            if cert.serialNumDecimal == nil { cert.serialNumDecimal = existing.serialNumDecimal }
+            if cert.sourceEndpoint == nil { cert.sourceEndpoint = existing.sourceEndpoint }
         }
         CertificateManager.shared.saveCertificate(cert)
     }
@@ -127,6 +150,7 @@ class CertificatesViewModel: ObservableObject {
     
     func loadCertificates(presentingViewController: UIViewController?, isPullToRefresh: Bool = false, completion: (() -> Void)? = nil) {
         if !isPullToRefresh { self.isLoading = true }
+        self.hasFetchedRemote = false
         self.errorMessage = nil
         self.fetchActiveSerialNumber()
         
@@ -171,6 +195,7 @@ class CertificatesViewModel: ObservableObject {
                 }
                 self.certificates  = merged
                 self.remoteSerials = matchedRemoteSerials
+                self.hasFetchedRemote = true
             } catch {
                 if isPullToRefresh && !(error is CancellationError) {
                     self.errorMessage = error.localizedDescription
@@ -332,7 +357,7 @@ class CertificatesViewModel: ObservableObject {
         self.showImportSummary = true
     }
     
-    func createCertificate(machineName: String, presentingViewController: UIViewController?) {
+    func createCertificate(machineName: String, type: CertificateType = .development, presentingViewController: UIViewController?) {
         self.isLoading = true; self.errorMessage = nil
         Task { @MainActor in
             defer { self.isLoading = false }
@@ -340,9 +365,9 @@ class CertificatesViewModel: ObservableObject {
                 self.session = try await AuthManager.shared.getAuthenticatedSession()
                 self.team    = try? await AuthManager.shared.getAuthenticatedTeam()
                 
-                let newCert = try await DeveloperPortalProxy.shared.createCertificate(machineName: machineName)
+                let newCert = try await DeveloperPortalProxy.shared.createCertificate(machineName: machineName, type: type)
                 self.saveLocalCertificate(newCert)
-                self.alertMessage = "Certificate created successfully."
+                self.alertMessage = "\(type.displayName) created successfully."
                 self.showAlert    = true
                 self.loadCertificates(presentingViewController: presentingViewController)
             } catch {
@@ -426,8 +451,9 @@ class CertificatesViewModel: ObservableObject {
         return CertificateManager.shared.isCertificateLocallyCached(serialNumber: certificate.serialNumber)
     }
 
-    func getSigningCertificate(at url: URL) -> ALTX509Certificate? {
-        CertificateManager.shared.getSigningCertificate(at: url)
+
+    func getSigningCertificate(for installedApp: InstalledAppProtocol) -> ALTX509Certificate? {
+        CertificateManager.shared.getSigningCertificate(for: installedApp)
     }
     
     func getLocalX509Certificate(serialNumber: String) -> ALTX509Certificate? {
@@ -461,6 +487,13 @@ class CertificatesViewModel: ObservableObject {
                 let v1 = self.hasPrivateKey(for: $1) ? 1 : 0
                 return isAscending ? v0 < v1 : v0 > v1
             }
+        case .type:
+            return certs.sorted {
+                let t0 = $0.certificateType ?? getBriefInfo(for: $0.data)?.type ?? $0.name
+                let t1 = $1.certificateType ?? getBriefInfo(for: $1.data)?.type ?? $1.name
+                let cmp = t0.localizedCaseInsensitiveCompare(t1)
+                return isAscending ? cmp == .orderedAscending : cmp == .orderedDescending
+            }
         }
     }
     
@@ -481,6 +514,11 @@ class CertificatesViewModel: ObservableObject {
                 return cert.machineName.flatMap { $0.first.map { String($0).uppercased() } }
                     ?? cert.name.first.map { String($0).uppercased() }
                     ?? "#"
+            }
+            return grouped.keys.sorted().map { GroupedCertificates(name: $0, certificates: grouped[$0] ?? []) }
+        case .type:
+            let grouped = Dictionary(grouping: sorted) { cert -> String in
+                cert.certificateType ?? getBriefInfo(for: cert.data)?.type ?? "Other"
             }
             return grouped.keys.sorted().map { GroupedCertificates(name: $0, certificates: grouped[$0] ?? []) }
         case .creationDate:
@@ -550,8 +588,21 @@ class CertificatesViewModel: ObservableObject {
         return req
     }
     
+    func displayCreatedBy(for cert: ALTX509Certificate) -> String? {
+        guard let name = cert.requesterFirstName, !name.isEmpty else { return nil }
+        if isSerialMasked(for: cert) { return "••••••••••" }
+        return name
+    }
+    
+    func displayCertificateTypeName(for cert: ALTX509Certificate) -> String? {
+        guard let typeName = cert.certificateTypeName, !typeName.isEmpty else { return nil }
+        if isSerialMasked(for: cert) { return "••••••••••" }
+        return typeName
+    }
+    
     func displayBriefType(for brief: CertificateBriefInfo, cert: ALTX509Certificate) -> String {
         if isSerialMasked(for: cert) { return "••••••••••" }
+        if let type = cert.certificateType { return type }
         return brief.type
     }
     

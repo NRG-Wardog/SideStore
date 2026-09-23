@@ -14,6 +14,21 @@ struct DeveloperPortalMetadata {
     var machineName: String?
     var machineIdentifier: String?
     var requesterEmail: String?
+    var requesterFirstName: String?
+    var requesterLastName: String?
+    var displayName: String?
+    var certificateType: String? = nil
+    var certificateTypeName: String? = nil
+    var certificateTypeId: String? = nil
+    var platform: String? = nil
+    var platformName: String? = nil
+    var isManaged: Bool? = nil
+    var status: String? = nil
+    var ownerName: String? = nil
+    var ownerId: String? = nil
+    var autoRotationEnabled: Bool? = nil
+    var requestedDate: String? = nil
+    var serialNumDecimal: String? = nil
 }
 
 struct CertificateDetailView: View {
@@ -45,14 +60,44 @@ struct CertificateDetailView: View {
         Form {
             Section {
                 Section {
-                    if let identifier = portalMetadata?.identifier {
+                    if let identifier = portalMetadata?.identifier ?? certificate.identifier {
                         detailRowWithCopy(title: "Certificate ID", value: identifier, isCopied: $copiedIdentifier)
                     }
-                    if let machineID = portalMetadata?.machineIdentifier {
+                    if let certType = portalMetadata?.certificateType ?? certificate.certificateType {
+                        detailRow(title: "Certificate Type", value: certType)
+                    }
+                    if let typeName = portalMetadata?.certificateTypeName ?? certificate.certificateTypeName {
+                        detailRow(title: "Type Name", value: typeName)
+                    }
+                    if let managed = portalMetadata?.isManaged ?? certificate.isManaged {
+                        detailRow(title: "Managed", value: managed ? "Yes (Xcode Cloud)" : "No")
+                    }
+                    if let status = portalMetadata?.status ?? certificate.status {
+                        detailRow(title: "Status", value: status)
+                    }
+                    if let platform = portalMetadata?.platform ?? certificate.platform {
+                        detailRow(title: "Platform", value: platform)
+                    }
+                    if let platformName = portalMetadata?.platformName ?? certificate.platformName {
+                        detailRow(title: "Platform Name", value: platformName)
+                    }
+                    if let machineID = portalMetadata?.machineIdentifier ?? certificate.machineIdentifier {
                         detailRow(title: "Machine ID", value: machineID)
                     }
-                    if let email = portalMetadata?.requesterEmail {
+                    if let createdBy = portalMetadata?.requesterFirstName ?? certificate.requesterFirstName {
+                        detailRow(title: "Created By", value: redactableValue(createdBy))
+                    }
+                    if let email = portalMetadata?.requesterEmail ?? certificate.requesterEmail {
                         detailRow(title: "Requester Email", value: redactableValue(email))
+                    }
+                    if let ownerName = portalMetadata?.ownerName ?? certificate.ownerName {
+                        detailRow(title: "Owner Name", value: redactableValue(ownerName))
+                    }
+                    if let ownerId = portalMetadata?.ownerId ?? certificate.ownerId {
+                        detailRow(title: "Owner ID", value: redactableValue(ownerId))
+                    }
+                    if let autoRotation = portalMetadata?.autoRotationEnabled ?? certificate.autoRotationEnabled {
+                        detailRow(title: "Auto-Rotation", value: autoRotation ? "Enabled" : "Disabled")
                     }
                 } header: {
                     Text("Developer Portal Info")

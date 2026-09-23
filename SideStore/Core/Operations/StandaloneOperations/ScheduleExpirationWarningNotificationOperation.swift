@@ -72,7 +72,11 @@ final class ScheduleExpirationWarningNotificationOperation: BaseStandaloneOperat
             let trigger = UNTimeIntervalNotificationTrigger(timeInterval: triggerInterval, repeats: false)
             let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
 
-            try await center.add(request)
+            do {
+                try await center.add(request)
+            } catch {
+                debugLog("[ScheduleExpirationWarningNotificationOperation] Failed to schedule notification '\(identifier)': \(error)")
+            }
         }
         #else
         NotificationCenter.default.post(name: NSNotification.Name("TVTopShelfItemsDidChangeNotification"), object: nil)

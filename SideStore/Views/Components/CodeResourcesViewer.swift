@@ -30,7 +30,7 @@ struct CodeResourcesViewer: View {
 
     @State private var entries: [CodeResourceEntry] = []
     @State private var rules: [CodeResourceRule] = []
-    @State private var rawPlist: [String: Any]? = nil
+    @State private var rawPlist: [String: any Sendable]? = nil
     @State private var rawXML: String = ""
     @State private var isLoaded: Bool = false
     @State private var parseError: String? = nil
@@ -223,7 +223,7 @@ struct CodeResourcesViewer: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ProgressView("Reading CodeResources\u{2026}")
+                ProgressView("Reading CodeResources...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -255,7 +255,7 @@ struct CodeResourcesViewer: View {
             self.rawXML = str
         }
 
-        guard let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
+        guard let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: any Sendable] else {
             self.parseError = "Could not decode file as a property list."
             self.isLoaded = true
             return
@@ -264,9 +264,9 @@ struct CodeResourcesViewer: View {
         self.rawPlist = plist
 
         var parsedEntries: [CodeResourceEntry] = []
-        if let files2 = plist["files2"] as? [String: Any] {
+        if let files2 = (plist["files2"] as? [String: any Sendable]) ?? (plist["files2"] as? [String: Any]) {
             for (path, val) in files2 {
-                if let dict = val as? [String: Any] {
+                if let dict = (val as? [String: any Sendable]) ?? (val as? [String: Any]) {
                     let hashData = dict["hash"] as? Data
                     let hash2Data = dict["hash2"] as? Data
                     let opt = dict["optional"] as? Bool ?? false
@@ -288,9 +288,9 @@ struct CodeResourcesViewer: View {
                     ))
                 }
             }
-        } else if let files = plist["files"] as? [String: Any] {
+        } else if let files = (plist["files"] as? [String: any Sendable]) ?? (plist["files"] as? [String: Any]) {
             for (path, val) in files {
-                if let dict = val as? [String: Any] {
+                if let dict = (val as? [String: any Sendable]) ?? (val as? [String: Any]) {
                     let hashData = dict["hash"] as? Data
                     let opt = dict["optional"] as? Bool ?? false
                     parsedEntries.append(CodeResourceEntry(
@@ -315,9 +315,9 @@ struct CodeResourcesViewer: View {
         self.entries = parsedEntries.sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }
 
         var parsedRules: [CodeResourceRule] = []
-        let rulesDict = (plist["rules2"] as? [String: Any]) ?? (plist["rules"] as? [String: Any]) ?? [:]
+        let rulesDict = (plist["rules2"] as? [String: any Sendable]) ?? (plist["rules"] as? [String: any Sendable]) ?? (plist["rules2"] as? [String: Any]) ?? (plist["rules"] as? [String: Any]) ?? [:]
         for (pattern, val) in rulesDict {
-            if let dict = val as? [String: Any] {
+            if let dict = (val as? [String: any Sendable]) ?? (val as? [String: Any]) {
                 let omit = dict["omit"] as? Bool ?? false
                 let weight = dict["weight"] as? Double
                 parsedRules.append(CodeResourceRule(pattern: pattern, isOmitted: omit, weight: weight))

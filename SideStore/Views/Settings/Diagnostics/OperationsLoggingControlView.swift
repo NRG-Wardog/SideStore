@@ -46,7 +46,7 @@ private let standaloneStepToggles: [(name: String, step: StandaloneStep)] = [
     ("Background Refresh Apps",                 .backgroundRefreshApps),
     ("Clear App Cache",                         .clearAppCache),
     ("Enable JIT",                              .enableJIT),
-    ("Fetch App IDs",                           .fetchAppIDs),
+    ("Sync App IDs",                            .syncAppIDs),
     ("Fetch Source",                            .fetchSource),
     ("Schedule Expiration Warning",             .scheduleExpirationWarningNotification),
 ]

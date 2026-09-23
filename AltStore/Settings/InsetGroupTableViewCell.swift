@@ -19,7 +19,7 @@ extension InsetGroupTableViewCell
     }
 }
 
-final class InsetGroupTableViewCell: UITableViewCell
+class InsetGroupTableViewCell: UITableViewCell
 {
 #if !TARGET_INTERFACE_BUILDER
     @IBInspectable var style: Style = .single {
@@ -36,10 +36,25 @@ final class InsetGroupTableViewCell: UITableViewCell
     private let separatorView = UIView()
     private let insetView = UIView()
     
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?)
+    {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        self.setup()
+    }
+    
+    required init?(coder: NSCoder)
+    {
+        super.init(coder: coder)
+    }
+
     override func awakeFromNib()
     {
         super.awakeFromNib()
-        
+        self.setup()
+    }
+    
+    private func setup()
+    {
         self.selectionStyle = .none
         
         self.separatorView.translatesAutoresizingMaskIntoConstraints = false
@@ -49,8 +64,12 @@ final class InsetGroupTableViewCell: UITableViewCell
         self.insetView.layer.masksToBounds = true
         self.insetView.layer.cornerRadius = 16
         
-        // Get the preferred background color from Interface Builder.
-        self.insetView.backgroundColor = self.backgroundColor
+        // Get the preferred background color from Interface Builder if set.
+        if let bgColor = self.backgroundColor, bgColor != .clear {
+            self.insetView.backgroundColor = bgColor
+        } else {
+            self.insetView.backgroundColor = UIColor.white.withAlphaComponent(0.25)
+        }
         self.backgroundColor = nil
         
         self.addSubview(self.insetView, pinningEdgesWith: UIEdgeInsets(top: 0, left: 15, bottom: 0, right: 15))

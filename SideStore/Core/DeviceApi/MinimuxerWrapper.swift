@@ -11,8 +11,8 @@ import Minimuxer
 import Combine
 
 public var selectedGatewayBackendCache: GatewayBackend = .idevice
-public var remotePairingPortCache: UInt16 = MinimuxerConstants.remotePairingPort
-public var deviceProbeTimeoutCache: Int = MinimuxerConstants.defaultTCPProbeTimeoutMs
+public var remotePairingPortCache: UInt16 = AppConstants.Minimuxer.remotePairingPort
+public var deviceProbeTimeoutCache: Int = AppConstants.Minimuxer.defaultTCPProbeTimeoutMs
 
 public func syncMinimuxerBackendFromUserDefaults() {
     let raw = UserDefaults.standard.minimuxerGatewayBackend
@@ -22,14 +22,14 @@ public func syncMinimuxerBackendFromUserDefaults() {
     if overridePort > 0 && overridePort <= 65535 {
         remotePairingPortCache = UInt16(overridePort)
     } else {
-        remotePairingPortCache = MinimuxerConstants.remotePairingPort
+        remotePairingPortCache = AppConstants.Minimuxer.remotePairingPort
     }
 
     let overrideTimeout = UserDefaults.standard.deviceProbeTimeoutOverride
     if overrideTimeout > 0 {
         deviceProbeTimeoutCache = overrideTimeout
     } else {
-        deviceProbeTimeoutCache = MinimuxerConstants.defaultTCPProbeTimeoutMs
+        deviceProbeTimeoutCache = AppConstants.Minimuxer.defaultTCPProbeTimeoutMs
     }
 }
 
@@ -47,7 +47,7 @@ private func resolveDiscoveredRemotePairingPort() async -> UInt16? {
         return UInt16(overridePort)
     }
     if let resolved = await BonjourDiscoveryManager.resolveFirstService(
-        ofType: MinimuxerConstants.remotePairingDaemonServiceType,
+        ofType: AppConstants.Minimuxer.remotePairingDaemonServiceType,
         timeout: AppConstants.Bonjour.defaultDiscoveryTimeout
     ) {
         debugLog("[SideStore] Discovered RemotePairing port via Bonjour: \(resolved.port)")
@@ -138,6 +138,18 @@ public func isMinimuxerReady() async -> Result<Bool, MinimuxerError> {
     return await minimuxer.core.isReady(withNetworkCheck: !isEnabled)
 }
 
+public func ensureMinimuxerReady() async throws {
+    if CellularRefreshManager.shared.isEnabled && UserDefaults.standard.enableEMPforWireguard {
+        throw OperationError.invalidVPN(
+            reason: "WireGuard VPN is not supported with Cellular Refresh because iOS pauses the WireGuard tunnel when cellular data is toggled off."
+        )
+    }
+    if !CellularRefreshManager.shared.isEnabled,
+       case .failure(let error) = await isMinimuxerReady() {
+        throw error.asOperationError
+    }
+}
+
 extension MinimuxerError {
     var asOperationError: OperationError {
         switch self {
@@ -148,8 +160,9 @@ extension MinimuxerError {
         case .invalidVPN(let reason):           return .invalidVPN(reason: reason)
         case .invalidPairing(_, let reason):    return .invalidPairingFile(reason: reason)
         case .notStarted(let reason):           return .minimuxerNotStarted(reason: reason)
-        case .pairingNotLoaded(let reason):     return .pairingNotComplete(reason: reason)
-        default:                                return .unknown(failureReason: self.localizedDescription)
+        case .pairingNotLoaded(let reason):            return .pairingNotComplete(reason: reason)
+        case .connectionModeNotConfigured(let reason): return .invalidParameters(reason)
+        default:                                       return .invalidParameters(self.description)
         }
     }
 }
@@ -279,24 +292,33 @@ func installAppBundle(_ bundleId: String, appName: String) async throws {
 }
 
 @discardableResult
-func fetchUDID(useStatic: Bool = false) async throws -> String? {
+func fetchUDID(forceLive: Bool = false) async throws -> String {
     defer { debugLog("[SideStore] fetchUDID() completed") }
     #if targetEnvironment(simulator)
     debugLog("[SideStore] fetchUDID() is no-op on simulator")
-    return "XXXXX-XXXX-XXXXX-XXXX"
+    return "00008030-001234567890ABCD"
+    
     #else
-    debugLog("[SideStore] fetchUDID() invoked")
-    let result = try? await withRemotePairingRetry {
+    if !forceLive, let cachedUDID = Keychain.shared.deviceUDID, !cachedUDID.isEmpty {
+        debugLog("[SideStore] fetchUDID() returning cached UDID from Keychain: \(cachedUDID)")
+        return cachedUDID
+    }
+    debugLog("[SideStore] fetchUDID() invoked (forceLive: \(forceLive))")
+    let result = try await withRemotePairingRetry {
         try await minimuxer.core.fetchUDID()
     }
-    if let udid = result ?? nil, !udid.isEmpty, udid != "XXXXX-XXXX-XXXXX-XXXX" {
-        return udid
+    guard let udid = result, !udid.isEmpty else {
+        throw OperationError.unknownUDID(reason: "Minimuxer returned empty UDID.")
     }
-    if useStatic {
-        return PairingFileManager.shared.pairingUDID
-    }
-    return nil
+    Keychain.shared.deviceUDID = udid
+    return udid
     #endif
+}
+
+@discardableResult
+func safeFetchUDID(forceLive: Bool = false) async throws -> String {
+    try await ensureMinimuxerReady()
+    return try await fetchUDID(forceLive: forceLive)
 }
 
 func debugApp(_ appId: String) async throws {
@@ -311,6 +333,11 @@ func debugApp(_ appId: String) async throws {
     #endif
 }
 
+func safeDebugApp(_ appId: String) async throws {
+    try await ensureMinimuxerReady()
+    try await debugApp(appId)
+}
+
 func attachDebugger(_ pid: UInt32) async throws {
     defer { debugLog("[SideStore] attachDebugger(pid) completed") }
     #if targetEnvironment(simulator)
@@ -323,6 +350,10 @@ func attachDebugger(_ pid: UInt32) async throws {
     #endif
 }
 
+func safeAttachDebugger(_ pid: UInt32) async throws {
+    try await ensureMinimuxerReady()
+    try await attachDebugger(pid)
+}
 
 func dumpProfiles(_ docsPath: String) async throws -> String {
     defer { debugLog("[SideStore] dumpProfiles(docsPath) completed") }
@@ -335,6 +366,11 @@ func dumpProfiles(_ docsPath: String) async throws -> String {
         try await minimuxer.core.dumpProfiles(docsPath: docsPath)
     }
     #endif
+}
+
+func safeDumpProfiles(_ docsPath: String) async throws -> String {
+    try await ensureMinimuxerReady()
+    return try await dumpProfiles(docsPath)
 }
 
 func minimuxerSetLogging(_ enabled: Bool) {
@@ -357,7 +393,7 @@ public func minimuxerSetDeviceProbeTimeout(_ timeoutMs: Int) {
     defer { debugLog("[SideStore] minimuxerSetDeviceProbeTimeout(\(timeoutMs)) completed") }
     debugLog("[SideStore] minimuxerSetDeviceProbeTimeout(\(timeoutMs)) invoked")
     deviceProbeTimeoutCache = timeoutMs
-    UserDefaults.standard.deviceProbeTimeoutOverride = (timeoutMs == MinimuxerConstants.defaultTCPProbeTimeoutMs) ? 0 : timeoutMs
+    UserDefaults.standard.deviceProbeTimeoutOverride = (timeoutMs == AppConstants.Minimuxer.defaultTCPProbeTimeoutMs) ? 0 : timeoutMs
     #if !targetEnvironment(simulator)
     minimuxer.core.setDeviceProbeTimeout(timeoutMs)
     #endif
@@ -461,15 +497,15 @@ public final class WirelessPairWrapper {
             }
         }
         #else
-        completion(.failure(OperationError.invalidPairingFile()))
+        completion(.failure(OperationError.invalidPairingFile(reason: "Wireless pairing is not supported on simulator.")))
         #endif
     }
 
     public func trigger(
         targetIp: String,
         targetPort: UInt16,
-        hostName: String = MinimuxerConstants.defaultHostName,
-        hostModel: String = MinimuxerConstants.defaultHostModel,
+        hostName: String = AppConstants.Minimuxer.defaultHostName,
+        hostModel: String = AppConstants.Minimuxer.defaultHostModel,
         outPath: String,
         completion: @escaping (Result<MinimuxerPairedDevice, Error>) -> Void
     ) {
@@ -495,7 +531,7 @@ public final class WirelessPairWrapper {
             }
         }
         #else
-        completion(.failure(OperationError.invalidPairingFile()))
+        completion(.failure(OperationError.invalidPairingFile(reason: "Wireless pairing is not supported on simulator.")))
         #endif
     }
     

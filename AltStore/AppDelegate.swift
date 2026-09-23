@@ -126,22 +126,24 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         
         // Register default settings before doing anything else.
         UserDefaults.registerDefaults()
+        BackgroundServiceManager.ensureBackgroundServicesStarted()
         syncMinimuxerBackendFromUserDefaults()
 
         SideStoreLogging.setLogging(UserDefaults.standard.isSideStoreVerboseLoggingEnabled)
         AltSign.setLogging(UserDefaults.standard.isAltSignVerboseLoggingEnabled)
         minimuxerSetLogging(UserDefaults.standard.isMinimuxerVerboseLoggingEnabled)
+        SideSignConfigManager.shared.applyConfigToDeveloperPortal()
 
         // Override point for customization after application launch.
 //        UserDefaults.standard.setValue(true, forKey: "com.apple.CoreData.MigrationDebug")
 //        UserDefaults.standard.setValue(true, forKey: "com.apple.CoreData.SQLDebug")
         
-        // Perform one-time maintenance tasks (e.g. Keychain clearance for 0.6.4*) before initializing services
-        MaintenanceManager.shared.performMaintenanceIfNeeded()
 
         // Trigger daily boot sync for Anisette servers if needed
-        Task.detached {
-            await AnisetteServersManager.shared.performDailySyncIfNeeded()
+        if !UserDefaults.standard.useOnDeviceAnisette{
+            Task.detached {
+                await AnisetteServersManager.shared.performDailySyncIfNeeded()
+            }
         }
 
         // Recreate Database if requested
@@ -171,18 +173,25 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         Task.detached(priority: .userInitiated) {
             do
             {
+                await MaintenanceManager.shared.performDatabaseMigrationIfNeeded()
+                
+                debugLog("Starting DatabaseManager...")
                 try await DatabaseManager.shared.start()
                 debugLog("Started DatabaseManager.")
+                
                 debugLog("Reconciling any staged drafts started...")
-                Self.reconcileSelfReinstallationIfNeeded()
+                await Self.reconcileSelfReinstallationIfNeeded()
                 debugLog("Reconcile any staged drafts completed.")
                 
                 await WidgetDataManager.publishCurrentInstalledAppsIfNeeded(in: DatabaseManager.shared.viewContext)
                 
                 if isFirstLaunch
                 {
-                    AuthManager.shared.signOut()
+                    await AuthManager.shared.signOut()
                 }
+
+                // Perform one-time maintenance tasks after database is started
+                await MaintenanceManager.shared.performMaintenanceIfNeeded()
             }
             catch
             {
@@ -195,8 +204,6 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
         SecureValueTransformer.register()        
         
-        UserDefaults.standard.preferredServerID = Bundle.main.object(forInfoDictionaryKey: Bundle.Info.serverID) as? String
-        
         #if DEBUG && targetEnvironment(simulator)
         UserDefaults.standard.isDebugModeEnabled = true
         #endif
@@ -208,6 +215,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     
     func applicationDidEnterBackground(_ application: UIApplication)
     {
+        BackgroundServiceManager.ensureBackgroundServicesStarted()
         // Make sure to update SceneDelegate.sceneDidEnterBackground() as well.
         guard let oneMonthAgo = Calendar.current.date(byAdding: .month, value: -1, to: Date()) else { return }
         
@@ -227,6 +235,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func applicationWillEnterForeground(_ application: UIApplication)
     {
+        BackgroundServiceManager.ensureBackgroundServicesStarted()
         Task.detached {
             await AppManager.shared.reconcileInstalledApps()
         }
@@ -398,6 +407,7 @@ extension AppDelegate
     
     func application(_ application: UIApplication, performFetchWithCompletionHandler backgroundFetchCompletionHandler: @escaping (UIBackgroundFetchResult) -> Void)
     {
+        BackgroundServiceManager.ensureBackgroundServicesStarted()
         #if !os(tvOS)
         if UserDefaults.standard.isBackgroundRefreshEnabled && !UserDefaults.standard.presentedLaunchReminderNotification
         {

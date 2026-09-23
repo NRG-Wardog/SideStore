@@ -69,6 +69,8 @@ class MyAppsViewController: UICollectionViewController
     // Cache
     private var cachedUpdateSizes = [String: CGSize]()
     
+    private var activeTeam: ALTTeam?
+    
     required init?(coder aDecoder: NSCoder)
     {
         super.init(coder: aDecoder)
@@ -150,11 +152,25 @@ class MyAppsViewController: UICollectionViewController
                 }
             }
         }
+        
+        Task { @MainActor [weak self] in
+            self?.activeTeam = try? await AuthManager.shared.getAuthenticatedTeam()
+        }
     }
     
     override func viewIsAppearing(_ animated: Bool)
     {
         super.viewIsAppearing(animated)
+        
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            let team = try? await AuthManager.shared.getAuthenticatedTeam()
+            if self.activeTeam != team
+            {
+                self.activeTeam = team
+                self.collectionView.reloadData()
+            }
+        }
         
         self.collectionView.reloadData()
         
@@ -281,6 +297,11 @@ class MyAppsViewController: UICollectionViewController
             
             let appViewController = segue.destination as! AppViewController
             appViewController.app = installedApp.storeApp
+            
+        case "showAppIDs":
+            let navigationController = segue.destination as? UINavigationController
+            let appIDsViewController = navigationController?.viewControllers.first as? AppIDsViewController
+            appIDsViewController?.activeTeam = self.activeTeam
             
         default: break
         }
@@ -920,27 +941,48 @@ private extension MyAppsViewController
     
     @IBAction func sideloadApp(_ sender: UIBarButtonItem)
     {
-        Task { @MainActor in
-            #if !os(tvOS)
-            let supportedTypes = UTType.types(tag: "ipa", tagClass: .filenameExtension, conformingTo: nil)
-            
-            let documentPickerViewController = UIDocumentPickerViewController(forOpeningContentTypes: supportedTypes, asCopy: true)
-            documentPickerViewController.delegate = self
-            self.present(documentPickerViewController, animated: true, completion: nil)
-            #else
-            TVWebFileTransferManager.shared.startImport(
-                acceptedExtensions: ["ipa"],
-                title: "Sideload IPA",
-                presentingVC: self
-            ) { [weak self] fileURL in
-                guard let fileURL = fileURL else { return }
+        InstallAppDialog.presentSourceSelection(
+            from: self,
+            barButtonItem: sender,
+            onChooseFiles: { [weak self] in
+                #if !os(tvOS)
+                self?.presentDocumentPicker()
+                #else
+                self?.presentTVWebTransfer()
+                #endif
+            },
+            onConfirm: { [weak self] url in
+                self?.sideloadApp(at: url) { _ in }
+            }
+        )
+    }
+    
+    #if !os(tvOS)
+    private func presentDocumentPicker()
+    {
+        let supportedTypes = UTType.types(tag: "ipa", tagClass: .filenameExtension, conformingTo: nil)
+        
+        let documentPickerViewController = UIDocumentPickerViewController(forOpeningContentTypes: supportedTypes, asCopy: true)
+        documentPickerViewController.delegate = self
+        self.present(documentPickerViewController, animated: true, completion: nil)
+    }
+    #else
+    private func presentTVWebTransfer()
+    {
+        TVWebFileTransferManager.shared.startImport(
+            acceptedExtensions: ["ipa"],
+            title: "Sideload IPA",
+            presentingVC: self
+        ) { [weak self] fileURL in
+            guard let fileURL = fileURL, let self else { return }
+            InstallAppDialog.present(ipaURL: fileURL, from: self) { [weak self] in
                 self?.sideloadApp(at: fileURL) { result in
                     debugLog("Sideloaded app at \(fileURL) with result: \(result)")
                 }
             }
-            #endif
         }
     }
+    #endif
     
     func sideloadApp(at url: URL, completion: @escaping (Result<Void, Error>) -> Void)
     {
@@ -1175,9 +1217,7 @@ private extension MyAppsViewController
                     
             if !UserDefaults.standard.isAppLimitDisabled && UserDefaults.standard.activeAppsLimit != nil
             {
-                guard let appBundle = ALTApplication(fileURL: installedApp.fileURL) else { return finish(.failure(OperationError.invalidApp)) }
-                
-                AppManager.shared.deactivateApps(for: appBundle, presentingViewController: self) { result in
+                self.promptToDeactivateApp(for: installedApp) { result in
                     installedApp.managedObjectContext?.perform {
                         switch result
                         {
@@ -1195,6 +1235,56 @@ private extension MyAppsViewController
                 AppManager.shared.activate(installedApp, presentingViewController: self, completionHandler: finish(_:))
             }
         }
+    }
+
+    private func promptToDeactivateApp(for installedApp: InstalledApp, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let deactivationCandidates = AppManager.shared.appsToDeactivate(for: installedApp) else {
+            return completion(.success(()))
+        }
+
+        let title: String
+        let message: String
+
+        if UserDefaults.standard.activeAppLimitIncludesExtensions {
+            if installedApp.appExtensions.isEmpty {
+                title = NSLocalizedString("Cannot Activate More than 3 Apps", comment: "")
+                message = NSLocalizedString("Non-developer Apple IDs are limited to 3 active apps and app extensions. Please choose an app to deactivate.", comment: "")
+            } else {
+                title = NSLocalizedString("Cannot Activate More than 3 Apps and App Extensions", comment: "")
+                let extCount = installedApp.appExtensions.count
+                let extText = extCount == 1 ? NSLocalizedString("app extension", comment: "") : NSLocalizedString("app extensions", comment: "")
+                message = String(format: NSLocalizedString("Non-developer Apple IDs are limited to 3 active apps and app extensions, and \"%@\" contains %@ %@. Please choose an app to deactivate.", comment: ""), installedApp.name, NSNumber(value: extCount), extText)
+            }
+        } else {
+            title = NSLocalizedString("Cannot Activate More than 3 Apps", comment: "")
+            message = NSLocalizedString("Non-developer Apple IDs are limited to 3 active apps. Please choose an app to deactivate.", comment: "")
+        }
+
+        let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alertController.addAction(UIAlertAction(title: UIAlertAction.cancel.title, style: UIAlertAction.cancel.style) { _ in
+            completion(.failure(OperationError.cancelled))
+        })
+
+        for activeApp in deactivationCandidates {
+            alertController.addAction(UIAlertAction(title: activeApp.name, style: .default) { [weak self] _ in
+                guard let self else { return }
+                activeApp.isActive = false
+
+                AppManager.shared.deactivate(activeApp, presentingViewController: self) { result in
+                    switch result {
+                    case .failure(let error):
+                        activeApp.managedObjectContext?.perform {
+                            activeApp.isActive = true
+                            completion(.failure(error))
+                        }
+                    case .success:
+                        self.promptToDeactivateApp(for: installedApp, completion: completion)
+                    }
+                }
+            })
+        }
+
+        self.present(alertController, animated: true)
     }
     
     func deactivate(_ installedApp: InstalledApp, completionHandler: ((Result<InstalledApp, Error>) -> Void)? = nil)
@@ -1382,6 +1472,11 @@ private extension MyAppsViewController
                 }
             }))
             
+            if let popoverController = alertController.popoverPresentationController {
+                popoverController.sourceView = self.view
+                popoverController.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+            }
+            
             self.present(alertController, animated: true, completion: nil)
         }
     }
@@ -1459,6 +1554,11 @@ private extension MyAppsViewController
                     self.collectionView.reloadSections([Section.activeApps.rawValue])
                 }
             }))
+            
+            if let popoverController = alertController.popoverPresentationController {
+                popoverController.sourceView = self.view
+                popoverController.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+            }
             
             self.present(alertController, animated: true, completion: nil)
         }
@@ -1833,11 +1933,12 @@ extension MyAppsViewController
         case .activeApps, .inactiveApps:
             let footerView = collectionView.dequeueReusableSupplementaryView(ofKind: UICollectionView.elementKindSectionFooter, withReuseIdentifier: "InstalledAppsFooter", for: indexPath) as! InstalledAppsCollectionFooterView
             
-            guard let team = DatabaseManager.shared.activeTeam() else { return footerView }
+            guard let team = self.activeTeam else { return footerView }
             switch team.type
             {
             case .free:
-                let registeredAppIDs = team.appIDs.count
+                guard let managedTeam = Team.first(satisfying: NSPredicate(format: "%K == %@", #keyPath(Team.identifier), team.identifier), in: DatabaseManager.shared.viewContext) else { return footerView }
+                let registeredAppIDs = managedTeam.appIDs.count
                 
                 let maximumAppIDCount = 10
                 let remainingAppIDs = maximumAppIDCount - registeredAppIDs
@@ -2018,23 +2119,23 @@ extension MyAppsViewController
         
         let backupMenu = UIMenu(title: NSLocalizedString("Backup", comment: ""), image: UIImage(systemName: "archivebox"), children: backupSubmenuActions)
         
-        let setCertAction = UIAction(title: NSLocalizedString("Change Certificate", comment: ""), image: UIImage(systemName: "key.icloud")) { [weak self] _ in
-            self?.presentSetCertificateAlert(for: installedApp)
+        let setProfileAction = UIAction(title: NSLocalizedString("Change Provisioning Profile", comment: ""), image: UIImage(systemName: "doc.badge.gearshape")) { [weak self] _ in
+            self?.presentSetProfileAlert(for: installedApp)
         }
         
-        let resetCertAction = UIAction(title: NSLocalizedString("Reset Certificate", comment: ""), image: UIImage(systemName: "arrow.counterclockwise")) { [weak self] _ in
-            self?.resetCertificate(for: installedApp)
+        let resetProfileAction = UIAction(title: NSLocalizedString("Reset Provisioning Profile", comment: ""), image: UIImage(systemName: "arrow.counterclockwise")) { [weak self] _ in
+            self?.resetProfile(for: installedApp)
         }
         
-        var certSubmenuActions: [UIMenuElement] = [setCertAction]
-        if installedApp.certificateSerialNumber != nil {
-            certSubmenuActions.append(resetCertAction)
+        var profileSubmenuActions: [UIMenuElement] = [setProfileAction]
+        if ProfileManager.shared.getAssignedProfile(for: installedApp.bundleIdentifier) != nil || installedApp.certificateSerialNumber != nil {
+            profileSubmenuActions.append(resetProfileAction)
         }
-        let certificateMenu = UIMenu(title: NSLocalizedString("Certificate", comment: ""), image: UIImage(systemName: "key"), children: certSubmenuActions)
+        let profileMenu = UIMenu(title: NSLocalizedString("Provisioning Profile", comment: ""), image: UIImage(systemName: "doc.plaintext"), children: profileSubmenuActions)
         
         if installedApp.resignedBundleIdentifier.isAltStoreAppID
         {
-            actions = [refreshAction, resignAction, certificateMenu, changeIconMenu]
+            actions = [refreshAction, resignAction, profileMenu, changeIconMenu]
         }
         else
         {
@@ -2043,13 +2144,13 @@ extension MyAppsViewController
                 actions.append(openMenu)
                 actions.append(refreshAction)
                 actions.append(resignAction)
-                actions.append(certificateMenu)
+                actions.append(profileMenu)
             }
             else
             {
                 actions.append(activateAction)
                 actions.append(resignAction)
-                actions.append(certificateMenu)
+                actions.append(profileMenu)
             }
             
             if installedApp.isActive
@@ -2102,7 +2203,7 @@ extension MyAppsViewController
             openMenu,
             refreshAction,
             resignAction,
-            certificateMenu,
+            profileMenu,
             activateAction,
             jitAction,
             changeIconMenu,
@@ -2250,7 +2351,7 @@ extension MyAppsViewController: UICollectionViewDelegateFlowLayout
         
         func appIDsFooterSize() -> CGSize
         {
-            guard let _ = DatabaseManager.shared.activeTeam() else { return .zero }
+            guard let _ = self.activeTeam else { return .zero }
             
             // let indexPath = IndexPath(row: 0, section: section.rawValue)
             // let footerView = self.collectionView(collectionView, viewForSupplementaryElementOfKind: UICollectionView.elementKindSectionFooter, at: indexPath) as! InstalledAppsCollectionFooterView
@@ -2598,8 +2699,10 @@ extension MyAppsViewController: UIDocumentPickerDelegate
     {
         guard let fileURL = urls.first else { return }
         
-        self.sideloadApp(at: fileURL) { (result) in
-            debugLog("Sideloaded app at \(fileURL) with result: \(result)")
+        InstallAppDialog.present(ipaURL: fileURL, from: self) { [weak self] in
+            self?.sideloadApp(at: fileURL) { (result) in
+                debugLog("Sideloaded app at \(fileURL) with result: \(result)")
+            }
         }
     }
 }
@@ -2664,37 +2767,27 @@ extension MyAppsViewController: UIImagePickerControllerDelegate, UINavigationCon
 #endif
 
 extension MyAppsViewController {
-    private func presentSetCertificateAlert(for installedApp: InstalledApp) {
-        let picker = SignableCertificatesListViewController(installedApp: installedApp)
-        picker.onSelectCertificate = { [weak self] cert in
-            guard let self = self else { return }
-            
-            let binaryCert = CertificateManager.shared.getSigningCertificate(at: installedApp.fileURL)
-            if let binaryCert = binaryCert, cert.serialNumber == binaryCert.serialNumber {
-                let alert = UIAlertController(
-                    title: NSLocalizedString("Same Certificate", comment: ""),
-                    message: NSLocalizedString("The selected certificate is already being used for this app. Please use the Resign option instead.", comment: ""),
-                    preferredStyle: .alert
-                )
-                alert.addAction(UIAlertAction(title: NSLocalizedString("OK", comment: ""), style: .default))
-                self.present(alert, animated: true)
-            } else {
-                self.setCertificate(cert, for: installedApp)
-            }
+    private func presentSetProfileAlert(for installedApp: InstalledApp) {
+        let picker = SelectProfileViewController(installedApp: installedApp)
+        picker.onSelectProfile = { [weak self] profile in
+            self?.setProfile(profile, for: installedApp)
         }
         picker.present(from: self)
     }
-    
-    private func setCertificate(_ cert: ALTCertificate, for installedApp: InstalledApp) {
+
+    private func setProfile(_ profile: ALTProvisioningProfile, for installedApp: InstalledApp) {
+        ProfileManager.shared.setAssignedProfile(profile, for: installedApp.bundleIdentifier)
+        let matchingCert = ProfileManager.shared.getMatchingCertificate(for: profile)
         let context = DatabaseManager.shared.viewContext
         context.performAndWait {
-            installedApp.certificateSerialNumber = cert.serialNumber
+            installedApp.certificateSerialNumber = matchingCert?.serialNumber
             try? context.save()
         }
         self.resign(installedApp)
     }
-    
-    private func resetCertificate(for installedApp: InstalledApp) {
+
+    private func resetProfile(for installedApp: InstalledApp) {
+        ProfileManager.shared.setAssignedProfile(nil, for: installedApp.bundleIdentifier)
         let context = DatabaseManager.shared.viewContext
         context.performAndWait {
             installedApp.certificateSerialNumber = nil

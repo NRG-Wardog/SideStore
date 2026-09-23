@@ -4,16 +4,6 @@
 <dict>
 	<key>ALTAnisetteURL</key>
 	<string>https://ani.sidestore.io</string>
-	<key>ALTAppGroups</key>
-	<array>
-		<string>group.$(APP_GROUP_IDENTIFIER)</string>
-	</array>
-	<key>ALTDeviceID</key>
-	<string>XXXXXXXX-XXXXXXXXXXXXXXXX</string>
-	<key>ALTPairingFile</key>
-	<string>&lt;insert pairing file here&gt;</string>
-	<key>ALTServerID</key>
-	<string>1F7D5B55-79CE-4546-A029-D4DDC4AF3B6D</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDocumentTypes</key>
@@ -90,6 +80,7 @@
 	<array>
 		<string>sidestore-com.SideStore.SideStore</string>
 		<string>sidestore-com.SideStore.SideStore.Beta</string>
+		<string>localdevvpn</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
@@ -240,9 +231,14 @@
 	<array>
 		<string>audio</string>
 		<string>fetch</string>
+		<string>location</string>
 		<string>remote-notification</string>
 		<string>processing</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SideStore uses location updates to keep background operations active.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>SideStore uses location updates to keep background operations active.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

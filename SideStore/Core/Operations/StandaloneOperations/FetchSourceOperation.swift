@@ -100,7 +100,7 @@ final class FetchSourceOperation: BaseStandaloneOperation<StandaloneOperationCon
                 } else if let data = data, let response = response {
                     continuation.resume(returning: (data, response))
                 } else {
-                    continuation.resume(throwing: OperationError.unknown())
+                    continuation.resume(throwing: OperationError.invalidResponse(reason: "\(URLError(.badServerResponse).localizedDescription): Server returned no data or response."))
                 }
             }
             dataTask.resume()

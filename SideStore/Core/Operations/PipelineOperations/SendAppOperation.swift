@@ -47,7 +47,7 @@ final class SendAppOperation: BasePipelineOperation<InstallAppOperationContext, 
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
 
             debugLog("[SendAppOperation] Failed to send app at \(self.context.ipaURL?.path ?? appURL.path): \(error)")
-            throw OperationError.appNotFound(name: bundleIdentifier)
+            throw error
         }
         return resignedAppBundle
     }

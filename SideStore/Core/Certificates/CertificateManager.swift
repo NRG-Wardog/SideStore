@@ -310,10 +310,10 @@ public final class CertificateManager: @unchecked Sendable {
     }
 
     // Reads the Mach-O binary contents of an app bundle to extract its leaf signing certificate.
-    public func readBinaryCertificate(at url: URL) -> ALTX509Certificate? {
+    private func readBinaryCertificate(at url: URL) -> ALTX509Certificate? {
         let executableURL: URL
         if url.pathExtension == "app" {
-            guard let execURL = Bundle(url: url)?.executableURL else {
+            guard let execURL = ALTApplication(fileURL: url)?.executableURL else {
                 debugLog("[CertificateManager] readBinaryCertificate: Failed to locate executable in bundle: \(url.path)")
                 return nil
             }
@@ -360,45 +360,42 @@ public final class CertificateManager: @unchecked Sendable {
         return nil
     }
 
-    public func getSigningCertificate(at url: URL, withPlistFallback: Bool = true) -> ALTX509Certificate? {
-        guard let appBundle = ALTApplication(fileURL: url) else {
-            verboseLog("[CertificateManager] Could not resolve app bundle for \(url.path)")
+    public func getSigningCertificate(at url: URL) -> ALTX509Certificate? {
+        verboseLog("[CertificateManager] Step 1 (Mach-O): Checking \(url.path)...")
+        if let binaryX509 = readBinaryCertificate(at: url) {
+            debugLog("[CertificateManager] getSigningCertificate: Loaded signing certificate from Mach-O \(url.path) (serial: \(binaryX509.serialNumber)).")
+            return binaryX509
+        } else {
+            verboseLog("[CertificateManager] Step 1 (Mach-O): No valid leaf certificate extracted from Mach-O at \(url.path).")
             return nil
         }
+    }
 
-        let bundleID = appBundle.bundleIdentifier
-        let isSelf = appBundle.isAltStoreApp
+    public func getSigningCertificate(for app: InstalledAppProtocol) -> ALTX509Certificate? {
+        let bundleID = app.bundleIdentifier
+        let isSelf = app.resignedBundleIdentifier.isAltStoreAppID || app.bundleIdentifier.isAltStoreAppID
 
-        verboseLog("[CertificateManager] getSigningCertificate started for url: \(url.path), isSelf: \(isSelf), bundleID: \(bundleID)")
+        verboseLog("[CertificateManager] getSigningCertificate started for app: \(app.name), isSelf: \(isSelf), bundleID: \(bundleID)")
 
         // STEP 1: Mach-O Binary Check (Only for SideStore itself)
         if isSelf {
-            let bundleURL = Bundle.Info.activeBundleURL
-            verboseLog("[CertificateManager] Step 1 (Mach-O): Checking \(bundleURL.path)...")
-            if let binaryX509 = readBinaryCertificate(at: bundleURL) {
-                debugLog("[CertificateManager] getSigningCertificate: Loaded signing certificate from main bundle Mach-O (serial: \(binaryX509.serialNumber)).")
-                return binaryX509
-            } else {
-                verboseLog("[CertificateManager] Step 1 (Mach-O): No valid leaf certificate extracted from Mach-O.")
-            }
-        } else {
-            // STEP 2: App Group Cached Certificate Check (For third-party apps)
-            let appDirectory = InstalledApp.appsDirectoryURL.appendingPathComponent(bundleID)
-            let certURL = appDirectory.appendingPathComponent("signing_certificate.der")
-            verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): Checking \(appDirectory.path)...")
-
-            if FileManager.default.fileExists(atPath: certURL.path) {
-                if let derData = try? Data(contentsOf: certURL), let cert = ALTX509Certificate(data: derData) {
-                    debugLog("[CertificateManager] getSigningCertificate: Loaded cached signing certificate from App Group \(certURL.path) (serial: \(cert.serialNumber))")
-                    return cert
-                } else {
-                    verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): File exists at \(certURL.path) but failed to parse.")
-                }
-            }
-            verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): No cached certificate found in App Group at \(appDirectory.path).")
+            return self.getSigningCertificate(at: Bundle.Info.activeBundleURL)
         }
 
-        verboseLog("[CertificateManager] getSigningCertificate: No signing certificate found for \(url.path)")
+        // STEP 2: App Group Cached Certificate Check (For third-party apps)
+        let certURL = app.signingCertificateURL
+        verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): Checking \(certURL.path)...")
+
+        if FileManager.default.fileExists(atPath: certURL.path) {
+            if let derData = try? Data(contentsOf: certURL), let cert = ALTX509Certificate(data: derData) {
+                debugLog("[CertificateManager] getSigningCertificate: Loaded cached signing certificate from App Group \(certURL.path) (serial: \(cert.serialNumber))")
+                return cert
+            } else {
+                verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): File exists at \(certURL.path) but failed to parse.")
+            }
+        }
+        verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): No cached certificate found in App Group at \(certURL.path).")
+
         return nil
     }
 

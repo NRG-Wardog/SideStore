@@ -10,6 +10,11 @@ import SwiftUI
 import SideSign
 import CodeSignKit
 
+struct ShareableURLItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
 struct AppInfoView: View {
     let installedApp: InstalledApp
     @Environment(\.presentationMode) var presentationMode
@@ -17,23 +22,68 @@ struct AppInfoView: View {
     
     @State private var isShowingToast: Bool = false
     @State private var toastMessage: String = ""
+    @State private var showResignedProfile: Bool = true
+    @State private var showResignedInfoPlist: Bool = true
+    #if !os(tvOS)
+    @State private var shareSheetItem: ShareableURLItem? = nil
+    #endif
+
+    private var isSideStoreSelf: Bool {
+        installedApp.resignedBundleIdentifier.isAltStoreAppID
+    }
     
     private var appBundleURL: URL {
-        if installedApp.resignedBundleIdentifier.isAltStoreAppID {
+        if isSideStoreSelf {
             return Bundle.Info.activeBundleURL
         } else {
             return installedApp.fileURL
         }
     }
     
-    private var provisioningProfile: ALTProvisioningProfile? {
-        let profileURL = appBundleURL.appendingPathComponent("embedded.mobileprovision")
-        return try? ALTProvisioningProfile(url: profileURL)
+    private var resignedProfileURL: URL? {
+        if isSideStoreSelf {
+            return Bundle.Info.activeBundleURL.appendingPathComponent("embedded.mobileprovision")
+        }
+        return installedApp.customProvisioningProfileURL
     }
     
-    private var infoPlist: [String: Any]? {
-        let plistURL = appBundleURL.appendingPathComponent("Info.plist")
-        return NSDictionary(contentsOf: plistURL) as? [String: Any]
+    private var bundleProfileURL: URL? {
+        let url = appBundleURL.appendingPathComponent("embedded.mobileprovision")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+    
+    private var activeProfileURL: URL? {
+        showResignedProfile ? resignedProfileURL : bundleProfileURL
+    }
+    
+    private var provisioningProfile: ALTProvisioningProfile? {
+        guard let url = activeProfileURL else { return nil }
+        return try? ALTProvisioningProfile(url: url)
+    }
+    
+    private var resignedInfoPlistURL: URL? {
+        if isSideStoreSelf {
+            return InfoPlistParser.resolveInfoPlistURL(for: Bundle.Info.activeBundleURL)
+        }
+        return installedApp.customInfoPlistURL
+    }
+    
+    private var bundleInfoPlistURL: URL? {
+        let url = InfoPlistParser.resolveInfoPlistURL(for: appBundleURL)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+    
+    private var activeInfoPlistURL: URL? {
+        showResignedInfoPlist ? resignedInfoPlistURL : bundleInfoPlistURL
+    }
+    
+    private var infoPlistParser: InfoPlistParser? {
+        guard let url = activeInfoPlistURL else { return nil }
+        return try? InfoPlistParser(plistURL: url)
+    }
+
+    private var infoPlist: [String: any Sendable]? {
+        infoPlistParser?.rawDictionary
     }
     
     var body: some View {
@@ -97,25 +147,118 @@ struct AppInfoView: View {
                 }
                 
                 // Provisioning Profile Section
-                if let profile = provisioningProfile {
-                    Section(header: Text("Provisioning Profile")) {
-                        NavigationLink(destination: ProvisioningProfileDetailView(profile: profile, certificatesViewModel: certificatesViewModel)) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(profile.name)
-                                    .font(.subheadline)
-                                Text("UUID: \(profile.uuid.uuidString)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                if resignedProfileURL != nil || bundleProfileURL != nil {
+                    Section(header: HStack {
+                        Text(showResignedProfile ? "Provisioning Profile (Resigned)" : "Provisioning Profile (Bundle)")
+                        Spacer()
+                        SwiftUI.Button {
+                            showResignedProfile.toggle()
+                        } label: {
+                            Image(systemName: showResignedProfile ? "checkmark.circle.fill" : "circle")
+                                .font(.subheadline)
+                                .foregroundColor(showResignedProfile ? .blue : .secondary)
+                        }
+                        .buttonStyle(BorderlessButtonStyle())
+                    }) {
+                        if let profile = provisioningProfile {
+                            NavigationLink(destination: ProvisioningProfileDetailView(profile: profile, profileURL: activeProfileURL, certificatesViewModel: certificatesViewModel)) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(profile.name)
+                                        .font(.subheadline)
+                                    Text("UUID: \(profile.uuid.uuidString)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            #if !os(tvOS)
+                            .contextMenu {
+                                SwiftUI.Button {
+                                    showResignedProfile.toggle()
+                                } label: {
+                                    Label(showResignedProfile ? "Switch to Bundle Profile" : "Switch to Resigned Profile",
+                                          systemImage: showResignedProfile ? "circle" : "checkmark.circle.fill")
+                                }
+                                if let url = activeProfileURL {
+                                    SwiftUI.Button {
+                                        shareSheetItem = ShareableURLItem(url: url)
+                                    } label: {
+                                        Label("Share Profile", systemImage: "square.and.arrow.up")
+                                    }
+                                }
+                            }
+                            #endif
+                        } else {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(showResignedProfile ? "No Resigned Profile Cached" : "No Bundle Profile Found")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                    Text("Tap toggle to view \(showResignedProfile ? "bundle" : "resigned") profile")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                SwiftUI.Button("Switch") {
+                                    showResignedProfile.toggle()
+                                }
+                                .font(.caption)
                             }
                         }
                     }
                 }
                 
                 // Info.plist Section
-                if let plist = infoPlist {
-                    Section(header: Text("Info.plist")) {
-                        NavigationLink(destination: InfoPlistContainerView(plist: plist)) {
-                            Text("View Info.plist (\(plist.count) keys)")
+                if resignedInfoPlistURL != nil || bundleInfoPlistURL != nil {
+                    Section(header: HStack {
+                        Text(showResignedInfoPlist ? "Info.plist (Resigned)" : "Info.plist (Bundle)")
+                        Spacer()
+                        SwiftUI.Button {
+                            showResignedInfoPlist.toggle()
+                        } label: {
+                            Image(systemName: showResignedInfoPlist ? "checkmark.circle.fill" : "circle")
+                                .font(.subheadline)
+                                .foregroundColor(showResignedInfoPlist ? .blue : .secondary)
+                        }
+                        .buttonStyle(BorderlessButtonStyle())
+                    }) {
+                        if let plist = infoPlist {
+                            NavigationLink(destination: InfoPlistContainerView(plist: plist, title: showResignedInfoPlist ? "Info.plist (Resigned)" : "Info.plist (Bundle)", plistURL: activeInfoPlistURL)) {
+                                Text("View Info.plist (\(plist.count) keys)")
+                                    .font(.subheadline)
+                            }
+                            #if !os(tvOS)
+                            .contextMenu {
+                                SwiftUI.Button {
+                                    showResignedInfoPlist.toggle()
+                                } label: {
+                                    Label(showResignedInfoPlist ? "Switch to Bundle Info.plist" : "Switch to Resigned Info.plist",
+                                          systemImage: showResignedInfoPlist ? "circle" : "checkmark.circle.fill")
+                                }
+                                if let url = activeInfoPlistURL {
+                                    SwiftUI.Button {
+                                        shareSheetItem = ShareableURLItem(url: url)
+                                    } label: {
+                                        Label("Share Info.plist", systemImage: "square.and.arrow.up")
+                                    }
+                                }
+                            }
+                            #endif
+                        } else {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(showResignedInfoPlist ? "No Resigned Info.plist Cached" : "No Bundle Info.plist Found")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                    Text("Tap toggle to view \(showResignedInfoPlist ? "bundle" : "resigned") Info.plist")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                SwiftUI.Button("Switch") {
+                                    showResignedInfoPlist.toggle()
+                                }
+                                .font(.caption)
+                            }
                         }
                     }
                 }
@@ -157,6 +300,11 @@ struct AppInfoView: View {
             .overlay(
                 AppInfoToastView(isShowing: $isShowingToast, message: toastMessage)
             )
+            #if !os(tvOS)
+            .sheet(item: $shareSheetItem) { item in
+                ActivityViewController(items: [item.url])
+            }
+            #endif
         }
     }
     
@@ -172,9 +320,25 @@ struct AppInfoView: View {
 
 struct ProvisioningProfileDetailView: View {
     let profile: ALTProvisioningProfile
+    var profileURL: URL? = nil
     @ObservedObject var certificatesViewModel: CertificatesViewModel
     @State private var isShowingToast = false
     @State private var toastMessage = ""
+    #if !os(tvOS)
+    @State private var showingShareSheet = false
+    #endif
+    
+    private var shareURL: URL? {
+        if let profileURL = profileURL, FileManager.default.fileExists(atPath: profileURL.path) {
+            return profileURL
+        }
+        let sanitizedName = profile.name.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "(", with: "").replacingOccurrences(of: ")", with: "")
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(sanitizedName).mobileprovision")
+        if (try? profile.data.write(to: tempURL, options: .atomic)) != nil {
+            return tempURL
+        }
+        return nil
+    }
     
     var body: some View {
         List {
@@ -225,6 +389,20 @@ struct ProvisioningProfileDetailView: View {
         }
         #if !os(tvOS)
         .listStyle(InsetGroupedListStyle())
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                SwiftUI.Button {
+                    showingShareSheet = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+            }
+        }
+        .sheet(isPresented: $showingShareSheet) {
+            if let url = shareURL {
+                ActivityViewController(items: [url])
+            }
+        }
         #else
         .listStyle(GroupedListStyle())
         #endif
@@ -400,6 +578,12 @@ struct ExtensionInfoView: View {
     let parentAppURL: URL
     @ObservedObject var certificatesViewModel: CertificatesViewModel
 
+    @State private var showResignedProfile: Bool = true
+    @State private var showResignedInfoPlist: Bool = true
+    #if !os(tvOS)
+    @State private var shareSheetItem: ShareableURLItem? = nil
+    #endif
+
     // Resolve the .appex bundle URL by scanning PlugIns/ and matching bundle ID
     private var extensionURL: URL? {
         let pluginsDir = parentAppURL.appendingPathComponent("PlugIns")
@@ -411,9 +595,8 @@ struct ExtensionInfoView: View {
 
         // Match by bundle ID in Info.plist
         for url in contents where url.pathExtension == "appex" {
-            let plistURL = url.appendingPathComponent("Info.plist")
-            if let dict = NSDictionary(contentsOf: plistURL) as? [String: Any],
-               let bid = dict["CFBundleIdentifier"] as? String,
+            if let parser = try? InfoPlistParser(bundleURL: url),
+               let bid = parser.bundleIdentifier,
                bid == appExtension.resignedBundleIdentifier || bid == appExtension.bundleIdentifier {
                 return url
             }
@@ -422,14 +605,46 @@ struct ExtensionInfoView: View {
         return contents.first { $0.pathExtension == "appex" && $0.deletingPathExtension().lastPathComponent == appExtension.name }
     }
 
-    private var provisioningProfile: ALTProvisioningProfile? {
-        guard let url = extensionURL else { return nil }
-        return try? ALTProvisioningProfile(url: url.appendingPathComponent("embedded.mobileprovision"))
+    private var resignedProfileURL: URL? {
+        appExtension.customProvisioningProfileURL
     }
 
-    private var infoPlist: [String: Any]? {
+    private var bundleProfileURL: URL? {
         guard let url = extensionURL else { return nil }
-        return NSDictionary(contentsOf: url.appendingPathComponent("Info.plist")) as? [String: Any]
+        let profileURL = url.appendingPathComponent("embedded.mobileprovision")
+        return FileManager.default.fileExists(atPath: profileURL.path) ? profileURL : nil
+    }
+
+    private var activeProfileURL: URL? {
+        showResignedProfile ? resignedProfileURL : bundleProfileURL
+    }
+
+    private var provisioningProfile: ALTProvisioningProfile? {
+        guard let url = activeProfileURL else { return nil }
+        return try? ALTProvisioningProfile(url: url)
+    }
+
+    private var resignedInfoPlistURL: URL? {
+        appExtension.customInfoPlistURL
+    }
+
+    private var bundleInfoPlistURL: URL? {
+        guard let url = extensionURL else { return nil }
+        let plistURL = InfoPlistParser.resolveInfoPlistURL(for: url)
+        return FileManager.default.fileExists(atPath: plistURL.path) ? plistURL : nil
+    }
+
+    private var activeInfoPlistURL: URL? {
+        showResignedInfoPlist ? resignedInfoPlistURL : bundleInfoPlistURL
+    }
+
+    private var infoPlistParser: InfoPlistParser? {
+        guard let url = activeInfoPlistURL else { return nil }
+        return try? InfoPlistParser(plistURL: url)
+    }
+
+    private var infoPlist: [String: any Sendable]? {
+        infoPlistParser?.rawDictionary
     }
 
     // Nested sub-extensions inside this .appex (rare but possible)
@@ -495,29 +710,121 @@ struct ExtensionInfoView: View {
             }
 
             // Provisioning Profile
-            if let profile = provisioningProfile {
-                Section(header: Text("Provisioning Profile")) {
-                    NavigationLink(destination: ProvisioningProfileDetailView(profile: profile, certificatesViewModel: certificatesViewModel)) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(profile.name)
-                                .font(.subheadline)
-                            Text("UUID: \(profile.uuid.uuidString)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("Expires: \(formatDate(profile.expirationDate))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+            if resignedProfileURL != nil || bundleProfileURL != nil {
+                Section(header: HStack {
+                    Text(showResignedProfile ? "Provisioning Profile (Resigned)" : "Provisioning Profile (Bundle)")
+                    Spacer()
+                    SwiftUI.Button {
+                        showResignedProfile.toggle()
+                    } label: {
+                        Image(systemName: showResignedProfile ? "checkmark.circle.fill" : "circle")
+                            .font(.subheadline)
+                            .foregroundColor(showResignedProfile ? .blue : .secondary)
+                    }
+                    .buttonStyle(BorderlessButtonStyle())
+                }) {
+                    if let profile = provisioningProfile {
+                        NavigationLink(destination: ProvisioningProfileDetailView(profile: profile, profileURL: activeProfileURL, certificatesViewModel: certificatesViewModel)) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(profile.name)
+                                    .font(.subheadline)
+                                Text("UUID: \(profile.uuid.uuidString)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("Expires: \(formatDate(profile.expirationDate))")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        #if !os(tvOS)
+                        .contextMenu {
+                            SwiftUI.Button {
+                                showResignedProfile.toggle()
+                            } label: {
+                                Label(showResignedProfile ? "Switch to Bundle Profile" : "Switch to Resigned Profile",
+                                      systemImage: showResignedProfile ? "circle" : "checkmark.circle.fill")
+                            }
+                            if let url = activeProfileURL {
+                                SwiftUI.Button {
+                                    shareSheetItem = ShareableURLItem(url: url)
+                                } label: {
+                                    Label("Share Profile", systemImage: "square.and.arrow.up")
+                                }
+                            }
+                        }
+                        #endif
+                    } else {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(showResignedProfile ? "No Resigned Profile Cached" : "No Bundle Profile Found")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                Text("Tap toggle to view \(showResignedProfile ? "bundle" : "resigned") profile")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            SwiftUI.Button("Switch") {
+                                showResignedProfile.toggle()
+                            }
+                            .font(.caption)
                         }
                     }
                 }
             }
 
             // Info.plist
-            if let plist = infoPlist {
-                Section(header: Text("Info.plist")) {
-                    NavigationLink(destination: InfoPlistContainerView(plist: plist)) {
-                        Text("View Info.plist (\(plist.count) keys)")
+            if resignedInfoPlistURL != nil || bundleInfoPlistURL != nil {
+                Section(header: HStack {
+                    Text(showResignedInfoPlist ? "Info.plist (Resigned)" : "Info.plist (Bundle)")
+                    Spacer()
+                    SwiftUI.Button {
+                        showResignedInfoPlist.toggle()
+                    } label: {
+                        Image(systemName: showResignedInfoPlist ? "checkmark.circle.fill" : "circle")
                             .font(.subheadline)
+                            .foregroundColor(showResignedInfoPlist ? .blue : .secondary)
+                    }
+                    .buttonStyle(BorderlessButtonStyle())
+                }) {
+                    if let plist = infoPlist {
+                        NavigationLink(destination: InfoPlistContainerView(plist: plist, title: showResignedInfoPlist ? "Info.plist (Resigned)" : "Info.plist (Bundle)", plistURL: activeInfoPlistURL)) {
+                            Text("View Info.plist (\(plist.count) keys)")
+                                .font(.subheadline)
+                        }
+                        #if !os(tvOS)
+                        .contextMenu {
+                            SwiftUI.Button {
+                                showResignedInfoPlist.toggle()
+                            } label: {
+                                Label(showResignedInfoPlist ? "Switch to Bundle Info.plist" : "Switch to Resigned Info.plist",
+                                      systemImage: showResignedInfoPlist ? "circle" : "checkmark.circle.fill")
+                            }
+                            if let url = activeInfoPlistURL {
+                                SwiftUI.Button {
+                                    shareSheetItem = ShareableURLItem(url: url)
+                                } label: {
+                                    Label("Share Info.plist", systemImage: "square.and.arrow.up")
+                                }
+                            }
+                        }
+                        #endif
+                    } else {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(showResignedInfoPlist ? "No Resigned Info.plist Cached" : "No Bundle Info.plist Found")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                Text("Tap toggle to view \(showResignedInfoPlist ? "bundle" : "resigned") Info.plist")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            SwiftUI.Button("Switch") {
+                                showResignedInfoPlist.toggle()
+                            }
+                            .font(.caption)
+                        }
                     }
                 }
             }
@@ -526,11 +833,11 @@ struct ExtensionInfoView: View {
             if !subExtensions.isEmpty {
                 Section(header: Text("Nested Extensions (\(subExtensions.count))")) {
                     ForEach(subExtensions, id: \.path) { subURL in
-                        let subPlist = NSDictionary(contentsOf: subURL.appendingPathComponent("Info.plist")) as? [String: Any]
-                        let subName = subPlist?["CFBundleDisplayName"] as? String
-                            ?? subPlist?["CFBundleName"] as? String
+                        let subParser = try? InfoPlistParser(bundleURL: subURL)
+                        let subName = subParser?.displayName
+                            ?? subParser?.bundleName
                             ?? subURL.deletingPathExtension().lastPathComponent
-                        let subBundleID = subPlist?["CFBundleIdentifier"] as? String ?? "Unknown"
+                        let subBundleID = subParser?.bundleIdentifier ?? "Unknown"
                         NavigationLink(destination: BundleInspectorView(bundleURL: subURL, certificatesViewModel: certificatesViewModel)) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(subName)
@@ -546,6 +853,9 @@ struct ExtensionInfoView: View {
         }
         #if !os(tvOS)
         .listStyle(InsetGroupedListStyle())
+        .sheet(item: $shareSheetItem) { item in
+            ActivityViewController(items: [item.url])
+        }
         #else
         .listStyle(GroupedListStyle())
         #endif
@@ -571,8 +881,12 @@ struct BundleInspectorView: View {
         try? ALTProvisioningProfile(url: bundleURL.appendingPathComponent("embedded.mobileprovision"))
     }
 
-    private var infoPlist: [String: Any]? {
-        NSDictionary(contentsOf: bundleURL.appendingPathComponent("Info.plist")) as? [String: Any]
+    private var infoPlistParser: InfoPlistParser? {
+        try? InfoPlistParser(bundleURL: bundleURL)
+    }
+
+    private var infoPlist: [String: any Sendable]? {
+        infoPlistParser?.rawDictionary
     }
 
     private var subExtensions: [URL] {
@@ -632,7 +946,7 @@ struct BundleInspectorView: View {
 
             if let profile = provisioningProfile {
                 Section(header: Text("Provisioning Profile")) {
-                    NavigationLink(destination: ProvisioningProfileDetailView(profile: profile, certificatesViewModel: certificatesViewModel)) {
+                    NavigationLink(destination: ProvisioningProfileDetailView(profile: profile, profileURL: bundleURL.appendingPathComponent("embedded.mobileprovision"), certificatesViewModel: certificatesViewModel)) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(profile.name)
                                 .font(.subheadline)
@@ -649,7 +963,7 @@ struct BundleInspectorView: View {
 
             if let plist = infoPlist {
                 Section(header: Text("Info.plist")) {
-                    NavigationLink(destination: InfoPlistContainerView(plist: plist)) {
+                    NavigationLink(destination: InfoPlistContainerView(plist: plist, plistURL: InfoPlistParser.resolveInfoPlistURL(for: bundleURL))) {
                         Text("View Info.plist (\(plist.count) keys)")
                             .font(.subheadline)
                     }
@@ -659,11 +973,11 @@ struct BundleInspectorView: View {
             if !subExtensions.isEmpty {
                 Section(header: Text("Nested Extensions (\(subExtensions.count))")) {
                     ForEach(subExtensions, id: \.path) { subURL in
-                        let subPlist = NSDictionary(contentsOf: subURL.appendingPathComponent("Info.plist")) as? [String: Any]
-                        let subName = subPlist?["CFBundleDisplayName"] as? String
-                            ?? subPlist?["CFBundleName"] as? String
+                        let subParser = try? InfoPlistParser(bundleURL: subURL)
+                        let subName = subParser?.displayName
+                            ?? subParser?.bundleName
                             ?? subURL.deletingPathExtension().lastPathComponent
-                        let subBundleID = subPlist?["CFBundleIdentifier"] as? String ?? "Unknown"
+                        let subBundleID = subParser?.bundleIdentifier ?? "Unknown"
                         NavigationLink(destination: BundleInspectorView(bundleURL: subURL, certificatesViewModel: certificatesViewModel)) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(subName)

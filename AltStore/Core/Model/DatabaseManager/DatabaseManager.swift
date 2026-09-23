@@ -40,7 +40,7 @@ public class DatabaseManager: @unchecked Sendable
 
     private init()
     {
-        self.persistentContainer = PersistentContainer(name: "AltStore", bundle: Bundle(for: DatabaseManager.self))
+        self.persistentContainer = PersistentContainer(name: AppConstants.Database.name, bundle: Bundle(for: DatabaseManager.self))
         self.persistentContainer.preferredMergePolicy = MergePolicy()
         
         let observer = Unmanaged.passUnretained(self).toOpaque()
@@ -54,7 +54,7 @@ public class DatabaseManager: @unchecked Sendable
             let container = Self.shared.persistentContainer
             
             var databaseStore = container.persistentStoreCoordinator.persistentStores.first
-            let databaseStoreURL = databaseStore?.url ?? PersistentContainer.defaultDirectoryURL().appendingPathComponent("AltStore.sqlite")
+            let databaseStoreURL = databaseStore?.url ?? PersistentContainer.defaultDirectoryURL().appendingPathComponent(AppConstants.Database.fileName)
             
             // Reset the managed object context
             Self.shared.persistentContainer.viewContext.reset()
@@ -120,7 +120,6 @@ public class DatabaseManager: @unchecked Sendable
             CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), .willMigrateDatabase, nil, nil, true)
         }
 
-        try await self.migrateDatabaseToAppGroupIfNeeded()
         try await self.persistentContainer.loadPersistentStores()
         try await self.prepareDatabase()
     }
@@ -184,7 +183,7 @@ public class DatabaseManager: @unchecked Sendable
         return self.persistentContainer.viewContext
     }
     
-    public func activeAccount(in context: NSManagedObjectContext = DatabaseManager.shared.viewContext) -> Account?
+    public func activeAccount(in context: NSManagedObjectContext) -> Account?
     {
         let predicate = NSPredicate(format: "%K == YES", #keyPath(Account.isActiveAccount))
         
@@ -192,7 +191,7 @@ public class DatabaseManager: @unchecked Sendable
         return activeAccount
     }
     
-    public func activeTeam(in context: NSManagedObjectContext = DatabaseManager.shared.viewContext) -> Team?
+    public func activeTeam(in context: NSManagedObjectContext) -> Team?
     {
         let predicate = NSPredicate(format: "%K == YES", #keyPath(Team.isActiveTeam))
         
@@ -328,58 +327,28 @@ public class DatabaseManager: @unchecked Sendable
             
             installedApp.appExtensions = installedExtensions
             
-            let fileURL = installedApp.fileURL
+            let bundleURL = Bundle.Info.activeBundleURL
+            let altstoreAppID = StoreApp.altstoreAppID
+            let extensionBundleIDMap = installedExtensions.reduce(into: [String: String]()) { dict, ext in
+                dict[ext.resignedBundleIdentifier] = ext.bundleIdentifier
+            }
             
-            #if DEBUG
-            let replaceCachedApp = true
-            #else
-            let replaceCachedApp = !FileManager.default.fileExists(atPath: fileURL.path) || installedApp.version != localAppBundle.version || installedApp.buildVersion != localAppBundle.buildVersion
-            #endif
-            
-            if replaceCachedApp
-            {
-                let fileURL = installedApp.fileURL
-                let bundleURL = Bundle.Info.activeBundleURL
-                let altstoreAppID = StoreApp.altstoreAppID
-                let extensionBundleIDMap = installedExtensions.reduce(into: [String: String]()) { dict, ext in
-                    dict[ext.resignedBundleIdentifier] = ext.bundleIdentifier
-                }
-                
-                Task.detached(priority: .background) {
-                    func update(_ bundle: Bundle, bundleID: String) throws
-                    {
-                        let infoPlistURL = bundle.bundleURL.appendingPathComponent("Info.plist")
-                        
-                        guard var infoDictionary = bundle.completeInfoDictionary else { throw ALTError(.missingInfoPlist) }
-                        infoDictionary[kCFBundleIdentifierKey as String] = bundleID
-                        try (infoDictionary as NSDictionary).write(to: infoPlistURL)
+            FileManager.default.prepareTemporaryURL { temporaryFileURL in
+                do {
+                    try FileManager.default.copyItem(at: bundleURL, to: temporaryFileURL)
+                    
+                    guard let tempAppBundle = ALTApplication(fileURL: temporaryFileURL) else { throw ALTError(.invalidApp) }
+                    try tempAppBundle.updateInfoPlist(with: [kCFBundleIdentifierKey as String: altstoreAppID])
+                    
+                    for appExtension in tempAppBundle.appExtensions {
+                        guard let originalBundleID = extensionBundleIDMap[appExtension.bundleIdentifier] else { throw ALTError(.invalidApp) }
+                        try appExtension.updateInfoPlist(with: [kCFBundleIdentifierKey as String: originalBundleID])
                     }
                     
-                    FileManager.default.prepareTemporaryURL() { (temporaryFileURL) in
-                        do
-                        {
-                            try FileManager.default.copyItem(at: bundleURL, to: temporaryFileURL)
-                            
-                            guard let appBundle = Bundle(url: temporaryFileURL) else { throw ALTError(.invalidApp) }
-                            try update(appBundle, bundleID: altstoreAppID)
-                            
-                            if let tempAppBundle = ALTApplication(fileURL: temporaryFileURL)
-                            {
-                                for appExtension in tempAppBundle.appExtensions
-                                {
-                                    guard let extensionBundle = Bundle(url: appExtension.fileURL) else { throw ALTError(.invalidApp) }
-                                    guard let originalBundleID = extensionBundleIDMap[appExtension.bundleIdentifier] else { throw ALTError(.invalidApp) }
-                                    try update(extensionBundle, bundleID: originalBundleID)
-                                }
-                            }
-                            
-                            try FileManager.default.copyItem(at: temporaryFileURL, to: fileURL, shouldReplace: true)
-                        }
-                        catch
-                        {
-                            debugLog("Failed to copy SideStore app bundle to its proper location. \(error)")
-                        }
-                    }
+                    let (signature, _) = try CacheAppOperation.cachePayload(for: temporaryFileURL)
+                    installedApp.appBundleFingerprint = signature
+                } catch {
+                    debugLog("Failed to cache SideStore app bundle: \(error)")
                 }
             }
             
@@ -451,73 +420,6 @@ public class DatabaseManager: @unchecked Sendable
         if let provisioningProfile = localAppBundle.provisioningProfile {
             installedApp.refreshedDate = provisioningProfile.creationDate
             installedApp.expirationDate = provisioningProfile.expirationDate
-        }
-    }
-    
-    private func migrateDatabaseToAppGroupIfNeeded() async throws
-    {
-        // Only migrate if we haven't migrated yet and there's a valid AltStore app group.
-        guard UserDefaults.standard.requiresAppGroupMigration && Bundle.main.altstoreAppGroup != nil else { return }
-
-        let previousDatabaseURL = PersistentContainer.legacyDirectoryURL().appendingPathComponent("AltStore.sqlite")
-        let databaseURL = PersistentContainer.defaultDirectoryURL().appendingPathComponent("AltStore.sqlite")
-        
-        let previousAppsDirectoryURL = InstalledApp.legacyAppsDirectoryURL
-        let appsDirectoryURL = InstalledApp.appsDirectoryURL
-        
-        let databaseIntent = NSFileAccessIntent.writingIntent(with: databaseURL, options: [.forReplacing])
-        let appsIntent = NSFileAccessIntent.writingIntent(with: appsDirectoryURL, options: [.forReplacing])
-        
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            self.coordinator.coordinate(with: [databaseIntent, appsIntent], queue: self.coordinatorQueue) { (error) in
-                do
-                {
-                    if let error = error
-                    {
-                        throw error
-                    }
-                    
-                    let description = NSPersistentStoreDescription(url: previousDatabaseURL)
-                    
-                    // Disable WAL to remove extra files automatically during migration.
-                    description.setOption(["journal_mode": "DELETE"] as NSDictionary, forKey: NSSQLitePragmasOption)
-                    
-                    let persistentStoreCoordinator = NSPersistentStoreCoordinator(managedObjectModel: self.persistentContainer.managedObjectModel)
-                    
-                    // Migrate database
-                    if FileManager.default.fileExists(atPath: previousDatabaseURL.path)
-                    {
-                        if FileManager.default.fileExists(atPath: databaseURL.path, isDirectory: nil)
-                        {
-                            try FileManager.default.removeItem(at: databaseURL)
-                        }
-                        
-                        let previousDatabase = try persistentStoreCoordinator.addPersistentStore(ofType: description.type, configurationName: description.configuration, at: description.url, options: description.options)
-                        
-                        // Pass nil options to prevent later error due to self.persistentContainer using WAL.
-                        try persistentStoreCoordinator.migratePersistentStore(previousDatabase, to: databaseURL, options: nil, withType: NSSQLiteStoreType)
-                        
-                        try FileManager.default.removeItem(at: previousDatabaseURL)
-                    }
-                    
-                    // Migrate apps
-                    if FileManager.default.fileExists(atPath: previousAppsDirectoryURL.path, isDirectory: nil)
-                    {
-                        if(previousAppsDirectoryURL.path != appsDirectoryURL.path)
-                        {
-                            _ = try FileManager.default.replaceItemAt(appsDirectoryURL, withItemAt: previousAppsDirectoryURL)
-                        }
-                    }
-                    
-                    UserDefaults.standard.requiresAppGroupMigration = false
-                    continuation.resume()
-                }
-                catch
-                {
-                    debugLog("Failed to migrate database to app group: \(error)")
-                    continuation.resume(throwing: error)
-                }
-            }
         }
     }
     

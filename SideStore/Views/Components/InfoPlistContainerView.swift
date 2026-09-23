@@ -18,9 +18,15 @@ struct PlistNode: Identifiable {
     let children: [PlistNode]?
     
     static func parse(key: String, value: Any) -> PlistNode {
-        if let dict = value as? [String: Any] {
+        if let dict = value as? [String: any Sendable] {
             let sortedChildren = dict.keys.sorted().map { parse(key: $0, value: dict[$0]!) }
             return PlistNode(key: key, value: nil, typeInfo: "Dictionary (\(dict.count) keys)", children: sortedChildren)
+        } else if let dict = value as? [String: Any] {
+            let sortedChildren = dict.keys.sorted().map { parse(key: $0, value: dict[$0]!) }
+            return PlistNode(key: key, value: nil, typeInfo: "Dictionary (\(dict.count) keys)", children: sortedChildren)
+        } else if let array = value as? [any Sendable] {
+            let children = array.enumerated().map { parse(key: "Index \($0)", value: $1) }
+            return PlistNode(key: key, value: nil, typeInfo: "Array (\(array.count) items)", children: children)
         } else if let array = value as? [Any] {
             let children = array.enumerated().map { parse(key: "Index \($0)", value: $1) }
             return PlistNode(key: key, value: nil, typeInfo: "Array (\(array.count) items)", children: children)
@@ -56,25 +62,45 @@ enum InfoPlistMode: String, CaseIterable, Identifiable {
 
 // MARK: - Container View
 struct InfoPlistContainerView: View {
-    let plist: [String: Any]
+    let plist: [String: any Sendable]
     var title: String = "Info.plist"
+    var plistURL: URL? = nil
     
     @State private var selectedMode: InfoPlistMode
     
     // Parent level cache to persist raw output between tab switches
     @State private var xmlString: String = ""
     @State private var jsonString: String = ""
-    
-    init(plist: [String: Any], title: String = "Info.plist") {
+    #if !os(tvOS)
+    @State private var showingShareSheet = false
+    #endif
+
+    init(plist: [String: any Sendable], title: String = "Info.plist", plistURL: URL? = nil) {
         self.plist = plist
         self.title = title
-        let hasAppMetadata = plist["CFBundleDisplayName"] != nil ||
-            plist["CFBundleName"] != nil ||
-            plist["CFBundleIdentifier"] != nil ||
-            plist["CFBundleShortVersionString"] != nil ||
-            plist["CFBundleVersion"] != nil ||
-            plist["MinimumOSVersion"] != nil
+        self.plistURL = plistURL
+        let parser = InfoPlistParser(dictionary: plist)
+        let hasAppMetadata = parser.displayName != nil ||
+            parser.bundleName != nil ||
+            parser.bundleIdentifier != nil ||
+            parser.rawDictionary["CFBundleShortVersionString"] != nil ||
+            parser.rawDictionary["CFBundleVersion"] != nil ||
+            parser.minimumOSVersion != nil
         _selectedMode = State(initialValue: hasAppMetadata ? .semantic : .tree)
+    }
+    
+    private var shareURL: URL? {
+        if let plistURL = plistURL, FileManager.default.fileExists(atPath: plistURL.path) {
+            return plistURL
+        }
+        let sanitizedTitle = title.replacingOccurrences(of: " ", with: "_")
+                                   .replacingOccurrences(of: "(", with: "").replacingOccurrences(of: ")", with: "")
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(sanitizedTitle).plist")
+        if let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) {
+            try? data.write(to: tempURL, options: .atomic)
+            return tempURL
+        }
+        return nil
     }
     
     var body: some View {
@@ -116,6 +142,20 @@ struct InfoPlistContainerView: View {
         .navigationTitle(title)
         #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                SwiftUI.Button {
+                    showingShareSheet = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+            }
+        }
+        .sheet(isPresented: $showingShareSheet) {
+            if let url = shareURL {
+                ActivityViewController(items: [url])
+            }
+        }
         #endif
         .interactiveDismissDisabled(true)
     }
@@ -123,7 +163,7 @@ struct InfoPlistContainerView: View {
 
 // MARK: - Mode 1: Tree View
 struct InfoPlistTreeView: View {
-    let plist: [String: Any]
+    let plist: [String: any Sendable]
     
     @State private var searchQuery = ""
     
@@ -268,7 +308,7 @@ struct PlistNodeRow: View {
 
 // MARK: - Mode 1.5: Raw XML View
 struct InfoPlistRawXMLView: View {
-    let plist: [String: Any]
+    let plist: [String: any Sendable]
     
     @State private var isCopied = false
     @State private var isWrapped = true
@@ -348,7 +388,7 @@ struct InfoPlistRawXMLView: View {
         }
     }
     
-    private func generateXMLString(from plist: [String: Any]) -> String {
+    private func generateXMLString(from plist: [String: any Sendable]) -> String {
         guard let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0),
               let string = String(data: data, encoding: .utf8) else {
             return ""
@@ -359,7 +399,7 @@ struct InfoPlistRawXMLView: View {
 
 // MARK: - Mode 2: Raw JSON View
 struct InfoPlistRawView: View {
-    let plist: [String: Any]
+    let plist: [String: any Sendable]
     
     @State private var isCopied = false
     @State private var isWrapped = true
@@ -459,7 +499,7 @@ struct InfoPlistRawView: View {
         }
     }
     
-    private func generateJSONString(from plist: [String: Any]) -> String {
+    private func generateJSONString(from plist: [String: any Sendable]) -> String {
         let sanitized = Self.jsonSanitize(plist)
         guard JSONSerialization.isValidJSONObject(sanitized),
               let data = try? JSONSerialization.data(withJSONObject: sanitized, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
@@ -472,69 +512,54 @@ struct InfoPlistRawView: View {
 
 // MARK: - Mode 3: Semantic View
 struct InfoPlistSemanticView: View {
-    let plist: [String: Any]
+    let plist: [String: any Sendable]
     
     @State private var searchQuery = ""
     
+    private var parser: InfoPlistParser {
+        InfoPlistParser(dictionary: plist)
+    }
+
     // Core App Metadata
     var appName: String {
-        return (plist["CFBundleDisplayName"] as? String) ?? (plist["CFBundleName"] as? String) ?? "N/A"
+        return parser.displayName ?? parser.bundleName ?? "N/A"
     }
     var bundleID: String {
-        return (plist["CFBundleIdentifier"] as? String) ?? "N/A"
+        return parser.bundleIdentifier ?? "N/A"
     }
     var version: String {
-        let short = plist["CFBundleShortVersionString"] as? String
-        let build = plist["CFBundleVersion"] as? String
-        if let short = short, let build = build {
-            return "\(short) (\(build))"
-        }
-        return short ?? build ?? "N/A"
+        return parser.displayVersion
     }
     var minOS: String {
-        return (plist["MinimumOSVersion"] as? String) ?? "N/A"
+        return parser.minimumOSVersion ?? "N/A"
     }
     
     // Categorized Groups
     var privacyPermissions: [String: String] {
-        var dict = [String: String]()
-        for key in plist.keys where key.hasPrefix("NS") && key.hasSuffix("UsageDescription") {
-            if let val = plist[key] as? String {
-                dict[key] = val
-            }
-        }
-        return dict
+        return parser.privacyPermissions
     }
     
     var customURLSchemes: [String] {
-        var schemes = [String]()
-        if let urlTypes = plist["CFBundleURLTypes"] as? [[String: Any]] {
-            for type in urlTypes {
-                if let typeSchemes = type["CFBundleURLSchemes"] as? [String] {
-                    schemes.append(contentsOf: typeSchemes)
-                }
-            }
-        }
-        return schemes
+        return parser.customURLSchemes
     }
     
     var backgroundModes: [String] {
-        return (plist["UIBackgroundModes"] as? [String]) ?? []
+        return parser.backgroundModes
     }
     
     var queriedSchemes: [String] {
-        return (plist["LSApplicationQueriesSchemes"] as? [String]) ?? []
+        return parser.queriedURLSchemes
     }
     
     // Custom/Uncategorized keys
-    var customKeys: [String: Any] {
+    var customKeys: [String: any Sendable] {
         let categorized: Set<String> = [
             "CFBundleDisplayName", "CFBundleName", "CFBundleIdentifier",
             "CFBundleShortVersionString", "CFBundleVersion", "MinimumOSVersion",
             "CFBundleURLTypes", "UIBackgroundModes", "LSApplicationQueriesSchemes"
         ]
         
-        var dict = [String: Any]()
+        var dict = [String: any Sendable]()
         for key in plist.keys {
             if categorized.contains(key) { continue }
             if key.hasPrefix("NS") && key.hasSuffix("UsageDescription") { continue }
@@ -552,12 +577,12 @@ struct InfoPlistSemanticView: View {
     }
     
     private var hasAppMetadata: Bool {
-        plist["CFBundleDisplayName"] != nil ||
-        plist["CFBundleName"] != nil ||
-        plist["CFBundleIdentifier"] != nil ||
-        plist["CFBundleShortVersionString"] != nil ||
-        plist["CFBundleVersion"] != nil ||
-        plist["MinimumOSVersion"] != nil
+        parser.displayName != nil ||
+        parser.bundleName != nil ||
+        parser.bundleIdentifier != nil ||
+        parser.rawDictionary["CFBundleShortVersionString"] != nil ||
+        parser.rawDictionary["CFBundleVersion"] != nil ||
+        parser.minimumOSVersion != nil
     }
     
     var body: some View {

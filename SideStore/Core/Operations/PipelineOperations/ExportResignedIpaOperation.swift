@@ -36,7 +36,7 @@ final class ExportResignedIpaOperation: BasePipelineOperation<InstallAppOperatio
             return nil
         }
 
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let documentsURL = FileManager.default.documentsDirectory
         let resignedAppsURL = documentsURL.appendingPathComponent("ResignedApps")
         self.setProgress(30)
         do {
@@ -48,7 +48,7 @@ final class ExportResignedIpaOperation: BasePipelineOperation<InstallAppOperatio
             throw error
         }
 
-        let utis = Bundle(url: resignedAppBundle.fileURL)?.infoDictionary?[Bundle.Info.exportedUTIs] as? [[String: Any]]
+        let utis = resignedAppBundle.infoPlist[Bundle.Info.exportedUTIs] as? [[String: Any]]
         let isSideBackup = utis?.first?["UTTypeDescription"] as? String == "SideStore Backup App"
         let destPath = isSideBackup ? resignedAppBundle.name + "-sidebackup" : resignedAppBundle.name
         let destinationURL = resignedAppsURL.appendingPathComponent(destPath + ".ipa")

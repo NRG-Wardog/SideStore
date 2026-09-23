@@ -20,8 +20,8 @@ public final class AuthManager: @unchecked Sendable {
     
     private init() {}
     
-    public var team: ALTTeam?
-    public var session: ALTAppleAPISession?
+    private var team: ALTTeam?
+    private var session: ALTAppleAPISession?
 
     public var isAuthenticated: Bool {
         let hasEmail = Keychain.shared.appleIDEmailAddress != nil
@@ -58,7 +58,12 @@ public final class AuthManager: @unchecked Sendable {
         return Keychain.shared.appleIDXcodeToken != nil
     }
     
-    public func signOut(keepCertificate: Bool = false, keepAnisetteData: Bool = true) {
+    public func signOut(
+        keepCertificate: Bool = false,
+        keepAnisetteData: Bool = true,
+        keepAnisetteHeaders: Bool = true,
+        keepSideSignHeaders: Bool = true
+    ) async {
         self.session = nil
         self.team = nil
         if !keepCertificate {
@@ -70,12 +75,22 @@ public final class AuthManager: @unchecked Sendable {
             debugLog("[AuthManager] Preserved signing certificate in cert manager and keychain.")
         }
         debugLog("[AuthManager] Clearing account and team info in database.")
-        DatabaseManager.shared.deactivateActiveAccountAndTeam()
+        await DatabaseManager.shared.deactivateActiveAccountAndTeam()
         debugLog("[AuthManager] Cleared account and team info in database.")
 
         debugLog("[AuthManager] Clearing sign-in info from keychain.")
         Keychain.shared.clearSignInInfo(keepAnisetteData: keepAnisetteData)
         debugLog("[AuthManager] Cleared sign-in info from keychain.")
+
+        if !keepAnisetteHeaders {
+            debugLog("[AuthManager] Resetting Anisette header customizations to defaults.")
+            AnisetteConfigManager.shared.resetToDefaults()
+        }
+
+        if !keepSideSignHeaders {
+            debugLog("[AuthManager] Resetting SideSign header customizations to defaults.")
+            SideSignConfigManager.shared.resetToDefaults()
+        }
 
         AnisetteDataManager.shared.clearCache()
     }
@@ -126,7 +141,9 @@ public final class AuthManager: @unchecked Sendable {
     func signIn(
         presentingViewController: UIViewController? = nil,
         skipDeviceRegistration: Bool = false,
-        skipCertificateProvisioning: Bool = false
+        skipCertificateProvisioning: Bool = false,
+        skipResign: Bool = false,
+        skipHowTos: Bool = false
     ) async throws -> SignInResult {
         let dbBackgroundContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         let signInFlowHandler = SignInFlowHandler(presentingViewController: presentingViewController)
@@ -140,9 +157,14 @@ public final class AuthManager: @unchecked Sendable {
             signInHandler: signInFlowHandler,
             anisetteServerHandler: signInFlowHandler,
             skipDeviceRegistration: skipDeviceRegistration,
-            skipCertificateProvisioning: skipCertificateProvisioning
+            skipCertificateProvisioning: skipCertificateProvisioning,
+            skipResign: skipResign,
+            skipHowTos: skipHowTos
         )
-        return try await signInOperation.execute()
+        let result = try await signInOperation.execute()
+        self.team = result.team
+        self.session = result.session
+        return result
     }
     
     
@@ -165,30 +187,17 @@ public final class AuthManager: @unchecked Sendable {
             verificationHandler: verificationHandler
         )
     }
-    
-    public func authenticateWithToken(adsid: String,
-                                      xcodeToken: String,
-                                      anisetteData: ALTAnisetteData,
-                                      xcodeVersion: String) async throws -> (ALTAccount, ALTAppleAPISession)
-    {
-        return try await self.portalProxy.authenticateWithToken(
-            adsid: adsid,
-            xcodeToken: xcodeToken,
-            anisetteData: anisetteData,
-            xcodeVersion: xcodeVersion
-        )
-    }
 }
 
 fileprivate extension DatabaseManager {
     //TODO: this is not clean, but for now this should be fine, ie we should later make this proper async instead of blocking
-    func deactivateActiveAccountAndTeam() {
+    func deactivateActiveAccountAndTeam() async {
         guard self.isStarted else {
             debugLog("[AuthManager] DatabaseManager is not started. Skipping CoreData active account/team deactivation.")
             return
         }
         let bgContext = self.persistentContainer.newBackgroundContext()
-        bgContext.performAndWait {
+        await bgContext.perform {
             if let account = self.activeAccount(in: bgContext) {
                 account.isActiveAccount = false
             }
@@ -202,7 +211,7 @@ fileprivate extension DatabaseManager {
             }
         }
         
-        self.viewContext.performAndWait {
+        await self.viewContext.perform {
             self.viewContext.processPendingChanges()
             self.viewContext.refreshAllObjects()
         }

@@ -30,7 +30,7 @@ final class SetCertificateAlertViewController: UIViewController {
         super.viewDidLoad()
         
         let appCertSerial = installedApp.certificateSerialNumber
-        var currentCertObj = viewModel.getSigningCertificate(at: installedApp.fileURL)
+        var currentCertObj = viewModel.getSigningCertificate(for: installedApp)
         
         if currentCertObj == nil, let serial = appCertSerial {
             currentCertObj = viewModel.getLocalX509Certificate(serialNumber: serial)

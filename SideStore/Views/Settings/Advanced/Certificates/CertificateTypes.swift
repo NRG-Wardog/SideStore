@@ -13,6 +13,7 @@ enum SortOption: String, CaseIterable, Identifiable {
     case expiryDate   = "Expiry Date"
     case name         = "Name"
     case keys         = "Keys"
+    case type         = "Type"
     var id: String { rawValue }
 }
 
@@ -22,6 +23,7 @@ enum GroupOption: String, CaseIterable, Identifiable {
     case expiryDate   = "Expiry Date"
     case name         = "Name"
     case keys         = "Keys"
+    case type         = "Type"
     var id: String { rawValue }
 }
 

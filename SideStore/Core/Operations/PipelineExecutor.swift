@@ -45,7 +45,7 @@ final class PipelineExecutor: @unchecked Sendable {
         }
         
         guard let resultApp = finalApp ?? context.installedApp ?? (operation.app as? InstalledApp) else {
-            throw OperationError.appNotFound(name: operation.app.name)
+            throw OperationError.invalidParameters("Could not resolve installed app for '\(operation.app.name)'")
         }
         return resultApp
     }
@@ -275,6 +275,18 @@ final class PipelineExecutor: @unchecked Sendable {
             case .cacheSigningCert:
                 loggerType = CacheSigningCertOperation.self
                 let step = try CacheSigningCertOperation(context: context)
+                result = try await step.execute(parentProgress: progress)
+                return nil
+
+            case .cacheResignedMetadata:
+                loggerType = CacheResignedMetadataOperation.self
+                let step = try CacheResignedMetadataOperation(context: context)
+                result = try await step.execute(parentProgress: progress)
+                return nil
+
+            case .patchInfoPlist:
+                loggerType = PatchInfoPlistOperation.self
+                let step = try PatchInfoPlistOperation(context: context)
                 result = try await step.execute(parentProgress: progress)
                 return nil
             }

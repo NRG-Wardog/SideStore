@@ -70,185 +70,93 @@ final class AppManager: ObservableObject, @unchecked Sendable
     }
 
     func reconcileInstalledApps() async {
-        await Task.detached {
-            let dbBackgroundContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-            var altstoreAppObjectID: NSManagedObjectID?
+        guard !self.isActivelyManagingAnyApp else {
+            debugLog("[AppManager] Skipping reconcileInstalledApps: operations in progress")
+            return
+        }
 
-            #if targetEnvironment(simulator)
-            // Apps aren't ever actually installed to simulator, so just do nothing rather than delete them from database.
-            #else
-        
-            do {
-                try await dbBackgroundContext.perform {
-                    let installedApps = InstalledApp.all(in: dbBackgroundContext)
-                
-                    if UserDefaults.standard.legacySideloadedApps == nil {
-                        // First time updating apps since updating AltStore to use custom UTIs,
-                        // so cache all existing apps temporarily to prevent us from accidentally
-                        // deleting them due to their custom UTI not existing (yet).
-                        let apps = installedApps.map { $0.bundleIdentifier }
-                        UserDefaults.standard.legacySideloadedApps = apps
+        let dbBackgroundContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+
+        do {
+            let (activeBundleIDs, activeSignatures, altStoreApp) = try await dbBackgroundContext.perform {
+                let installedApps = InstalledApp.all(in: dbBackgroundContext)
+                var altStore: InstalledApp?
+
+                #if !targetEnvironment(simulator)
+                let legacyApps = Set(UserDefaults.standard.legacySideloadedApps ?? [])
+
+                for app in installedApps {
+                    if app.bundleIdentifier == StoreApp.altstoreAppID {
+                        altStore = app
+                        continue
                     }
-                
-                    let legacySideloadedApps = Set(UserDefaults.standard.legacySideloadedApps ?? [])
-                
-                    for app in installedApps {
-                        guard app.bundleIdentifier != StoreApp.altstoreAppID else {
-                            altstoreAppObjectID = app.objectID
-                            continue
-                        }
-                    
-                        guard !self.isActivelyManagingApp(withBundleID: app.bundleIdentifier) else { continue }
-                    
-                        if !UserDefaults.standard.isLegacyDeactivationSupported
-                        {
-                            // We can't (ab)use provisioning profiles to deactivate apps,
-                            // which means we must delete apps to free up active slots.
-                            // So, only check if active apps are installed to prevent
-                            // false positives when checking inactive apps.
-                            guard app.isActive else { continue }
-                        }
-                    
-                        let isDeclared = UTType(app.installedAppUTI)?.isDeclared ?? false
-                        if !isDeclared && !legacySideloadedApps.contains(app.bundleIdentifier)
-                        {
-                            // This UTI is not declared by any apps, which means this app has been deleted by the user.
-                            // This app is also not a legacy sideloaded app, so we can assume it's fine to delete it.
-                            dbBackgroundContext.delete(app)
-                        
-                            if var patchedApps = UserDefaults.standard.patchedApps, let index = patchedApps.firstIndex(of: app.bundleIdentifier)
-                            {
-                                patchedApps.remove(at: index)
-                                UserDefaults.standard.patchedApps = patchedApps
-                            }
-                        }
-                    }
-                
-                    if dbBackgroundContext.hasChanges {
-                        try dbBackgroundContext.save()
+
+                    guard app.isActive, !self.isActivelyManagingApp(withBundleID: app.bundleIdentifier) else { continue }
+
+                    let isDeclared = UTType(app.installedAppUTI)?.isDeclared ?? false
+                    guard !isDeclared, !legacyApps.contains(app.bundleIdentifier) else { continue }
+
+                    dbBackgroundContext.delete(app)
+                    if var patched = UserDefaults.standard.patchedApps {
+                        patched.removeAll { $0 == app.bundleIdentifier }
+                        UserDefaults.standard.patchedApps = patched
                     }
                 }
-            
-                if let objectID = altstoreAppObjectID {
-                    let context = StandaloneOperationContext(steps: .scheduleExpirationWarningNotification, dbBackgroundContext: dbBackgroundContext)
-                    let app = await dbBackgroundContext.perform {
-                        dbBackgroundContext.object(with: objectID) as! InstalledApp
-                    }
-                    let scheduleNotifOp = try ScheduleExpirationWarningNotificationOperation(
-                        installedApp: app,
-                        context: context
-                    )
-                    try await scheduleNotifOp.execute()
+
+                if dbBackgroundContext.hasChanges {
+                    try dbBackgroundContext.save()
                 }
-            } catch {
-                debugLog("Error while fetching installed apps. \(error)")
+                #else
+                altStore = installedApps.first { $0.bundleIdentifier == StoreApp.altstoreAppID }
+                #endif
+
+                let active = installedApps.filter { !$0.isDeleted }
+                let ids = Set(active.map(\.resignedBundleIdentifier))
+                let sigs = Set(active.compactMap(\.appBundleFingerprint))
+
+                return (ids, sigs, altStore)
             }
-            #endif
-        
-            let installedAppBundleIDs = await dbBackgroundContext.perform {
-                Set(InstalledApp.all(in: dbBackgroundContext).map { $0.bundleIdentifier })
+
+            await scheduleExpirationWarning(for: altStoreApp, in: dbBackgroundContext)
+
+            CacheAppOperation.pruneUnusedCaches(activeSignatures: activeSignatures, activeBundleIDs: activeBundleIDs) { [weak self] in
+                self?.isActivelyManagingApp(withBundleID: $0) ?? false
             }
-            
-            CacheAppOperation.pruneUnusedCaches(activeBundleIDs: installedAppBundleIDs) { bundleID in
-                self.isActivelyManagingApp(withBundleID: bundleID)
-            }
-        }.value
+        } catch {
+            debugLog("[AppManager] Error reconciling installed apps: \(error)")
+        }
+    }
+
+    private func scheduleExpirationWarning(for altStoreApp: InstalledApp?, in context: NSManagedObjectContext) async {
+        #if !targetEnvironment(simulator)
+        guard let altStoreApp else { return }
+        do {
+            let opContext = StandaloneOperationContext(steps: .scheduleExpirationWarningNotification, dbBackgroundContext: context)
+            let op = try ScheduleExpirationWarningNotificationOperation(installedApp: altStoreApp, context: opContext)
+            try await op.execute()
+        } catch {
+            debugLog("[AppManager] Failed to schedule expiration notification: \(error)")
+        }
+        #endif
     }
     
 
 
-    func signIn(presentingViewController: UIViewController?,
-                skipDeviceRegistration: Bool = false,
-                skipCertificateProvisioning: Bool = false,
-                completionHandler: @escaping (Result<(ALTTeam, ALTCertificate?, ALTAppleAPISession), Error>) -> Void)
-    {
-        Task.detached {
-            do {
-                let result = try await AuthManager.shared.signIn(
-                    presentingViewController: presentingViewController,
-                    skipDeviceRegistration: skipDeviceRegistration,
-                    skipCertificateProvisioning: skipCertificateProvisioning
-                )
-                completionHandler(.success((result.team, result.certificate, result.session)))
-            } catch {
-                completionHandler(.failure(error))
-            }
-        }
-    }
-    
-    func deactivateApps(for appBundle: ALTApplication, presentingViewController: UIViewController?, completion: @escaping (Result<Void, Error>) -> Void)
-    {
-        guard !UserDefaults.standard.isAppLimitDisabled, let activeAppsLimit = UserDefaults.standard.activeAppsLimit else { return completion(.success(())) }
-        
-        DispatchQueue.main.async {
-            // Only apps signed with a free developer certificate count toward the 3-app free account limit.
-            // Apps signed with a paid certificate coexist independently and must not be counted here.
-            let activeApps = InstalledApp.fetchActiveApps(in: DatabaseManager.shared.viewContext)
-                .filter { $0.bundleIdentifier != appBundle.bundleIdentifier }   // Don't count app towards total if it matches activating app
-                .filter { ($0.team?.type ?? .unknown) == .free }                // Only free-cert-signed apps count against the free limit
-                .sorted { ($0.name, $0.refreshedDate) < ($1.name, $1.refreshedDate) }
-            
-            var title: String = NSLocalizedString("Cannot Activate More than 3 Apps", comment: "")
-            let message: String
-            
-            if UserDefaults.standard.activeAppLimitIncludesExtensions
-            {
-                if appBundle.appExtensions.isEmpty
-                {
-                    message = NSLocalizedString("Non-developer Apple IDs are limited to 3 active apps and app extensions. Please choose an app to deactivate.", comment: "")
-                }
-                else
-                {
-                    title = NSLocalizedString("Cannot Activate More than 3 Apps and App Extensions", comment: "")
-                    
-                    let appExtensionText = appBundle.appExtensions.count == 1 ? NSLocalizedString("app extension", comment: "") : NSLocalizedString("app extensions", comment: "")
-                    message = String(format: NSLocalizedString("Non-developer Apple IDs are limited to 3 active apps and app extensions, and \"%@\" contains %@ %@. Please choose an app to deactivate.", comment: ""), appBundle.name, NSNumber(value: appBundle.appExtensions.count), appExtensionText)
-                }
-            }
-            else
-            {
-                message = NSLocalizedString("Non-developer Apple IDs are limited to 3 active apps. Please choose an app to deactivate.", comment: "")
-            }
-            
-            let activeAppsCount = activeApps.map { $0.requiredActiveSlots }.reduce(0, +)
-                    
-            let availableActiveApps = max(activeAppsLimit - activeAppsCount, 0)
-            let requiredActiveSlots = UserDefaults.standard.activeAppLimitIncludesExtensions ? (1 + appBundle.appExtensions.count) : 1
-            guard requiredActiveSlots > availableActiveApps else { return completion(.success(())) }
+    func appsToDeactivate(for installedApp: InstalledApp) -> [InstalledApp]? {
+        guard !UserDefaults.standard.isAppLimitDisabled,
+              let activeAppsLimit = UserDefaults.standard.activeAppsLimit
+        else { return nil }
 
-            guard let presentingViewController else {
-                let failureReason = String(format: NSLocalizedString("SideStore needs to deactivate another app before installing %@.", comment: ""), appBundle.name)
-                return completion(.failure(OperationError.forbidden(failureReason: failureReason)))
-            }
-            
-            let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
-            alertController.addAction(UIAlertAction(title: UIAlertAction.cancel.title, style: UIAlertAction.cancel.style) { (action) in
-                completion(.failure(OperationError.cancelled))
-            })
-            
-            for activeApp in activeApps where activeApp.bundleIdentifier != StoreApp.altstoreAppID
-            {
-                alertController.addAction(UIAlertAction(title: activeApp.name, style: .default) { (action) in
-                    activeApp.isActive = false
-                                    
-                    self.deactivate(activeApp, presentingViewController: presentingViewController) { (result) in
-                        switch result
-                        {
-                        case .failure(let error):
-                            activeApp.managedObjectContext?.perform {
-                                activeApp.isActive = true
-                                completion(.failure(error))
-                            }
-                            
-                        case .success:
-                            self.deactivateApps(for: appBundle, presentingViewController: presentingViewController, completion: completion)
-                        }
-                    }
-                })
-            }
-            
-            presentingViewController.present(alertController, animated: true, completion: nil)
-        }
+        let activeApps = InstalledApp.fetchActiveApps(in: DatabaseManager.shared.viewContext)
+            .filter { $0.resignedBundleIdentifier != installedApp.resignedBundleIdentifier }
+            .filter { ($0.team?.type ?? .unknown) == .free }
+            .sorted { ($0.name, $0.refreshedDate) < ($1.name, $1.refreshedDate) }
+
+        let activeAppsCount = activeApps.map(\.requiredActiveSlots).reduce(0, +)
+        let availableActiveApps = max(activeAppsLimit - activeAppsCount, 0)
+
+        guard installedApp.requiredActiveSlots > availableActiveApps else { return nil }
+        return activeApps.filter { $0.bundleIdentifier != StoreApp.altstoreAppID }
     }
     
     func clearAppCache(completion: @escaping (Result<Void, Error>) -> Void)
@@ -440,8 +348,8 @@ final class AppManager: ObservableObject, @unchecked Sendable
         
         Task.detached(priority: .utility) {
             do {
-                let managedObjectContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-                let context = self.makeAuthenticatedContext(dbBackgroundContext: managedObjectContext)
+                let managedObjectContext = self.getValidDbContext()
+                let context = StandaloneOperationContext(steps: .syncAppIDs, dbBackgroundContext: managedObjectContext)
                 try await AuthManager.shared.getAuthenticatedSession()
                 
                 let syncAppIDsOperation = try SyncAppIDsOperation(context: context)
@@ -535,109 +443,36 @@ final class AppManager: ObservableObject, @unchecked Sendable
     @discardableResult
     func install(_ target: InstallTarget,
                  presentingViewController: UIViewController? = nil,
+                 dbBackgroundContext: NSManagedObjectContext? = nil,
                  context: StandaloneOperationContext? = nil,
                  completionHandler: @escaping (Result<InstalledApp, Error>) -> Void) -> RefreshGroup
     {
         debugLog("[AppManager] install() called for target: \(target)")
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
-        let baseContext = self.makeAuthenticatedContext(presentingViewController: presentingViewController, baseContext: context)
-        let group = RefreshGroup(context: baseContext)
-        group.completionHandler = { results in
-            if let result = results.values.first {
-                completionHandler(result)
-            } else {
-                completionHandler(.failure(OperationError.unknown()))
+        let dbContext = self.getValidDbContext(dbBackgroundContext ?? context?.dbBackgroundContext)
+
+        let app = self.resolveApp(for: target)
+        return self.pipelineRunner.performSingleOperation(
+            .install(app),
+            handler: pipelineHandler,
+            dbContext: dbContext,
+            completionHandler: completionHandler
+        )
+    }
+
+    private func resolveApp(for target: InstallTarget) -> AppProtocol {
+        switch target {
+        case .app(let app):
+            return app
+        case .url(let url):
+            if url.isFileURL,
+               let packageType = PackageType(url: url),
+               let (bundleID, appName) = try? Self.readAppMetadata(from: url, packageType: packageType) {
+                return AnyApp(name: appName, bundleIdentifier: bundleID, url: url, storeApp: nil)
             }
+            let name = url.deletingPathExtension().lastPathComponent
+            return AnyApp(name: name, bundleIdentifier: name, url: url, storeApp: nil)
         }
-
-        group.activeTask = Task.detached {
-            do {
-                let resolvedApp: AppProtocol
-
-                switch target {
-                case .app(let app):
-                    var targetApp = app
-                    if let storeApp = app.storeApp,
-                       let source = storeApp.source,
-                       try await !source.isAdded()
-                    {
-                        guard let presentingViewController else { throw OperationError.sourceNotAdded(source) }
-                        let message = String(format: NSLocalizedString("You must add this source before installing apps from it.\n\n“%@” will begin downloading once it has been added.", comment: ""), app.name)
-                        try await AppManager.shared.add(source, message: message, presentingViewController: presentingViewController)
-                        
-                        let appBundleID = app.bundleIdentifier
-                        let sourceID = source.identifier
-                        if let fetchedStoreApp = try await DatabaseManager.shared.viewContext.performAsync({
-                            let fetchRequest = StoreApp.fetchRequest()
-                            fetchRequest.predicate = NSPredicate(format: "%K == %@ AND %K == %@",
-                                                                 #keyPath(StoreApp.bundleIdentifier), appBundleID,
-                                                                 #keyPath(StoreApp.sourceIdentifier), sourceID)
-                            return try DatabaseManager.shared.viewContext.fetch(fetchRequest).first
-                        }) {
-                            targetApp = fetchedStoreApp
-                        }
-                        
-                        await MainActor.run {
-                            NotificationCenter.default.post(name: AppManager.willInstallAppFromNewSourceNotification, object: app)
-                        }
-                    }
-                    resolvedApp = targetApp
-
-                case .url(let url):
-                    guard let packageType = PackageType(url: url) else {
-                        throw OperationError.invalidApp(reason: "Unsupported package format '.\(url.pathExtension)'. Expected '.ipa' or '.app'.")
-                    }
-
-                    var localURL = url
-                    if !url.isFileURL {
-                        let temporaryDirectory = FileManager.default.uniqueTemporaryURL()
-                        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
-                        localURL = try await withCheckedThrowingContinuation { continuation in
-                            let downloadTask = URLSession.shared.downloadTask(with: url) { (fileURL, response, error) in
-                                do {
-                                    let (fileURL, _) = try Result((fileURL, response), error).get()
-                                    let dest = temporaryDirectory.appendingPathComponent(url.lastPathComponent)
-                                    try FileManager.default.moveItem(at: fileURL, to: dest)
-                                    continuation.resume(returning: dest)
-                                } catch {
-                                    continuation.resume(throwing: error)
-                                }
-                            }
-                            downloadTask.resume()
-                        }
-                    }
-
-                    let (bundleIdentifier, appName) = try Self.readAppMetadata(from: localURL, packageType: packageType)
-                    resolvedApp = AnyApp(name: appName, bundleIdentifier: bundleIdentifier, url: localURL, storeApp: nil)
-                }
-
-                let subGroup = self.pipelineRunner.performSingleOperation(
-                    .install(resolvedApp),
-                    handler: pipelineHandler,
-                    context: baseContext,
-                    completionHandler: completionHandler
-                )
-                group.progress.addChild(subGroup.progress, withPendingUnitCount: 100)
-            } catch {
-                let elapsed = CFAbsoluteTimeGetCurrent() - group.context.operationStartTime
-                let status = Task.isCancelled ? "CANCELLED" : "FAILED"
-                let targetId: String
-                switch target {
-                case .url(let url): targetId = url.lastPathComponent
-                case .app(let app): targetId = app.bundleIdentifier
-                }
-                logOperationSummary(
-                    operation: "install",
-                    target: targetId,
-                    status: status,
-                    elapsed: elapsed,
-                    error: error
-                )
-                completionHandler(.failure(error))
-            }
-        }
-
-        return group
     }
 
     private static func readAppMetadata(from url: URL, packageType: PackageType) throws -> (bundleIdentifier: String, name: String) {
@@ -655,24 +490,22 @@ final class AppManager: ObservableObject, @unchecked Sendable
                 }
             } while reader.goToNextFile()
 
-            guard let data = plistData,
-                  let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-                  let bundleIdentifier = (plist["CFBundleIdentifier"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !bundleIdentifier.isEmpty else {
+            guard let data = plistData else {
                 throw OperationError.invalidApp(reason: "Archive missing valid Payload/*.app/Info.plist")
             }
-            let appName = (plist["CFBundleDisplayName"] as? String) ?? (plist["CFBundleName"] as? String) ?? url.deletingPathExtension().lastPathComponent
+            let parser = try InfoPlistParser(data: data)
+            guard let bundleIdentifier = parser.bundleIdentifier, !bundleIdentifier.isEmpty else {
+                throw OperationError.invalidApp(reason: "Archive missing valid bundle identifier in Info.plist")
+            }
+            let appName = parser.displayName ?? parser.bundleName ?? url.deletingPathExtension().lastPathComponent
             return (bundleIdentifier, appName)
 
         case .app:
-            let plistURL = url.appendingPathComponent("Info.plist")
-            let data = try Data(contentsOf: plistURL)
-            guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-                  let bundleIdentifier = (plist["CFBundleIdentifier"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !bundleIdentifier.isEmpty else {
+            let parser = try InfoPlistParser(bundleURL: url)
+            guard let bundleIdentifier = parser.bundleIdentifier, !bundleIdentifier.isEmpty else {
                 throw OperationError.invalidApp(reason: "Invalid Info.plist in app directory")
             }
-            let appName = (plist["CFBundleDisplayName"] as? String) ?? (plist["CFBundleName"] as? String) ?? url.lastPathComponent
+            let appName = parser.displayName ?? parser.bundleName ?? url.lastPathComponent
             return (bundleIdentifier, appName)
         }
     }
@@ -685,7 +518,7 @@ final class AppManager: ObservableObject, @unchecked Sendable
     {
         debugLog("[AppManager] update() called for app: \(installedApp.bundleIdentifier)")
         guard let appVersion = version ?? installedApp.storeApp?.latestSupportedVersion else {
-            completionHandler(.failure(OperationError.appNotFound(name: installedApp.name)))
+            completionHandler(.failure(OperationError.missingUpdate(appName: installedApp.name)))
             return Progress.discreteProgress(totalUnitCount: 1)
         }
         guard appVersion as AnyObject !== installedApp else {
@@ -693,18 +526,21 @@ final class AppManager: ObservableObject, @unchecked Sendable
             return Progress.discreteProgress(totalUnitCount: 1)
         }
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
-        let context = self.makeAuthenticatedContext(presentingViewController: presentingViewController)
+        let dbContext = self.getValidDbContext()
         let group = self.pipelineRunner.performSingleOperation(
             .update(appVersion, customBundleIdentifier: installedApp.customBundleIdentifier), 
             handler: pipelineHandler, 
-            context: context, 
+            dbContext: dbContext, 
             completionHandler: completionHandler
         )
         return group.progress
     }
     
     @discardableResult
-    func refresh(_ installedApps: [InstalledApp], presentingViewController: UIViewController?, group: RefreshGroup? = nil) -> RefreshGroup
+    func refresh(_ installedApps: [InstalledApp],
+                 presentingViewController: UIViewController?,
+                 dbContext: NSManagedObjectContext? = nil,
+                 group: RefreshGroup? = nil) -> RefreshGroup
     {
         debugLog("[AppManager] refresh() called for apps: \(installedApps.map { $0.bundleIdentifier })")
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
@@ -713,15 +549,15 @@ final class AppManager: ObservableObject, @unchecked Sendable
         if let group = group {
             actualGroup = group
         } else {
-            let context = self.makeAuthenticatedContext(presentingViewController: presentingViewController)
-            actualGroup = RefreshGroup(context: context)
+            let context = self.getValidDbContext(dbContext)
+            actualGroup = RefreshGroup(dbContext: context)
         }
         
         actualGroup.activeTask = Task.detached {
             do {
                 try await self.pipelineRunner.perform(installedApps.map { .refresh($0) }, handler: pipelineHandler, group: actualGroup)
             } catch {
-                actualGroup.context.error = error
+                actualGroup.error = error
                 let results = Dictionary(uniqueKeysWithValues: installedApps.map { ($0.bundleIdentifier, Result<InstalledApp, Error>.failure(error)) })
                 actualGroup.completionHandler?(results)
             }
@@ -734,24 +570,24 @@ final class AppManager: ObservableObject, @unchecked Sendable
     {
         debugLog("[AppManager] activate() called for app: \(installedApp.bundleIdentifier)")
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
-        let context = self.makeAuthenticatedContext(presentingViewController: presentingViewController)
-        self.pipelineRunner.performSingleOperation(.activate(installedApp), handler: pipelineHandler, context: context, completionHandler: completionHandler)
+        let dbContext = self.getValidDbContext()
+        self.pipelineRunner.performSingleOperation(.activate(installedApp), handler: pipelineHandler, dbContext: dbContext, completionHandler: completionHandler)
     }
     
     func deactivate(_ installedApp: InstalledApp, presentingViewController: UIViewController?, completionHandler: @escaping (Result<InstalledApp, Error>) -> Void)
     {
         debugLog("[AppManager] deactivate() called for app: \(installedApp.bundleIdentifier)")
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
-        let context = self.makeAuthenticatedContext(presentingViewController: presentingViewController)
-        self.pipelineRunner.performSingleOperation(.deactivate(installedApp), handler: pipelineHandler, context: context, completionHandler: completionHandler)
+        let dbContext = self.getValidDbContext()
+        self.pipelineRunner.performSingleOperation(.deactivate(installedApp), handler: pipelineHandler, dbContext: dbContext, completionHandler: completionHandler)
     }
     
     func deleteApp(_ installedApp: InstalledApp, presentingViewController: UIViewController?, completionHandler: @escaping (Result<InstalledApp, Error>) -> Void)
     {
         debugLog("[AppManager] deleteApp() called for app: \(installedApp.bundleIdentifier)")
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
-        let context = self.makeAuthenticatedContext(presentingViewController: presentingViewController)
-        self.pipelineRunner.performSingleOperation(.deleteApp(installedApp), handler: pipelineHandler, context: context, completionHandler: completionHandler)
+        let dbContext = self.getValidDbContext()
+        self.pipelineRunner.performSingleOperation(.deleteApp(installedApp), handler: pipelineHandler, dbContext: dbContext, completionHandler: completionHandler)
     }
     
     @discardableResult
@@ -762,32 +598,32 @@ final class AppManager: ObservableObject, @unchecked Sendable
     {
         debugLog("[AppManager] resign() called for app: \(installedApp.bundleIdentifier)")
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
-        let context = self.makeAuthenticatedContext(presentingViewController: presentingViewController)
-        return self.pipelineRunner.performSingleOperation(.resign(installedApp, alternateIconMode: alternateIconMode), handler: pipelineHandler, context: context, completionHandler: completionHandler)
+        let dbContext = self.getValidDbContext()
+        return self.pipelineRunner.performSingleOperation(.resign(installedApp, alternateIconMode: alternateIconMode), handler: pipelineHandler, dbContext: dbContext, completionHandler: completionHandler)
     }
     
     func backup(_ installedApp: InstalledApp, presentingViewController: UIViewController?, completionHandler: @escaping (Result<InstalledApp, Error>) -> Void)
     {
         debugLog("[AppManager] backup() called for app: \(installedApp.bundleIdentifier)")
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
-        let context = self.makeAuthenticatedContext(presentingViewController: presentingViewController)
-        self.pipelineRunner.performSingleOperation(.backup(installedApp), handler: pipelineHandler, context: context, completionHandler: completionHandler)
+        let dbContext = self.getValidDbContext()
+        self.pipelineRunner.performSingleOperation(.backup(installedApp), handler: pipelineHandler, dbContext: dbContext, completionHandler: completionHandler)
     }
     
     func restore(_ installedApp: InstalledApp, presentingViewController: UIViewController?, completionHandler: @escaping (Result<InstalledApp, Error>) -> Void)
     {
         debugLog("[AppManager] restore() called for app: \(installedApp.bundleIdentifier)")
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
-        let context = self.makeAuthenticatedContext(presentingViewController: presentingViewController)
-        self.pipelineRunner.performSingleOperation(.restore(installedApp), handler: pipelineHandler, context: context, completionHandler: completionHandler)
+        let dbContext = self.getValidDbContext()
+        self.pipelineRunner.performSingleOperation(.restore(installedApp), handler: pipelineHandler, dbContext: dbContext, completionHandler: completionHandler)
     }
     
     func removeApp(_ installedApp: InstalledApp, presentingViewController: UIViewController? = nil, completionHandler: @escaping (Result<Void, Error>) -> Void)
     {
         debugLog("[AppManager] removeApp() called for app: \(installedApp.bundleIdentifier)")
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
-        let context = self.makeAuthenticatedContext(presentingViewController: presentingViewController)
-        self.pipelineRunner.performVoidOperation(.removeApp(installedApp), handler: pipelineHandler, context: context, completionHandler: completionHandler)
+        let dbContext = self.getValidDbContext()
+        self.pipelineRunner.performVoidOperation(.removeApp(installedApp), handler: pipelineHandler, dbContext: dbContext, completionHandler: completionHandler)
     }
     
     func removeDeactivatedApp(_ installedApp: InstalledApp, completionHandler: @escaping (Result<Void, Error>) -> Void)
@@ -881,14 +717,11 @@ extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorL
         )
     }
 
-    private func makeAuthenticatedContext(presentingViewController: UIViewController? = nil,
-                                          baseContext: StandaloneOperationContext? = nil,
-                                          dbBackgroundContext: NSManagedObjectContext? = nil) -> StandaloneOperationContext
-    {
-        if let baseContext = baseContext { return baseContext }
-        let backgroundContext = dbBackgroundContext ?? DatabaseManager.shared.persistentContainer.newBackgroundContext()
-        return StandaloneOperationContext(steps: .signIn, dbBackgroundContext: backgroundContext)
+    private func getValidDbContext(_ context: NSManagedObjectContext? = nil) -> NSManagedObjectContext {
+        context ?? DatabaseManager.shared.persistentContainer.newBackgroundContext()
     }
+
+
     
 
     func installationProgress(for app: AppProtocol) -> Progress?

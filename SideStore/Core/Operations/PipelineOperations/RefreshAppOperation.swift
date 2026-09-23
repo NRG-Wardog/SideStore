@@ -25,8 +25,25 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
             throw OperationError.invalidParameters("RefreshAppOperation.execute: self.context.provisioningProfiles is nil")
         }
         
-        guard let appBundle = self.context.targetAppBundle else { throw OperationError.appNotFound(name: nil) }
+        guard let appBundle = self.context.targetAppBundle else {
+            throw OperationError.invalidParameters("RefreshAppOperation: context.targetAppBundle is nil")
+        }
         self.setProgress(10)
+        
+        if self.context.isCellularRefreshGroup {
+            debugLog("[RefreshAppOperation] Queueing \(self.context.bundleIdentifier) into batch profile injection (isCellularRefreshGroup = true)")
+            self.context.sharedContext.addPendingProfileBatch(PendingProfileBatch(
+                bundleID: self.context.bundleIdentifier,
+                profiles: profiles.values.map { $0.data },
+                app: self.context.installedApp,
+                certStatus: self.context.targetCertStatus
+            ))
+            self.setProgress(85)
+            guard let app = self.context.installedApp else {
+                throw OperationError.invalidParameters("RefreshAppOperation: context.installedApp is nil")
+            }
+            return app
+        }
         
         do {
             await CellularRefreshManager.shared.turnOffDataIfNeeded()
@@ -55,7 +72,7 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         
         guard let mainApp = self.context.installedApp,
               let installedApp = dbContext.object(with: mainApp.objectID) as? InstalledApp else {
-            throw OperationError.appNotFound(name: appBundle.name)
+            throw OperationError.invalidParameters("Could not find installed database record for '\(appBundle.name)'")
         }
         installedApp.update(provisioningProfile: profiles.values.first!)
         
