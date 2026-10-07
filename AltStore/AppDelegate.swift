@@ -4595,6 +4595,343 @@ func v3AuthenticationPhase<T>(_ step: CombinedFailure.SourceStep,
     }
 }
 
+// DEBUG TEMPORARY: remove this finite, per-attempt diagnostic with the investigation.
+// One release-visible switch also controls the native patcher. No TaskLocal/global
+// mutable state and no raw provider text, paths, identifiers, blobs or headers.
+public struct V3TemporaryAnisetteTrace: Equatable, Sendable {
+    public static let temporaryAnisetteTraceEnabled = true
+    public static let contextKey = "debug_temporary_anisette_trace"
+    public static let maximumEvents = 64
+    public static let maximumBytes = 2048
+    public enum Step: String, CaseIterable, Sendable {
+        case keychainRead, pairValidation, blobPresence, requestHeaders, primaryProvider
+        case currentProbe, currentProof, currentSnapshot, legacyRead, legacyCandidate
+        case legacyProbe, legacyProof, identityCommit, freshBlobCommit
+    }
+    public enum Outcome: String, CaseIterable, Sendable { case started, succeeded, failed, skipped }
+    public enum Scope: String, CaseIterable, Sendable { case primary, current, legacy }
+    private enum NativeEvent: String, CaseIterable, Sendable {
+        case argumentsOk = "arguments.ok"
+        case argumentsFailed = "arguments.failed"
+        case rootOk = "root.ok"
+        case rootFailed = "root.failed"
+        case uuidDirCreated = "uuid_dir.created"
+        case uuidDirExists = "uuid_dir.exists"
+        case uuidDirFailed = "uuid_dir.failed"
+        case fileOpenOk = "file.open.ok"
+        case fileOpenFailed = "file.open.failed"
+        case fileStreamOk = "file.stream.ok"
+        case fileStreamFailed = "file.stream.failed"
+        case fileWriteOk = "file.write.ok"
+        case fileWriteFailed = "file.write.failed"
+        case fileFlushOk = "file.flush.ok"
+        case fileFlushFailed = "file.flush.failed"
+        case fileFlushNotChecked = "file.flush.not_checked"
+        case fileCloseOk = "file.close.ok"
+        case fileCloseFailed = "file.close.failed"
+        case fileReadOpenOk = "file.read_open.ok"
+        case fileReadOpenFailed = "file.read_open.failed"
+        case fileReadbackOk = "file.readback.ok"
+        case fileReadbackFailed = "file.readback.failed"
+        case fileReadbackNotChecked = "file.readback.not_checked"
+        case fileReadCloseOk = "file.read_close.ok"
+        case fileReadCloseFailed = "file.read_close.failed"
+        case fileRenameOk = "file.rename.ok"
+        case fileRenameFailed = "file.rename.failed"
+        case vmInitOk = "vm.init.ok"
+        case vmInitFailed = "vm.init.failed"
+        case vmReused = "vm.reused"
+        case setupBegin = "setup.begin"
+        case setupOk = "setup.ok"
+        case setupFailed = "setup.failed"
+        case libraryLoadOk = "library.load.ok"
+        case libraryLoadFailed = "library.load.failed"
+        case libraryCached = "library.cached"
+        case libraryInitOk = "library.init.ok"
+        case libraryInitFailed = "library.init.failed"
+        case provisioningPathOk = "provisioning_path.ok"
+        case provisioningPathFailed = "provisioning_path.failed"
+        case provisioningPathCached = "provisioning_path.cached"
+        case androidIdOk = "android_id.ok"
+        case androidIdFailed = "android_id.failed"
+        case androidIdCached = "android_id.cached"
+        case nativeSymbolOk = "native.symbol.ok"
+        case nativeSymbolFailed = "native.symbol.failed"
+        case nativeOtpOk = "native.otp.ok"
+        case nativeOtpFailed = "native.otp.failed"
+        case nativeOutputOk = "native.output.ok"
+        case nativeOutputFailed = "native.output.failed"
+        case nativeOutputNotChecked = "native.output.not_checked"
+        case cleanupOk = "cleanup.ok"
+        case cleanupFailed = "cleanup.failed"
+        case cleanupNotNeeded = "cleanup.not_needed"
+        case cleanupNotRequested = "cleanup.not_requested"
+        case responseAllocationFailed = "response.allocation.failed"
+        case traceTruncated = "trace.truncated"
+    }
+    private enum Event: Equatable, Sendable {
+        case step(Step, Outcome)
+        case native(Scope, NativeEvent)
+        case truncated
+
+        var token: String {
+            switch self {
+            case .step(let step, let outcome): return "swift.\(step.rawValue).\(outcome.rawValue)"
+            case .native(let scope, let event): return "native.\(scope.rawValue).\(event.rawValue)"
+            case .truncated: return "trace.truncated"
+            }
+        }
+        init?(token: String) {
+            if token == "trace.truncated" { self = .truncated; return }
+            let parts = token.components(separatedBy: ".")
+            if parts.count == 3, parts[0] == "swift",
+               let step = Step(rawValue: parts[1]), let outcome = Outcome(rawValue: parts[2]) {
+                self = .step(step, outcome); return
+            }
+            if parts.count >= 3, parts[0] == "native", let scope = Scope(rawValue: parts[1]),
+               let event = NativeEvent(rawValue: parts.dropFirst(2).joined(separator: ".")) {
+                self = .native(scope, event); return
+            }
+            return nil
+        }
+    }
+    private var events: [Event] = []
+    public init() {}
+
+    public mutating func record(step: Step, outcome: Outcome) {
+        append(.step(step, outcome))
+    }
+    public mutating func appendNative(errorDescription: String, scope: Scope) {
+        guard Self.temporaryAnisetteTraceEnabled,
+              let suffix = Self.nativeSuffix(errorDescription) else { return }
+        for event in suffix.events { append(.native(scope, event)) }
+    }
+    private mutating func append(_ event: Event) {
+        guard Self.temporaryAnisetteTraceEnabled else { return }
+        events.append(event)
+        if events.count > Self.maximumEvents || Self.encode(events).utf8.count > Self.maximumBytes {
+            if events.first != .truncated { events.insert(.truncated, at: 0) }
+            // Drop the oldest observation, keeping the final failure and a
+            // finite marker that makes the missing prefix explicit.
+            while events.count > Self.maximumEvents || Self.encode(events).utf8.count > Self.maximumBytes {
+                events.remove(at: 1)
+            }
+        }
+    }
+    private static func encode(_ events: [Event]) -> String {
+        "v1;" + events.map(\.token).joined(separator: ";")
+    }
+    public var snapshot: String? {
+        guard Self.temporaryAnisetteTraceEnabled, !events.isEmpty else { return nil }
+        return Self.encode(events)
+    }
+    public init?(encoded: String) {
+        guard Self.temporaryAnisetteTraceEnabled, encoded.utf8.count <= Self.maximumBytes,
+              encoded.hasPrefix("v1;") else { return nil }
+        let tokens = encoded.dropFirst(3).components(separatedBy: ";")
+        guard !tokens.isEmpty, tokens.count <= Self.maximumEvents else { return nil }
+        var decoded: [Event] = []
+        for (index, token) in tokens.enumerated() {
+            guard let event = Event(token: token),
+                  event != .truncated || index == 0 else { return nil }
+            decoded.append(event)
+        }
+        events = decoded
+    }
+
+    // Native suffixes are accepted only in their entirety. Arbitrary leading
+    // prose is never retained by the trace or passed to diagnostics.
+    private static func nativeSuffix(_ description: String) -> (base: String, events: [NativeEvent])? {
+        let marker = " [DEBUG_TEMPORARY_NATIVE_TRACE:"
+        guard description.utf8.count <= 4096, description.hasSuffix("]"),
+              let range = description.range(of: marker),
+              description[range.upperBound...].range(of: marker) == nil else { return nil }
+        let body = description[range.upperBound...].dropLast()
+        guard !body.isEmpty, body.utf8.count <= 1024 else { return nil }
+        let tokens = body.components(separatedBy: ",")
+        guard tokens.count <= 32 else { return nil }
+        var decoded: [NativeEvent] = []
+        for (index, token) in tokens.enumerated() {
+            guard let event = NativeEvent(rawValue: token),
+                  event != .traceTruncated || index == tokens.count - 1 else { return nil }
+            decoded.append(event)
+        }
+        return (String(description[..<range.lowerBound]), decoded)
+    }
+    static func nativeDescriptionWithoutTrace(_ description: String) -> String {
+        // Stripping valid metadata preserves the pre-existing native phase/code
+        // classifier even if a trace-enabled service meets a disabled host.
+        nativeSuffix(description)?.base ?? description
+    }
+    public var technicalDetails: String {
+        guard let snapshot else { return "" }
+        return "\nDEBUG TEMPORARY anisette_trace=\(snapshot)"
+    }
+    public var failedStep: String? {
+        guard Self.temporaryAnisetteTraceEnabled else { return nil }
+        for event in events.reversed() {
+            switch event {
+            case .step(let step, .failed):
+                let scope: Scope?
+                switch step {
+                case .primaryProvider: scope = .primary
+                case .currentProbe: scope = .current
+                case .legacyProbe: scope = .legacy
+                default: scope = nil
+                }
+                if let scope, let native = nativeFailedStep(scope: scope) { return native }
+                return step.rawValue
+            case .native(let scope, let native) where native.rawValue.hasSuffix(".failed"):
+                return nativeFailedStep(scope: scope)
+            default: continue
+            }
+        }
+        return nil
+    }
+    private func nativeFailedStep(scope: Scope) -> String? {
+        // Setup wrappers and cleanup can also fail after the causal native
+        // step. Keep the first failure from this invocation visible; the full
+        // ordered trace still includes every subsequent failure.
+        for event in events {
+            if case .native(let observedScope, let native) = event,
+               observedScope == scope, native.rawValue.hasSuffix(".failed") {
+                return "\(scope.rawValue).\(native.rawValue.dropLast(7))"
+            }
+        }
+        return nil
+    }
+
+}
+
+// Recovery evidence is finite and contains no identity, blob or provider text.
+struct V3AnisetteAttemptContext {
+    enum BlobState: String { case existing, fresh, unknown }
+    enum Recovery: String {
+        case notAttempted, noLegacyCandidate, legacyReadFailed, ambiguousLegacyIdentity
+        case invalidLegacyPair, legacyBlobMismatch, probeRejected, invalidNativeProof
+        case restoreFailed, stateChanged, temporaryStorageUnavailable, currentProbeRejected
+        case automaticRecoveryDisabled
+    }
+    let blobState: BlobState
+    let recovery: Recovery
+    var probeEvidence: V3AnisetteNativeEvidence? = nil
+    var trace: V3TemporaryAnisetteTrace? = nil
+    var diagnosticFields: [String: String] {
+        var fields = ["anisette_blob_state": blobState.rawValue, "anisette_recovery": recovery.rawValue]
+        if let snapshot = trace?.snapshot { fields[V3TemporaryAnisetteTrace.contextKey] = snapshot }
+        if let probeEvidence {
+            fields["probe_native_code"] = String(probeEvidence.code)
+            fields["probe_native_phase"] = probeEvidence.phase.rawValue
+            fields["probe_native_subcode"] = probeEvidence.subcode.map(String.init) ?? "unknown"
+        }
+        return fields
+    }
+}
+struct V3AnisetteAttemptError: Error {
+    let underlying: Error
+    let context: V3AnisetteAttemptContext
+}
+
+// V3_ANISETTE_NATIVE_EVIDENCE_V1: the associated ADI Int32 is not an Apple
+// server result or Swift's NSError enum discriminator. Only exact producers in
+// AnisetteKit 1f5a7e36553cc865b873f222b87a6486c0bcc7bf Native/anisette_core_{mac,uc}.cpp
+// identify a native phase. Descriptions (including paths) never leave here.
+struct V3AnisetteNativeEvidence {
+    enum Phase: String {
+        case unknown, nativeOTP, provisionStart, provisionEnd
+        case setupLibraries, setupLoadLibrary, setupProvisioningPath, setupAndroidID
+        case readProvisioningData, nativeStorage
+    }
+    let code: Int32
+    let phase: Phase
+    let subcode: Int32?
+
+    static func capture(code: Int32, description: String) -> Self {
+        let unknown = Self(code: code, phase: .unknown, subcode: nil)
+        // Bound inspection before matching. Never scan arbitrary messages for
+        // keywords, URLs, digits or error-like substrings.
+        let description = V3TemporaryAnisetteTrace.nativeDescriptionWithoutTrace(description)
+        guard description.utf8.count <= 256 else { return unknown }
+        // Exact fixed producers in the reviewed native staging patch. Numeric
+        // equality alone never assigns a storage phase to arbitrary errors.
+        if code == -6 && (description == "Checked OTP staging failed" || description == "Isolated OTP staging failed") {
+            return Self(code: code, phase: .nativeStorage, subcode: nil)
+        }
+        let storagePrefix = "Checked OTP staging failed (errno "
+        if code == -6 {
+            let value = String(description.dropFirst(storagePrefix.count).dropLast())
+            if let observedErrno = Int32(value), observedErrno > 0, observedErrno <= 4095,
+               description == "\(storagePrefix)\(observedErrno))" {
+                // For nativeStorage only, subcode is the failed POSIX call's
+                // immediately captured errno, not an ADI or Apple server code.
+                return Self(code: code, phase: .nativeStorage, subcode: observedErrno)
+            }
+        }
+        for (symbol, phase) in [("ADIOTPRequest", Phase.nativeOTP),
+                                ("ADIProvisioningStart", .provisionStart),
+                                ("ADIProvisioningEnd", .provisionEnd)] {
+            if (code == -3 && description == "Symbol \(symbol) missing") ||
+               (code != 0 && description == failureDescription(symbol, code: code)) {
+                return Self(code: code, phase: phase, subcode: nil)
+            }
+        }
+        if code == -4 && description == "Failed to read generated adi.pb" {
+            return Self(code: code, phase: .readProvisioningData, subcode: nil)
+        }
+        // All setup failures return wrapper -2, even when a setup ADI call
+        // reports another number. Keep that nested scalar separate as well.
+        guard code == -2 else { return unknown }
+        let setupSymbols: [(String, String, Phase)] = [
+            ("ADILoadLibraryWithPath", "ADILoadLibraryWithPath (kq56gsgHG6)", .setupLoadLibrary),
+            ("ADISetProvisioningPath", "ADISetProvisioningPath", .setupProvisioningPath),
+            ("ADISetAndroidID", "ADISetAndroidID", .setupAndroidID)
+        ]
+        if let tail = description.components(separatedBy: ": ").last,
+           let subcode = Int32(tail), subcode != 0, String(subcode) == tail {
+            for (ucSymbol, macSymbol, phase) in setupSymbols {
+                if description == "\(ucSymbol) failed: \(subcode)" ||
+                   description == failureDescription(macSymbol, code: subcode) {
+                    return Self(code: code, phase: phase, subcode: subcode)
+                }
+            }
+        }
+        let fixedSetup: [String: Phase] = [
+            "Library directory path is null.": .setupLibraries,
+            "Failed to load libraries into VM": .setupLibraries,
+            "Required ADI setup symbol missing in VM": .setupLoadLibrary,
+            "Symbol ADILoadLibraryWithPath (kq56gsgHG6) missing from libraries": .setupLoadLibrary,
+            "Symbol ADISetProvisioningPath missing in VM": .setupProvisioningPath,
+            "Symbol ADISetProvisioningPath (nf92ngaK92) missing": .setupProvisioningPath,
+            "Symbol ADISetAndroidID missing in VM": .setupAndroidID,
+            "Symbol ADISetAndroidID (Sph98paBcz) missing": .setupAndroidID
+        ]
+        return Self(code: code, phase: fixedSetup[description] ?? .unknown, subcode: nil)
+    }
+
+    private static func failureDescription(_ symbol: String, code: Int32) -> String {
+        // Exact finite labels from Native/anisette_base.cpp at the same pin.
+        // Matching the label against its code rejects even plausible-looking
+        // injected descriptions. Unknown numeric results remain observable.
+        let labels: [Int32: String] = [
+            -1: "Invalid argument passed", -2: "ELF Loader failed to map dependencies",
+            -3: "Required ADI symbol missing", -4: "Failed to read generated file",
+            -5: "Failed to parse response JSON",
+            -45001: "Invalid ADI parameters (-45001)", -45002: "Invalid ADI decipher params (-45002)",
+            -45003: "Invalid ADI trust key (-45003)", -45006: "PTM and TK mismatch (-45006)",
+            -45018: "Invalid input header (-45018)", -45019: "Unknown ADI function (-45019)",
+            -45020: "Invalid input body (-45020)", -45025: "Unknown ADI session (-45025)",
+            -45026: "Empty ADI session (-45026)", -45031: "Invalid data header (-45031)",
+            -45032: "Data too short (-45032)", -45033: "Invalid data body (-45033)",
+            -45034: "Unknown call flags (-45034)", -45036: "ADI time error (-45036)",
+            -45046: "Empty hardware IDs (-45046)", -45054: "ADI filesystem error (-45054)",
+            -45061: "Device not provisioned (-45061)", -45062: "Cannot erase unprovisioned device (-45062)",
+            -45063: "Pending ADI session (-45063)", -45066: "ADI session already done (-45066)",
+            -45075: "Library loading failed (-45075)"
+        ]
+        return "\(symbol) failed (\(labels[code] ?? "Unknown ADI error")): \(code)"
+    }
+}
+
 // V3_TYPED_ACCOUNT_DIAGNOSTICS_V1: only operation-owned stage and fixed
 // classifications cross the wire. Original errors stay inside the process for
 // typed guidance; descriptions, userInfo and provider payloads never serialize.
@@ -4715,4 +5052,77 @@ enum V3AccountDatabaseRecovery {
         }
     }
 }
+
+enum V3AnisetteSyncFailurePolicy {
+    /// Converts only evidence exposed by the pinned Anisette sync path into a
+    /// semantic failure. URL transport errors and AnisetteServersManager's
+    /// explicit HTTP/invalid-response errors are distinct; every other error
+    /// remains unknown rather than being called a network failure.
+    static func failure(_ error: Error, id: String) -> CombinedFailure {
+        if error is CancellationError {
+            return CombinedFailure(operation: "anisetteSync", stage: .command,
+                code: .cancelled, id: id, retryable: false)
+        }
+        let native = error as NSError
+        if native.domain == NSURLErrorDomain && native.code == NSURLErrorCancelled {
+            return CombinedFailure(operation: "anisetteSync", stage: .command,
+                code: .cancelled, id: id, underlying: native, retryable: false)
+        }
+        if let urlError = error as? URLError {
+            if urlError.code == .cancelled {
+                return CombinedFailure(operation: "anisetteSync", stage: .command,
+                    code: .cancelled, id: id, underlying: native, retryable: false)
+            }
+            if let cause = networkCause(urlError.code) {
+                return CombinedFailure(operation: "anisetteSync", stage: .network,
+                    code: .failed, id: id, underlying: error, retryable: true, safeCause: cause)
+            }
+        }
+        if native.domain == NSURLErrorDomain,
+           let cause = networkCause(URLError.Code(rawValue: native.code)) {
+            return CombinedFailure(operation: "anisetteSync", stage: .network,
+                code: .failed, id: id, underlying: native, retryable: true, safeCause: cause)
+        }
+        if native.domain == "AnisetteServersManager" {
+            if native.code == -1 {
+                return CombinedFailure(operation: "anisetteSync", stage: .command,
+                    code: .invalidResponse, id: id, underlying: native,
+                    safeCause: .anisetteInvalidResponse)
+            }
+            if native.code == 408 {
+                return CombinedFailure(operation: "anisetteSync", stage: .command,
+                    code: .failed, id: id, underlying: native, retryable: true,
+                    safeCause: .anisetteRequestTimedOut)
+            }
+            if native.code == 429 {
+                return CombinedFailure(operation: "anisetteSync", stage: .command,
+                    code: .busy, id: id, underlying: native, retryable: true,
+                    safeCause: .anisetteRateLimited)
+            }
+            if (500..<600).contains(native.code) {
+                return CombinedFailure(operation: "anisetteSync", stage: .command,
+                    code: .failed, id: id, underlying: native, retryable: true,
+                    safeCause: .anisetteServerUnavailable)
+            }
+            if (100..<500).contains(native.code), !(200..<300).contains(native.code) {
+                return CombinedFailure(operation: "anisetteSync", stage: .command,
+                    code: .failed, id: id, underlying: native,
+                    safeCause: .anisetteServerRejected)
+            }
+        }
+        return CombinedFailure(operation: "anisetteSync", stage: .command,
+            code: .failed, id: id, underlying: error, safeCause: .anisetteUnknownFailure)
+    }
+
+    private static func networkCause(_ code: URLError.Code) -> CombinedFailure.SafeCause? {
+        switch code {
+        case .networkConnectionLost: return .networkConnectionLost
+        case .timedOut: return .networkTimedOut
+        case .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
+            return .networkUnavailable
+        default: return nil
+        }
+    }
+}
+
 

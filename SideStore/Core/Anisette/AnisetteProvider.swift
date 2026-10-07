@@ -31,8 +31,10 @@ enum AnisetteProvider {
         let startIndex = servers.firstIndex(where: { $0.absoluteString == lastServer }) ?? 0
 
         let provider = SideSign.AnisetteDataManager.shared
-        let existingBlob = AnisetteConfigManager.shared.anisetteAdiBlob.flatMap { Data(base64Encoded: $0) }
-        let identifier = await AnisetteConfigManager.shared.resolveDeviceIdentifier()
+        // LC_ANISETTE_PAIR_PRECONDITION_V1
+        let anisetteSnapshot = try await AnisetteConfigManager.shared.resolveAnisetteSnapshot()
+        let existingBlob = anisetteSnapshot.adiBlob
+        let identifier = anisetteSnapshot.identifier
         let headers = await AnisetteConfigManager.shared.makeRequestHeaders()
 
         let (anisetteData, newAdiBlob) = try await provider.fetchAnisetteDataWithFailover(
@@ -64,7 +66,7 @@ enum AnisetteProvider {
         )
 
         if let freshBlob = newAdiBlob {
-            AnisetteConfigManager.shared.anisetteAdiBlob = freshBlob.base64EncodedString()
+            try await AnisetteConfigManager.shared.commitAnisetteBlob(freshBlob, snapshot: anisetteSnapshot)
         }
 
         return anisetteData
