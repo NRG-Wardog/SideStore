@@ -381,10 +381,23 @@ class GitProofAdversarialTests(unittest.TestCase):
     def test_global_worktree_override_cannot_redirect_dirty_check(self):
         config = self.directory / "global-config"
         config.write_text("[core]\n\tworktree = " + str(self.good) + "\n")
+        # Exercise a symlinked temporary parent even when TMPDIR is canonical.
+        linked_parent = self.directory / "linked-parent"
+        linked_parent.symlink_to(self.directory.resolve(strict=True), target_is_directory=True)
+        self.bad = linked_parent / "bad"
+        roots = (self.bad.resolve(strict=True), self.bad)
         with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config),
                                      "GIT_WORK_TREE": str(self.good), "GIT_INDEX_FILE": str(self.good / ".git/index")}):
-            self.assertEqual(VERIFY.git(self.bad, "rev-parse", "--show-toplevel").decode().strip(), str(self.bad))
-            VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+            for root in roots:
+                with self.subTest(root=root, dirty=False):
+                    self.assertEqual(VERIFY.git(root, "rev-parse", "--show-toplevel").decode().strip(),
+                                     str(self.bad.resolve(strict=True)))
+                    VERIFY.verify_git(root, self.manifest, require_clean=True)
+            (self.bad / "Source.swift").write_text("let value = 2\n")
+            for root in roots:
+                with self.subTest(root=root, dirty=True):
+                    with self.assertRaisesRegex(VERIFY.ParityError, "Repository is not clean"):
+                        VERIFY.verify_git(root, self.manifest, require_clean=True)
 
     def test_runtime_head_blob_is_checked_despite_assume_unchanged(self):
         path = self.bad / "Source.swift"
