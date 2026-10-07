@@ -1,3 +1,4 @@
+// V3_CERTIFICATE_SERIAL_LOG_REDACTION_V1: certificate serials are password-equivalent and never logged.
 //
 //  SignInOperation.swift
 //  SideStore
@@ -27,18 +28,37 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     let anisetteServerHandler: AnisetteServerHandler
     let skipDeviceRegistration: Bool
     let skipCertificateProvisioning: Bool
+    // V3_PROVISIONING_RETRY_BYPASSES_CACHED_SIGNIN_V1
+    let v3ForceProvisioningRetry: Bool
+    // V3_PROVISIONING_REAUTHENTICATION_V1
+    let v3RequireFullProvisioning: Bool
+    // V3_EXPLICIT_SIGNIN_CREDENTIALS_V1: manual sign-in never replays saved credentials.
+    let v3RequireInteractiveCredentials: Bool
+    let v3ReauthenticateAppleID: String?
+    let v3ReauthenticationIdentityStamp: String?
+    private(set) var v3DidCompleteProvisioning = false
 
     init(
         context: StandaloneOperationContext,
         signInHandler: SignInHandler,
         anisetteServerHandler: AnisetteServerHandler,
         skipDeviceRegistration: Bool = false,
-        skipCertificateProvisioning: Bool = false
+        skipCertificateProvisioning: Bool = false,
+        v3ForceProvisioningRetry: Bool = false,
+        v3RequireFullProvisioning: Bool = false,
+        v3RequireInteractiveCredentials: Bool = false,
+        v3ReauthenticateAppleID: String? = nil,
+        v3ReauthenticationIdentityStamp: String? = nil
     ) throws {
         self.signInHandler = signInHandler
         self.anisetteServerHandler = anisetteServerHandler
         self.skipDeviceRegistration = skipDeviceRegistration
         self.skipCertificateProvisioning = skipCertificateProvisioning
+        self.v3ForceProvisioningRetry = v3ForceProvisioningRetry
+        self.v3RequireFullProvisioning = v3RequireFullProvisioning
+        self.v3RequireInteractiveCredentials = v3RequireInteractiveCredentials
+        self.v3ReauthenticateAppleID = v3ReauthenticateAppleID
+        self.v3ReauthenticationIdentityStamp = v3ReauthenticationIdentityStamp
 
         try super.init(context: context)
         self.debugLog("""
@@ -49,7 +69,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     }
 
     private func getAnisetteData() async throws -> ALTAnisetteData {
-        try await AnisetteProvider.fetch(handler: self.anisetteServerHandler)
+        // V3_AUTHENTICATION_PHASE_EVIDENCE_V1
+        try await v3AuthenticationPhase(.anisetteFetch) {
+            try await AnisetteProvider.fetch(handler: self.anisetteServerHandler)
+        }
     }
     
     // Main Pipeline Execution
@@ -65,7 +88,53 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         do {
             let authResult: SignInResult
 
-            if var session = AuthManager.shared.session,
+            if self.v3ForceProvisioningRetry {
+                let identityAtStart = AuthManager.shared.v3IdentityStamp
+                let generationAtStart = AuthManager.shared.v3IdentityGeneration
+                let credentials = AuthManager.shared.authenticationSnapshot
+                guard AuthManager.shared.v3IdentityIsStable,
+                      var session = AuthManager.shared.session,
+                      let team = AuthManager.shared.team,
+                      let account = team.account,
+                      let currentAppleID = credentials?.appleIDEmailAddress,
+                      currentAppleID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ==
+                        account.appleID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                      V3AuthIdentityBindingPolicy.hasUsableSession(
+                        credentialRoutePresent: credentials?.isAuthenticated == true,
+                        dsid: credentials?.appleIDAdsid, xcodeToken: credentials?.appleIDXcodeToken,
+                        sessionDSID: session.dsid, sessionXcodeToken: session.authToken,
+                        generationBefore: generationAtStart, generationAfter: AuthManager.shared.v3IdentityGeneration) else {
+                    throw V3ProvisioningResumeUnavailableError()
+                }
+                session.anisetteData = try await self.getAnisetteData()
+                let currentCredentials = AuthManager.shared.authenticationSnapshot
+                guard V3AuthReadStampPolicy.mayReturn(capturedStamp: identityAtStart,
+                        currentStamp: AuthManager.shared.v3IdentityStamp,
+                        stable: AuthManager.shared.v3IdentityIsStable),
+                      V3AuthIdentityBindingPolicy.sameCredentialRoute(
+                        appleIDBefore: credentials?.appleIDEmailAddress,
+                        appleIDAfter: currentCredentials?.appleIDEmailAddress,
+                        dsidBefore: credentials?.appleIDAdsid, dsidAfter: currentCredentials?.appleIDAdsid,
+                        tokenBefore: credentials?.appleIDXcodeToken, tokenAfter: currentCredentials?.appleIDXcodeToken),
+                      V3AuthIdentityBindingPolicy.hasUsableSession(
+                        credentialRoutePresent: currentCredentials?.isAuthenticated == true,
+                        dsid: currentCredentials?.appleIDAdsid, xcodeToken: currentCredentials?.appleIDXcodeToken,
+                        sessionDSID: session.dsid, sessionXcodeToken: session.authToken,
+                        generationBefore: generationAtStart, generationAfter: AuthManager.shared.v3IdentityGeneration) else {
+                    throw V3ProvisioningResumeUnavailableError()
+                }
+                guard AuthManager.shared.v3CachedSessionMatchesCurrentRoute(session) else {
+                    throw V3ProvisioningResumeUnavailableError()
+                }
+                AuthManager.shared.v3ReplaceSession(session)
+                authResult = try await self.provisioningLoop(account: account, session: session,
+                    reportProgress: { [weak self] progress in self?.setProgress(progress) })
+            } else if V3ProvisioningResumeExecutionPolicy.mayUseCachedSignIn(
+                forceProvisioningRetry: self.v3ForceProvisioningRetry,
+                requireFullProvisioning: self.v3RequireFullProvisioning),
+               !self.v3RequireInteractiveCredentials,
+               var session = AuthManager.shared.session,
+               AuthManager.shared.v3CachedSessionMatchesCurrentRoute(session),
                let team = AuthManager.shared.team,
                (self.skipCertificateProvisioning || CertificateManager.shared.activeCertificate != nil)
             {
@@ -84,28 +153,37 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 }
             }
             
+            guard AuthManager.shared.v3CachedSessionMatchesCurrentRoute(authResult.session) else {
+                throw V3ProvisioningResumeUnavailableError()
+            }
             try await self.finalizeAuthentication(result: .success(authResult))
             self.setProgress(100)
             return authResult
         } catch {
             self.debugLog("[SignInOperation] execute caught error during authentication: \(error). Cleaning up...")
-            if !AuthManager.shared.hasStoredPassword &&
-               !AuthManager.shared.hasStoredXcodeToken
-            {
-                AuthManager.shared.signOut()
-            }
+            // V3_AUTH_FAILURE_PRESERVES_ACCOUNT_STATE_V1: explicit user Sign Out
+            // owns account/keychain destruction; failed attempts are non-destructive.
             try? await self.finalizeAuthentication(result: .failure(error))
             throw error
         }
     }
     
     private func startAuthentication(reportProgress: @escaping @Sendable (Int64) -> Void) async throws -> SignInResult {
-        let (account, session) = if let silentResult = try await self.silentSignIn() {
+        // Explicit credentials own this attempt; saved routes remain available to background callers.
+        let silentResult = !self.v3RequireInteractiveCredentials && self.v3ReauthenticateAppleID == nil
+            ? try await self.silentSignIn() : nil
+        let (account, session) = if let silentResult {
             silentResult
-        } else {
+        } else if V3ProvisioningResumeExecutionPolicy.mayPromptForCredentials(
+            forceProvisioningRetry: self.v3ForceProvisioningRetry) {
             try await self.authenticationLoop()
+        } else {
+            throw V3ProvisioningResumeUnavailableError()
         }
-        AuthManager.shared.session = session
+        if let silentResult {
+            await self.signInHandler.handleSignInResult(.success(silentResult))
+        }
+        AuthManager.shared.v3ReplaceSession(session)
 
         let authResult = try await self.provisioningLoop(
             account: account,
@@ -128,6 +206,8 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
 
         var isCertificateResolved = false
         var isDeviceRegistered = false
+        // V3_TYPED_ACCOUNT_DIAGNOSTICS_V1: owned stage, never provider text.
+        var diagnosticStep: CombinedFailure.SourceStep = .fetchTeams
 
         while true {
             if self.isCancelled { throw OperationError.cancelled }
@@ -135,9 +215,11 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
             do {
                 // 1. Resolve Team & Save State
                 if resolvedTeam == nil {
+                    diagnosticStep = .fetchTeams
                     let team = try await self.fetchTeam(for: account, session: session)
                     AuthManager.shared.team = team
 
+                    diagnosticStep = .saveAccount
                     try await self.saveTeamAndAccount(team)
                     reportProgress(stepWeight * 2)
                     resolvedTeam = team
@@ -158,9 +240,15 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                     } else if self.skipCertificateProvisioning {
                         resolvedCertificate = activeCert
                     } else {
-                        let certificate = try await self.fetchCertificate(for: team, session: session)
-                        try CertificateManager.shared.setActiveCertificate(certificate)
-                        resolvedCertificate = certificate
+                        // Retain the obtained certificate across local save retries.
+                        if resolvedCertificate == nil {
+                            diagnosticStep = .fetchCertificate
+                            resolvedCertificate = try await self.fetchCertificate(for: team, session: session)
+                        }
+                        if let certificate = resolvedCertificate {
+                            diagnosticStep = .activateCertificate
+                            try CertificateManager.shared.setActiveCertificate(certificate)
+                        }
                     }
                     isCertificateResolved = true
                 }
@@ -171,6 +259,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 if !isDeviceRegistered {
                     if !self.skipDeviceRegistration {
                         self.verboseLog("[SignInOperation] Registering current device...")
+                        diagnosticStep = .registerDevice
                         let device = try await self.registerCurrentDevice(for: team, session: session)
                         self.debugLog("[SignInOperation] Registered current device UDID: \(device.identifier).")
                         reportProgress(stepWeight * 3)
@@ -178,6 +267,8 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                     isDeviceRegistered = true
                 }
 
+                self.v3DidCompleteProvisioning = !self.skipDeviceRegistration &&
+                    !self.skipCertificateProvisioning && resolvedCertificate != nil
                 return SignInResult(
                     team: team,
                     certificate: resolvedCertificate,
@@ -188,13 +279,15 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 if self.isCancelled { throw OperationError.cancelled }
 
                 self.debugLog("[SignInOperation] provisioningLoop caught error: \(error)")
-                let decision = await self.signInHandler.resolveProvisioningError(error)
+                let diagnosticError = v3AccountOperationFailure(error, step: diagnosticStep)
+                let decision = await self.signInHandler.resolveProvisioningError(diagnosticError)
                 switch decision {
                     case .retry:
                         self.debugLog("[SignInOperation] User chose retry in provisioningLoop")
                         continue
                     case .cancel:
                         self.debugLog("[SignInOperation] User cancelled in provisioningLoop")
+                        if diagnosticError.requiresReconciliation || diagnosticError.portalSessionRejected { throw diagnosticError }
                         throw OperationError.cancelled
                 }
             }
@@ -202,35 +295,64 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     }
     
     private func silentSignIn() async throws -> (ALTAccount, ALTAppleAPISession)? {
+        // LC_SIGNIN_CREDENTIAL_SNAPSHOT_V1
+        // LC_VERIFIED_LEGACY_AUTH_V1: routes are not yet bound identities.
+        let capturedStamp = AuthManager.shared.v3IdentityStamp
+        guard AuthManager.shared.v3IdentityIsStable else { throw OperationError.notAuthenticated }
+        let candidate: LCEmbeddedAuthenticationCandidate?
+        do { candidate = try Keychain.shared.authenticationCandidate() }
+        catch { throw v3AccountOperationFailure(error, step: .credentialCommit) }
+        let credentials = candidate?.credentials
         // Try silent auth using Keychain Token
-        if let adsid = AuthManager.shared.adsid, 
-           let xcodeToken = AuthManager.shared.xcodeToken 
-        {
+        if let adsid = credentials?.appleIDAdsid,
+           let xcodeToken = credentials?.appleIDXcodeToken {
             self.verboseLog("[SignInOperation] Authenticating Apple ID with tokens...")
 
             do {
                 let anisetteData = try await self.getAnisetteData()
                 let xcodeVersion = await AnisetteConfigManager.shared.resolvedXcodeVersion()
 
-                return try await AuthManager.shared.authenticateWithToken(
+                let (account, session) = try await v3AuthenticationPhase(.accountLookup) {
+                    try await AuthManager.shared.authenticateWithToken(
                     adsid: adsid,
                     xcodeToken: xcodeToken, 
                     anisetteData: anisetteData, 
                     xcodeVersion: xcodeVersion
                 )
+                }
+                guard !self.isCancelled, !Task.isCancelled else { throw OperationError.cancelled }
+                guard let candidate, AuthManager.shared.v3IdentityIsStable,
+                      capturedStamp == AuthManager.shared.v3IdentityStamp,
+                      account.identifier == session.dsid,
+                      candidate.matchesVerifiedIdentity(appleID: account.appleID, dsid: session.dsid) else {
+                    throw v3AccountOperationFailure(NSError(domain: "LiveContainerRefresh.Configuration", code: 1008), step: .credentialCommit)
+                }
+                AuthManager.shared.v3BeginIdentityTransition()
+                defer { AuthManager.shared.v3CompleteIdentityTransition() }
+                do {
+                    try Keychain.shared.writeVerifiedAuthentication(candidate, appleID: account.appleID,
+                        dsid: session.dsid, authToken: session.authToken)
+                } catch { throw v3AccountOperationFailure(error, step: .credentialCommit) }
+                AuthManager.shared.session = session
+                return (account, session)
             } catch {
-                self.debugLog("[SignInOperation] Token authentication failed: \(error)")
+                if error is V3AccountOperationError { throw error }
+                if let phase = error as? V3AuthenticationPhaseError, phase.underlying is LCAnisettePairError { throw error }
+                if self.isCancelled || Task.isCancelled || error is CancellationError { throw OperationError.cancelled }
+                self.debugLog("[V3_AUTH] saved_token_verification_failed")
             }
         }
         
         // Try silent auth using Keychain Password
-        if let appleID = AuthManager.shared.currentAppleID, 
-           let password = AuthManager.shared.password 
-        {
+        if let appleID = credentials?.appleIDEmailAddress,
+           let password = credentials?.appleIDPassword {
             self.debugLog("[SignInOperation] Authenticating Apple ID with saved password...")
             do {
-                return try await self.signIn(appleID: appleID, password: password)
+                return try await self.signIn(appleID: appleID, password: password,
+                    recoveryCandidate: candidate, capturedStamp: capturedStamp)
             } catch {
+                if error is V3AccountOperationError { throw error }
+                if let phase = error as? V3AuthenticationPhaseError, phase.underlying is LCAnisettePairError { throw error }
                 self.debugLog("[SignInOperation] Saved password authentication failed: \(error)")
             }
         }
@@ -242,8 +364,16 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         self.verboseLog("[SignInOperation] authenticationLoop: Requesting credentials...")
         let handler = self.signInHandler
         
+        var retryCredentials: (String, String)?
         while true {
-            let (appleID, password) = try await handler.credentials()
+            let credentials: (String, String)
+            if let retry = retryCredentials {
+                credentials = retry
+                retryCredentials = nil
+            } else {
+                credentials = try await handler.credentials()
+            }
+            let (appleID, password) = credentials
             if self.isCancelled { throw OperationError.cancelled }
             
             do {
@@ -255,13 +385,43 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 self.requiresPostAuthFlow = true
                 return (account, session)
             } catch {
-                self.debugLog("[SignInOperation] authenticationLoop: Attempt failed with error: \(error)")
+                if error is V3ProvisioningReauthenticationIdentityError { throw error }
+                if self.isCancelled || error is CancellationError || v3ClassifyAuthError(error) == nil {
+                    throw OperationError.cancelled
+                }
+                self.debugLog("[V3_AUTH] attempt_failed")
                 await handler.handleSignInResult(.failure(error))
+                // A local commit failure must reconcile, never replay Apple login.
+                if let local = error as? V3AccountOperationError, local.credentialCommit { throw local }
+                if v3ClassifyAuthError(error)?.rawValue == "anisetteIdentityStateInvalid" { throw error }
+                if V3TwoFactorRetryPolicy.shouldReuseCredentialsForCodeRetry(
+                    authFailureKind: v3ClassifyAuthError(error)?.rawValue) {
+                    retryCredentials = (appleID, password)
+                }
             }
         }
     }
     
-    private func signIn(appleID: String, password: String) async throws -> (ALTAccount, ALTAppleAPISession) {
+    private func v3ValidateReauthenticationIdentity(submittedAppleID: String, returnedAppleID: String? = nil, returnedDSID: String? = nil) throws {
+        guard let expectedOwner = self.v3ReauthenticateAppleID else { return }
+        let credentials = AuthManager.shared.authenticationSnapshot
+        guard let stamp = self.v3ReauthenticationIdentityStamp,
+              V3ProvisioningReauthenticationIdentityPolicy.mayAuthenticate(
+                expectedOwner: expectedOwner, submittedOwner: submittedAppleID,
+                currentOwner: credentials?.appleIDEmailAddress, capturedStamp: stamp,
+                currentStamp: AuthManager.shared.v3IdentityStamp,
+                identityStable: AuthManager.shared.v3IdentityIsStable),
+              returnedAppleID == nil || V3AuthIdentityBindingPolicy.mayUseTeam(
+                sessionOwner: expectedOwner, teamOwner: returnedAppleID),
+              returnedDSID == nil || returnedDSID == credentials?.appleIDAdsid else {
+            throw V3ProvisioningReauthenticationIdentityError()
+        }
+    }
+
+    private func signIn(appleID: String, password: String,
+                        recoveryCandidate: LCEmbeddedAuthenticationCandidate? = nil,
+                        capturedStamp: String? = nil) async throws -> (ALTAccount, ALTAppleAPISession) {
+        try self.v3ValidateReauthenticationIdentity(submittedAppleID: appleID)
         self.appleIDEmailAddress = appleID
         
         let anisetteData = try await self.getAnisetteData()
@@ -269,7 +429,9 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         
         let xcodeVersion = await AnisetteConfigManager.shared.resolvedXcodeVersion()
 
-        let (account, session) = try await AuthManager.shared.signIn(
+        try self.v3ValidateReauthenticationIdentity(submittedAppleID: appleID)
+        let (account, session) = try await v3AuthenticationPhase(.appleAuthentication) {
+            try await AuthManager.shared.signIn(
             appleID: appleID,
             password: password,
             anisetteData: anisetteData,
@@ -281,11 +443,35 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 try await handler.verificationCode(for: request)
             }
         )
+        }
         
-        AuthManager.shared.adsid = session.dsid
-        AuthManager.shared.xcodeToken = session.authToken
-        AuthManager.shared.currentAppleID = appleID
-        AuthManager.shared.password = password
+        if self.isCancelled || Task.isCancelled { throw OperationError.cancelled }
+        try self.v3ValidateReauthenticationIdentity(submittedAppleID: appleID, returnedAppleID: account.appleID, returnedDSID: session.dsid)
+        // V3_AUTH_CREDENTIAL_TRANSACTION_V1: commit the complete credential route
+        // and readiness marker together after exact read-back verification.
+        if let candidate = recoveryCandidate {
+            guard !self.isCancelled, !Task.isCancelled else { throw OperationError.cancelled }
+            guard AuthManager.shared.v3IdentityIsStable, capturedStamp == AuthManager.shared.v3IdentityStamp,
+                  account.identifier == session.dsid,
+                  candidate.matchesVerifiedIdentity(appleID: account.appleID, dsid: session.dsid) else {
+                throw v3AccountOperationFailure(NSError(domain: "LiveContainerRefresh.Configuration", code: 1008), step: .credentialCommit)
+            }
+        }
+        AuthManager.shared.v3BeginIdentityTransition()
+        defer { AuthManager.shared.v3CompleteIdentityTransition() }
+        do {
+            if let candidate = recoveryCandidate {
+                do {
+                    try Keychain.shared.writeVerifiedAuthentication(candidate, appleID: account.appleID,
+                        dsid: session.dsid, authToken: session.authToken)
+                } catch { throw v3AccountOperationFailure(error, step: .credentialCommit) }
+            } else {
+                try Keychain.shared.writeAuthenticationCredentials(appleID: appleID, password: password, dsid: session.dsid, authToken: session.authToken)
+            }
+        } catch {
+            throw v3AccountOperationFailure(error, step: .credentialCommit)
+        }
+        AuthManager.shared.session = session
         
         return (account, session)
     }
@@ -308,7 +494,8 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 do {
                     try await self.saveTeamAndAccount(team, makeActive: true)
                 } catch {
-                    self.debugLog("[SignInOperation] finalizeAuthentication: error occured when performing cleanup: \(error)")
+                    // V3_ACCOUNT_ACTIVATION_PERSISTENCE_V1: never publish activation after a failed save.
+                    throw v3AccountOperationFailure(error, step: .activateAccount)
                 }
                 self.verboseLog("[SignInOperation] finalizeAuthentication: Database updates completed.")
                 
@@ -335,7 +522,14 @@ private extension SignInOperation {
 
     private func saveTeamAndAccount(_ altTeam: ALTTeam, makeActive: Bool = false) async throws {
         let context = self.context.dbBackgroundContext
-        try await context.perform {
+        let intended = ["account:" + (altTeam.account?.identifier ?? altTeam.identifier),
+                        "team:" + altTeam.identifier].sorted()
+        do {
+            if makeActive {
+                let previous = try await v3AccountDatabaseSnapshot()
+                try V3AccountDatabaseRecovery.begin(previous: previous, intended: intended)
+            }
+            try await context.perform {
             let account: Account
             let team: Team
             
@@ -384,6 +578,11 @@ private extension SignInOperation {
                     otherTeam.isActiveTeam = false
                 }
 
+
+            }
+
+            try context.save()
+            if makeActive {
                 let isSparseRestorePatched   = ProcessInfo().sparseRestorePatched
                 let isAppLimitDisabled       = UserDefaults.standard.isAppLimitDisabled
 
@@ -396,8 +595,21 @@ private extension SignInOperation {
                     }
                 }
             }
-            
-            try context.save()
+            }
+            if makeActive {
+                let observed = try await v3AccountDatabaseSnapshot()
+                guard observed == intended else {
+                    throw NSError(domain: "LiveContainerRefresh.Configuration", code: 1011)
+                }
+                try V3AccountDatabaseRecovery.reconcile(observed: observed)
+            }
+        } catch {
+            await context.perform { context.rollback() }
+            if makeActive {
+                do { try await v3ReconcileAccountDatabaseStorage() }
+                catch { throw V3AccountDatabaseOutcomeUnknownError() }
+            }
+            throw error
         }
     }
     
@@ -488,7 +700,7 @@ private extension SignInOperation {
             if let mainBundleCertSerial = mainBundleCertSerial, 
                 mainBundleCertSerial.lowercased() != activeCert.serialNumber.lowercased() 
             {
-                self.debugLog("[SignInOperation] Active certificate (\(activeCert.serialNumber)) and running bundle certificate (\(mainBundleCertSerial)) mismatch detected. Running Bundle Certificate is still active on the Paid account portal. Using active Keychain certificate.")
+                self.debugLog("[SignInOperation] Certificate identity details omitted.")
             }
             return keyStoreCert
         }
@@ -498,7 +710,7 @@ private extension SignInOperation {
            var cert = CertificateManager.shared.getSignableCertificate(for: mainBundleCertSerial, fallbackPassword: certificate.machineIdentifier) 
         {
             cert.machineIdentifier = certificate.machineIdentifier
-            self.debugLog("[SignInOperation] Using running bundle certificate (\(cert.serialNumber)) with valid private key from signable cache.")
+            self.debugLog("[SignInOperation] Certificate identity details omitted.")
             return cert
         }
         
@@ -517,7 +729,7 @@ private extension SignInOperation {
 
         do {
             let newPortalCertificate = try await DeveloperPortalProxy.shared.createCertificate(machineName: machineName, team: team)
-            self.debugLog("[SignInOperation] Successfully requested new portal certificate (Serial: \(newPortalCertificate.serialNumber)).")
+            self.debugLog("[SignInOperation] Certificate identity details omitted.")
             
             let portalCertificates = try await DeveloperPortalProxy.shared.fetchCertificates(team: team)
             self.portalCertificates = portalCertificates
@@ -563,7 +775,7 @@ private extension SignInOperation {
 
                 for certificate in certsToRevoke {
                     do {
-                        self.verboseLog("[SignInOperation] replaceCertificate: Revoking certificate '\(certificate.machineName ?? certificate.name)' (Serial: \(certificate.serialNumber))...")
+                        self.verboseLog("[SignInOperation] Certificate identity details omitted.")
                         _ = try await DeveloperPortalProxy.shared.revokeCertificate(certificate, team: team)
                         self.verboseLog("[SignInOperation] replaceCertificate: Revoke succeeded.")
                     } catch {
