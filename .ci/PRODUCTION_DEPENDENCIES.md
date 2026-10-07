@@ -87,7 +87,11 @@ No wildcard source exclusions or rebaselined runtime hashes are appropriate.
 3. In SideStore finalize both gitlinks atomically: published SideSign commit
    and the exact minimuxer commit above. Record the SideSign SHA in the proof,
    then run the strict gate. Initialize children from their committed URLs;
-   verify their heads, origins, retained histories and licenses.
+   verify their heads, origins, retained histories and licenses. All seven
+   owner repositories must retain full ancestry: clone/fetch without a depth
+   limit and verify `git rev-parse --is-shallow-repository` reports `false`
+   for each owner, including initialized children. Do not use `--depth 1` or
+   `--shallow-submodules`; deepen an existing shallow child before proof.
 4. Build the pinned Rust/framework outputs from maintained idevice/jktcp sources
    with the already-reviewed build process. Stage only build products where
    minimuxer already expects them; do not rewrite package/runtime sources.

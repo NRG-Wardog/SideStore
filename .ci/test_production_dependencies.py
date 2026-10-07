@@ -73,6 +73,11 @@ class RepositoryTests(unittest.TestCase):
         self.assertFalse(first['production_ready'])
         self.assertEqual(first['runtime_behavior_changes'], [])
 
+    def test_shallow_history_rejected(self):
+        (self.root/'.git/shallow').write_bytes(self.raw_git('rev-parse','HEAD'))
+        with self.assertRaisesRegex(PROOF.ProofError, 'Shallow history'):
+            self.prove()
+
     def test_clean_linked_worktree_passes(self):
         linked = Path(self.temp.name).resolve()/'linked'
         self.raw_git('worktree','add','--quiet','--detach',str(linked),'HEAD')
