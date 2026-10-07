@@ -11,8 +11,10 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("verify_runtime_source", ROOT / "scripts/verify_runtime_source.py")
@@ -230,6 +232,191 @@ class VerifierMutationTests(unittest.TestCase):
         p.write_text('{}\n')
         with self.assertRaisesRegex(VERIFY.ParityError, "Preparation evidence drift"):
             VERIFY.verify_files(self.root, self.manifest, old_pipeline=True)
+
+
+class GitProofAdversarialTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.good = self.directory / "good"
+        self.good.mkdir()
+        self.fixture_environment = {key: value for key, value in os.environ.items()
+                                    if not key.startswith("GIT_")}
+        self.fixture_environment.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,
+                                         "GIT_CONFIG_GLOBAL": os.devnull})
+        self.raw_git(self.good, "init", "--quiet")
+        (self.good / "Source.swift").write_text("let value = 1\n")
+        self.raw_git(self.good, "add", "Source.swift")
+        self.raw_git(self.good, "commit", "--quiet", "-m", "upstream fixture")
+        self.base = self.raw_git(self.good, "rev-parse", "HEAD").decode().strip()
+        self.manifest = {"files": {"Source.swift": VERIFY.describe(self.good / "Source.swift")},
+                         "gitlinks": {}, "allowed_nonruntime_files": [],
+                         "upstream_base": self.base,
+                         "upstream_tree": self.raw_git(self.good, "rev-parse", "HEAD^{tree}").decode().strip()}
+        self.raw_git(self.good, "commit", "--quiet", "--allow-empty", "-m", "valid descendant")
+        self.good_head = self.raw_git(self.good, "rev-parse", "HEAD").decode().strip()
+        self.bad = self.directory / "bad"
+        subprocess.run(["git", "clone", "--quiet", "--shared", str(self.good), str(self.bad)],
+                       check=True, env=self.fixture_environment, capture_output=True)
+
+    def raw_git(self, root, *arguments, input_data=None):
+        return subprocess.check_output(["git", "-C", str(root), "-c", "user.name=Migration gate fixture",
+                                        "-c", "user.email=fixture@example.invalid", *arguments],
+                                       input=input_data, env=self.fixture_environment, stderr=subprocess.STDOUT)
+
+    def make_orphan(self, root=None):
+        root = root or self.bad
+        tree = self.raw_git(root, "rev-parse", "HEAD^{tree}").decode().strip()
+        orphan = self.raw_git(root, "commit-tree", tree, input_data=b"orphan proof fixture\n").decode().strip()
+        self.raw_git(root, "reset", "--quiet", "--hard", orphan)
+        return orphan
+
+    def test_orphan_head_cannot_borrow_redirected_valid_git_directory(self):
+        self.make_orphan()
+        VERIFY.verify_files(self.bad, self.manifest)
+        with patch.dict(os.environ, {"GIT_DIR": str(self.good / ".git"), "GIT_WORK_TREE": str(self.good)}):
+            with self.assertRaises(subprocess.CalledProcessError):
+                VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
+    def test_exact_full_owner_cli_orphan_redirection_regression(self):
+        clone = self.directory / "full-owner"
+        subprocess.run(["git", "clone", "--quiet", "--shared", str(ROOT), str(clone)],
+                       check=True, env=self.fixture_environment, capture_output=True)
+        self.make_orphan(clone)
+        environment = dict(self.fixture_environment, GIT_DIR=str(ROOT / ".git"), GIT_WORK_TREE=str(ROOT))
+        result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/verify_runtime_source.py"),
+                                 "--root", str(clone), "--require-clean"], capture_output=True,
+                                text=True, env=environment, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("SIDESTORE_RUNTIME_SOURCE_PARITY_PASS", result.stdout)
+        self.assertIn("merge-base", result.stderr)
+
+    def test_exact_full_owner_cli_rejects_hidden_committed_runtime(self):
+        clone = self.directory / "full-owner-committed-drift"
+        subprocess.run(["git", "clone", "--quiet", "--shared", str(ROOT), str(clone)],
+                       check=True, env=self.fixture_environment, capture_output=True)
+        path = clone / "AltStore/AppDelegate.swift"
+        original = path.read_bytes()
+        path.write_bytes(original + b"\nlet unexpectedCommittedRuntime = 123\n")
+        self.raw_git(clone, "add", "AltStore/AppDelegate.swift")
+        self.raw_git(clone, "commit", "--quiet", "-m", "unexpected committed runtime")
+        path.write_bytes(original)
+        self.raw_git(clone, "update-index", "--assume-unchanged", "AltStore/AppDelegate.swift")
+        self.assertEqual(self.raw_git(clone, "status", "--porcelain").strip(), b"")
+        result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/verify_runtime_source.py"),
+                                 "--root", str(clone), "--require-clean"], capture_output=True,
+                                text=True, env=self.fixture_environment, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("SIDESTORE_RUNTIME_SOURCE_PARITY_PASS", result.stdout)
+        self.assertIn("Committed byte/mode drift: AltStore/AppDelegate.swift", result.stderr)
+
+    def test_environment_discards_every_inherited_git_override(self):
+        overrides = {"GIT_DIR": "untrusted", "GIT_COMMON_DIR": "untrusted",
+                     "GIT_INDEX_FILE": "untrusted", "GIT_OBJECT_DIRECTORY": "untrusted",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES": "untrusted", "GIT_NAMESPACE": "untrusted",
+                     "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.worktree",
+                     "GIT_CONFIG_VALUE_0": "untrusted", "GIT_REPLACE_REF_BASE": "untrusted",
+                     "GIT_CONFIG_SYSTEM": "untrusted", "GIT_CONFIG_GLOBAL": "untrusted"}
+        with patch.dict(os.environ, overrides):
+            environment = VERIFY.proof_environment()
+        for key in overrides:
+            if key in ("GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL"):
+                self.assertEqual(environment[key], os.devnull)
+            else:
+                self.assertNotIn(key, environment)
+        self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(environment["GIT_GRAFT_FILE"], os.devnull)
+        self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
+
+    def test_replace_ref_cannot_fabricate_upstream_ancestry(self):
+        orphan = self.make_orphan()
+        self.raw_git(self.bad, "replace", orphan, self.good_head)
+        # Establish the attack changes ordinary Git's ancestry result.
+        self.raw_git(self.bad, "merge-base", "--is-ancestor", self.base, "HEAD")
+        with self.assertRaises(subprocess.CalledProcessError):
+            VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
+    def test_graft_file_cannot_fabricate_upstream_ancestry(self):
+        orphan = self.make_orphan()
+        (self.bad / ".git/info/grafts").write_text(orphan + " " + self.base + "\n")
+        self.raw_git(self.bad, "merge-base", "--is-ancestor", self.base, "HEAD")
+        with self.assertRaises(subprocess.CalledProcessError):
+            VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
+    def test_inherited_graft_override_cannot_fabricate_upstream_ancestry(self):
+        orphan = self.make_orphan()
+        graft = self.directory / "external-grafts"
+        graft.write_text(orphan + " " + self.base + "\n")
+        with patch.dict(os.environ, {"GIT_GRAFT_FILE": str(graft)}):
+            with self.assertRaises(subprocess.CalledProcessError):
+                VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
+    def test_global_worktree_override_cannot_redirect_dirty_check(self):
+        config = self.directory / "global-config"
+        config.write_text("[core]\n\tworktree = " + str(self.good) + "\n")
+        with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config),
+                                     "GIT_WORK_TREE": str(self.good), "GIT_INDEX_FILE": str(self.good / ".git/index")}):
+            self.assertEqual(VERIFY.git(self.bad, "rev-parse", "--show-toplevel").decode().strip(), str(self.bad))
+            VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
+    def test_runtime_head_blob_is_checked_despite_assume_unchanged(self):
+        path = self.bad / "Source.swift"
+        original = path.read_bytes()
+        path.write_bytes(original + b"let unexpectedCommittedRuntime = 123\n")
+        self.raw_git(self.bad, "add", "Source.swift")
+        self.raw_git(self.bad, "commit", "--quiet", "-m", "unexpected committed runtime")
+        path.write_bytes(original)
+        self.raw_git(self.bad, "update-index", "--assume-unchanged", "Source.swift")
+        self.assertEqual(self.raw_git(self.bad, "status", "--porcelain").strip(), b"")
+        VERIFY.verify_files(self.bad, self.manifest)
+        with self.assertRaisesRegex(VERIFY.ParityError, "Committed byte/mode drift"):
+            VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
+    def test_runtime_head_mode_is_checked_despite_assume_unchanged(self):
+        path = self.bad / "Source.swift"
+        path.chmod(0o755)
+        self.raw_git(self.bad, "add", "Source.swift")
+        self.raw_git(self.bad, "commit", "--quiet", "-m", "unexpected executable mode")
+        path.chmod(0o644)
+        self.raw_git(self.bad, "update-index", "--assume-unchanged", "Source.swift")
+        VERIFY.verify_files(self.bad, self.manifest)
+        with self.assertRaisesRegex(VERIFY.ParityError, "Committed byte/mode drift"):
+            VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
+    def test_replacement_blob_cannot_mask_committed_runtime_drift(self):
+        path = self.bad / "Source.swift"
+        original = path.read_bytes()
+        expected_oid = self.raw_git(self.bad, "rev-parse", "HEAD:Source.swift").decode().strip()
+        path.write_bytes(original + b"let unexpectedCommittedRuntime = 123\n")
+        self.raw_git(self.bad, "add", "Source.swift")
+        self.raw_git(self.bad, "commit", "--quiet", "-m", "unexpected committed runtime")
+        wrong_oid = self.raw_git(self.bad, "rev-parse", "HEAD:Source.swift").decode().strip()
+        self.raw_git(self.bad, "replace", wrong_oid, expected_oid)
+        self.assertEqual(self.raw_git(self.bad, "cat-file", "blob", wrong_oid), original)
+        path.write_bytes(original)
+        self.raw_git(self.bad, "update-index", "--assume-unchanged", "Source.swift")
+        with self.assertRaisesRegex(VERIFY.ParityError, "Committed byte/mode drift"):
+            VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
+    def test_index_override_cannot_hide_a_different_staged_blob(self):
+        oid = self.raw_git(self.bad, "hash-object", "-w", "--stdin", input_data=b"wrong staged source\n").decode().strip()
+        self.raw_git(self.bad, "update-index", "--cacheinfo", "100644," + oid + ",Source.swift")
+        with patch.dict(os.environ, {"GIT_INDEX_FILE": str(self.good / ".git/index")}):
+            with self.assertRaisesRegex(VERIFY.ParityError, "Index differs"):
+                VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
+    def test_assume_unchanged_cannot_hide_uncommitted_proof_metadata(self):
+        metadata = self.bad / "proof.json"
+        metadata.write_text('{"trusted": true}\n')
+        self.raw_git(self.bad, "add", "proof.json")
+        self.raw_git(self.bad, "commit", "--quiet", "-m", "trusted proof metadata")
+        self.manifest["allowed_nonruntime_files"] = ["proof.json"]
+        metadata.write_text('{"trusted": false}\n')
+        self.raw_git(self.bad, "update-index", "--assume-unchanged", "proof.json")
+        self.assertEqual(self.raw_git(self.bad, "status", "--porcelain").strip(), b"")
+        with self.assertRaisesRegex(VERIFY.ParityError, "Uncommitted proof metadata"):
+            VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
 
 
 @unittest.skipUnless(SWIFTC, "Swift compiler unavailable; real maintained-source harness was not executed")

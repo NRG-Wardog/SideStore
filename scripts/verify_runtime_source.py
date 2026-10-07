@@ -14,8 +14,52 @@ class ParityError(ValueError):
     pass
 
 
-def git(root: Path, *arguments: str) -> bytes:
-    return subprocess.check_output(["git", "-C", str(root), *arguments], stderr=subprocess.STDOUT)
+def proof_environment() -> dict[str, str]:
+    # A proof must use the supplied repository, never a caller's redirected
+    # object database, index, replacement graph, configuration or worktree.
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_GRAFT_FILE": os.devnull,
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+    })
+    return environment
+
+
+def git(root: Path, *arguments: str, input_data: bytes | None = None) -> bytes:
+    root = root.resolve(strict=True)
+    command = ["git", "--no-replace-objects", "--git-dir=" + str(root / ".git"),
+               "--work-tree=" + str(root), "-c", "core.fsmonitor=false",
+               "-c", "core.untrackedCache=false", *arguments]
+    return subprocess.check_output(command, input=input_data, env=proof_environment(),
+                                   stderr=subprocess.PIPE)
+
+
+def blob_hashes(root: Path, object_ids: set[str]) -> dict[str, str]:
+    ordered = sorted(object_ids)
+    output = git(root, "cat-file", "--batch", input_data=("\n".join(ordered) + "\n").encode())
+    hashes = {}
+    offset = 0
+    for expected_oid in ordered:
+        newline = output.index(b"\n", offset)
+        header = output[offset:newline].decode().split()
+        if len(header) != 3 or header[0] != expected_oid or header[1] != "blob":
+            raise ParityError(f"Missing or invalid committed blob: {expected_oid}")
+        length = int(header[2])
+        start = newline + 1
+        end = start + length
+        if end >= len(output) or output[end:end + 1] != b"\n":
+            raise ParityError(f"Truncated committed blob: {expected_oid}")
+        hashes[expected_oid] = digest(output[start:end])
+        offset = end + 1
+    if offset != len(output):
+        raise ParityError("Unexpected committed-object data")
+    return hashes
 
 
 def digest(data: bytes) -> str:
@@ -79,24 +123,52 @@ def verify_git(root: Path, manifest: dict, *, require_clean: bool = False) -> No
     base = manifest["upstream_base"]
     if git(root, "rev-parse", base + "^{tree}").decode().strip() != manifest["upstream_tree"]:
         raise ParityError("Upstream tree changed")
-    subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", base, "HEAD"], check=True)
+    git(root, "merge-base", "--is-ancestor", base, "HEAD")
     gitlinks = {}
-    tracked = set()
+    tracked = {}
+    head_entries = {}
     for record in git(root, "ls-tree", "-rz", "HEAD").split(b"\0"):
         if not record:
             continue
         header, path = record.split(b"\t", 1)
         mode, kind, oid = header.decode().split()
         relative = os.fsdecode(path)
+        head_entries[relative] = (mode, oid)
         if mode == "160000":
             gitlinks[relative] = oid
         else:
-            tracked.add(relative)
+            if kind != "blob":
+                raise ParityError(f"Unsupported committed entry: {relative}")
+            tracked[relative] = (mode, oid)
     if gitlinks != manifest["gitlinks"]:
         raise ParityError("Child gitlinks changed")
     allowed = set(manifest["files"]) | set(manifest["allowed_nonruntime_files"])
-    if tracked != allowed:
-        raise ParityError(f"Tracked inventory drift: missing={sorted(allowed-tracked)}, extra={sorted(tracked-allowed)}")
+    if set(tracked) != allowed:
+        raise ParityError(f"Tracked inventory drift: missing={sorted(allowed-set(tracked))}, extra={sorted(set(tracked)-allowed)}")
+    hashes = blob_hashes(root, {oid for mode, oid in tracked.values()})
+    for relative, entry in manifest["files"].items():
+        mode, oid = tracked[relative]
+        if mode != entry["mode"] or hashes[oid] != entry["sha256"]:
+            raise ParityError(f"Committed byte/mode drift: {relative}")
+    # Also bind the working verifier/manifest/docs to their committed versions.
+    # Git status alone is insufficient when assume-unchanged or skip-worktree
+    # flags hide a restored working copy that differs from the actual commit.
+    for relative in manifest["allowed_nonruntime_files"]:
+        mode, oid = tracked[relative]
+        if describe(root / relative) != {"mode": mode, "sha256": hashes[oid]}:
+            raise ParityError(f"Uncommitted proof metadata: {relative}")
+    if require_clean:
+        index_entries = {}
+        for record in git(root, "ls-files", "--stage", "-z").split(b"\0"):
+            if not record:
+                continue
+            header, path = record.split(b"\t", 1)
+            mode, oid, stage = header.decode().split()
+            if stage != "0":
+                raise ParityError("Unmerged index")
+            index_entries[os.fsdecode(path)] = (mode, oid)
+        if index_entries != head_entries:
+            raise ParityError("Index differs from committed tree")
     if require_clean and git(root, "status", "--porcelain", "--untracked-files=all").strip():
         raise ParityError("Repository is not clean")
 
