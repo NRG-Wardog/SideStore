@@ -120,6 +120,8 @@ def verify_files(root: Path, manifest: dict, *, old_pipeline: bool = False) -> i
 
 
 def verify_git(root: Path, manifest: dict, *, require_clean: bool = False) -> None:
+    if git(root, "rev-parse", "--is-shallow-repository").decode().strip() != "false":
+        raise ParityError("Shallow history is not accepted")
     base = manifest["upstream_base"]
     if git(root, "rev-parse", base + "^{tree}").decode().strip() != manifest["upstream_tree"]:
         raise ParityError("Upstream tree changed")
@@ -155,6 +157,8 @@ def verify_git(root: Path, manifest: dict, *, require_clean: bool = False) -> No
     # flags hide a restored working copy that differs from the actual commit.
     for relative in manifest["allowed_nonruntime_files"]:
         mode, oid = tracked[relative]
+        if mode != "100644":
+            raise ParityError(f"Proof metadata must be a regular 100644 file: {relative}")
         if describe(root / relative) != {"mode": mode, "sha256": hashes[oid]}:
             raise ParityError(f"Uncommitted proof metadata: {relative}")
     if require_clean:

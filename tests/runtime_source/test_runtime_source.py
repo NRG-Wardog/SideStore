@@ -329,6 +329,32 @@ class GitProofAdversarialTests(unittest.TestCase):
         self.assertEqual(environment["GIT_GRAFT_FILE"], os.devnull)
         self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
 
+    def test_shallow_boundary_cannot_masquerade_as_complete_history(self):
+        (self.bad / ".git/shallow").write_text(self.base + "\n")
+        self.assertEqual(self.raw_git(self.bad, "rev-parse", "--is-shallow-repository").decode().strip(), "true")
+        self.raw_git(self.bad, "merge-base", "--is-ancestor", self.base, "HEAD")
+        with self.assertRaisesRegex(VERIFY.ParityError, "Shallow history"):
+            VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
+    def test_committed_proof_metadata_symlink_is_rejected(self):
+        (self.bad / "proof.json").symlink_to("Source.swift")
+        self.raw_git(self.bad, "add", "proof.json")
+        self.raw_git(self.bad, "commit", "--quiet", "-m", "symlink proof metadata")
+        self.manifest["allowed_nonruntime_files"] = ["proof.json"]
+        self.assertEqual(self.raw_git(self.bad, "status", "--porcelain").strip(), b"")
+        with self.assertRaisesRegex(VERIFY.ParityError, "regular 100644"):
+            VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
+    def test_committed_executable_proof_metadata_is_rejected(self):
+        metadata = self.bad / "proof.json"
+        metadata.write_text("{}\n")
+        metadata.chmod(0o755)
+        self.raw_git(self.bad, "add", "proof.json")
+        self.raw_git(self.bad, "commit", "--quiet", "-m", "executable proof metadata")
+        self.manifest["allowed_nonruntime_files"] = ["proof.json"]
+        with self.assertRaisesRegex(VERIFY.ParityError, "regular 100644"):
+            VERIFY.verify_git(self.bad, self.manifest, require_clean=True)
+
     def test_replace_ref_cannot_fabricate_upstream_ancestry(self):
         orphan = self.make_orphan()
         self.raw_git(self.bad, "replace", orphan, self.good_head)
