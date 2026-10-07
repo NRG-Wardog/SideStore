@@ -53,7 +53,7 @@ final class PerformBackupRestoreOperation: BasePipelineOperation<InstallAppOpera
         return fileURL
     }
     
-    private func constructBackupURLs(bundleIdentifier: String, name: String, openAppURL: URL) throws -> (openURL: URL, returnURL: URL) {
+    private func constructBackupURLs(bundleIdentifier: String, name: String, openAppURL: URL, callback: V3BackupCallbackIdentity?) throws -> (openURL: URL, returnURL: URL) {
         self.appName = name
         
         let appGroupBundleID = Bundle.Info.activeBundleIdentifier
@@ -64,7 +64,7 @@ final class PerformBackupRestoreOperation: BasePipelineOperation<InstallAppOpera
 
         var returnURLComponents = URLComponents(url: altstoreOpenURL, resolvingAgainstBaseURL: false)
         returnURLComponents?.host = "appBackupResponse"
-        returnURLComponents?.queryItems = [URLQueryItem(name: "targetBundleID", value: appGroupBundleID)]
+        returnURLComponents?.queryItems = [URLQueryItem(name: "targetBundleID", value: appGroupBundleID)] + (callback?.queryItems ?? [])
         guard let returnURL = returnURLComponents?.url else { throw OperationError.openAppFailed(name: name) }
 
         var queryItems = [URLQueryItem(name: "returnURL", value: returnURL.absoluteString)]
@@ -104,7 +104,9 @@ final class PerformBackupRestoreOperation: BasePipelineOperation<InstallAppOpera
 
     @MainActor
     private func openApp(url: URL) async -> Bool {
-        self.debugLog("[BackupRestoreAppOperation] openApp() called with URL: \(url.absoluteString)")
+        self.debugLog("[BackupRestoreAppOperation] opening backup application")
+        if let handler = self.context.handler as? V3HeadlessPipelineHandler,
+           !handler.backupCallbackMayOpen() { return false }
         let currentTime = CFAbsoluteTimeGetCurrent()
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             UIApplication.shared.open(url, options: [:]) { success in
@@ -116,6 +118,11 @@ final class PerformBackupRestoreOperation: BasePipelineOperation<InstallAppOpera
                     self.debugLog("[BackupRestoreAppOperation] Failed to open app too quickly, retrying after a few seconds...")
                     Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        if let handler = self.context.handler as? V3HeadlessPipelineHandler,
+                           !handler.backupCallbackMayOpen() {
+                            continuation.resume(returning: false)
+                            return
+                        }
                         UIApplication.shared.open(url, options: [:]) { retrySuccess in
                             self.debugLog("[BackupRestoreAppOperation] openApp() retry completion handler success: \(retrySuccess)")
                             continuation.resume(returning: retrySuccess)
@@ -129,8 +136,17 @@ final class PerformBackupRestoreOperation: BasePipelineOperation<InstallAppOpera
     }
 
     private func openAppAndObserve(installedApp: InstalledApp, bundleIdentifier: String, name: String, openAppURL: URL) async throws {
-        let (openURL, returnURL) = try self.constructBackupURLs(bundleIdentifier: bundleIdentifier, name: name, openAppURL: openAppURL)
-        self.debugLog("[BackupRestoreAppOperation] openAppAndObserve() constructed URLs. openURL: \(openURL.absoluteString), returnURL: \(returnURL.absoluteString)")
+        // V3_BACKUP_CALLBACK_OWNER_V1: mint the one-shot callback before
+        // opening SideBackup; only its owning session may consume the result.
+        let headlessHandler = self.context.handler as? V3HeadlessPipelineHandler
+        let callback = try await headlessHandler?.beginBackupCallback(action: action.rawValue)
+        defer {
+            if let callback, let headlessHandler {
+                Task { @MainActor in headlessHandler.endBackupCallback(callback) }
+            }
+        }
+        let (openURL, returnURL) = try self.constructBackupURLs(bundleIdentifier: bundleIdentifier, name: name, openAppURL: openAppURL, callback: callback)
+        self.debugLog("[BackupRestoreAppOperation] prepared backup callback")
         
         self.debugLog("[BackupRestoreAppOperation] Starting observation...")
         
@@ -159,7 +175,12 @@ final class PerformBackupRestoreOperation: BasePipelineOperation<InstallAppOpera
                 return true
             }
 
-            let appWillReturnObs = NotificationCenter.default.addObserver(
+            // A foreground transition does not establish whether an external
+            // copy stopped. Headless cancellation keeps the operation/journal
+            // owner until the actual callback or explicit device reconciliation.
+            var appWillReturnObs: NSObjectProtocol?
+            if callback == nil {
+                appWillReturnObs = NotificationCenter.default.addObserver(
                 forName: UIApplication.willEnterForegroundNotification,
                 object: nil,
                 queue: .main
@@ -173,12 +194,16 @@ final class PerformBackupRestoreOperation: BasePipelineOperation<InstallAppOpera
                 }
             }
             
+            }
+
             let backupRespObs = NotificationCenter.default.addObserver(
                 forName: AppDelegate.appBackupDidFinish,
                 object: nil,
                 queue: nil
             ) { notification in
-                self.debugLog("[BackupRestoreAppOperation] appBackupDidFinish notification received. UserInfo: \(String(describing: notification.userInfo))")
+                if let callback,
+                   notification.userInfo?["v3BackupNonce"] as? String != callback.nonce { return }
+                self.debugLog("[BackupRestoreAppOperation] correlated backup result received")
                 Task.detached {
                     await AppDelegate.dumpSideBackupLogsIfNeeded()
                     

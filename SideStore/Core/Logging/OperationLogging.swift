@@ -14,7 +14,10 @@ internal protocol OperationLogging {
 internal extension OperationLogging {
 
     func debugLog(_ text: @autoclosure () -> String) {
-        let message = text()
+        // SIDESTORE_TRANSITIVE_ERROR_LOG_PRIVACY_V1
+        let rawMessage = text()
+        guard !shouldOmitUserCopyableSideStoreLog(rawMessage) else { return }
+        let message = formatLogMessage(rawMessage)
         if !message.isEmpty && message.allSatisfy({ $0 == "\n" || $0 == "\r" }) {
             print(message, terminator: "")
         } else {
@@ -24,7 +27,9 @@ internal extension OperationLogging {
 
     func verboseLog(_ text: @autoclosure () -> String) {
         guard OperationsLoggingControl.isLoggingEnabled(for: type(of: self)) else { return }
-        let message = text()
+        let rawMessage = text()
+        guard !shouldOmitUserCopyableSideStoreLog(rawMessage) else { return }
+        let message = formatLogMessage(rawMessage)
         if !message.isEmpty && message.allSatisfy({ $0 == "\n" || $0 == "\r" }) {
             print(message, terminator: "")
         } else {
@@ -85,8 +90,8 @@ func logOperationSummary(
     rows.append(contentsOf: bulletRow("App ID", target))
     rows.append(contentsOf: bulletRow("Status", status.uppercased()))
     rows.append(contentsOf: bulletRow("Elapsed", String(format: "%.3fs", elapsed)))
-    if let error = error {
-        rows.append(contentsOf: bulletRow("Error", error.localizedDescription))
+    if error != nil {
+        rows.append(contentsOf: bulletRow("Error", "[details omitted]"))
     }
     rows.append("===================================================")
     

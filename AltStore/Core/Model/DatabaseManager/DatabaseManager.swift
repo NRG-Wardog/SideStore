@@ -121,7 +121,12 @@ public class DatabaseManager: @unchecked Sendable
         }
 
         try await self.migrateDatabaseToAppGroupIfNeeded()
-        try await self.persistentContainer.loadPersistentStores()
+        // EMBEDDED_SIDESTORE_STARTUP_FIX_V1: retry preparation without reattaching SQLite.
+        if self.persistentContainer.persistentStoreCoordinator.persistentStores.isEmpty {
+            try await self.persistentContainer.loadPersistentStores()
+        } else {
+            debugLog("[SIDESTORE_STARTUP] reusing_attached_persistent_store_after_startup_failure")
+        }
         try await self.prepareDatabase()
     }
 
@@ -206,11 +211,13 @@ public class DatabaseManager: @unchecked Sendable
         
         let context = self.persistentContainer.newBackgroundContext()
         try await context.perform {
-            guard let localAppBundle = ALTApplication(fileURL: Bundle.Info.activeBundleURL) else { return }
+            guard let localAppBundle = ALTApplication(fileURL: Bundle.Info.activeBundleURL) else {
+                throw ALTError.invalidApp(reason: "Unable to read the active LiveContainer application bundle.")
+            }
             
             #if !targetEnvironment(simulator)
             guard localAppBundle.provisioningProfile != nil else {
-                throw ALTError(.invalidApp)
+                throw ALTError.invalidApp(reason: "The active LiveContainer bundle has no readable provisioning profile.")
             }
             #endif
             
@@ -402,7 +409,7 @@ public class DatabaseManager: @unchecked Sendable
             try context.save()
         }
         
-        await self.updateFeaturedSortIDs()
+        // V3_HEADLESS_FEATURED_SORT_SKIP_V1: this embedded process has no Featured UI consumer.
     }
     
     private func reconcileSelfFromSelfBinary(installedApp: InstalledApp, localAppBundle: ALTApplication, serialNumber: String?) {
