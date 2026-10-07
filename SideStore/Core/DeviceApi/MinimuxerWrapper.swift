@@ -124,7 +124,7 @@ func bindConnectionConfig() async {
         setRemoteReachable: { value in Task { @MainActor in config.remoteReachable = value } },
         getOverrideTunnelPeerIp: { config.overrideTunnelPeerIp },
         setOverrideTunnelPeerReachable: { value in Task { @MainActor in config.overrideTunnelPeerReachable = value } },
-        getConnectionMode: { config.useLocalVPN ? .localVPN : .remoteServer }
+        getConnectionMode: { config.connectionMode }
     )
     await minimuxer.core.bindConnectionConfig(configBinding)
 }
@@ -149,6 +149,12 @@ extension MinimuxerError {
         case .invalidPairing(_, let reason):    return .invalidPairingFile(reason: reason)
         case .notStarted(let reason):           return .minimuxerNotStarted(reason: reason)
         case .pairingNotLoaded(let reason):     return .pairingNotComplete(reason: reason)
+        case .createCoreDevice(let reason),
+             .createLockdown(let reason),
+             .getLockdownValue(let reason),
+             .connect(let reason),
+             .noService(let reason):
+            return .noDevice(reason: reason)
         default:                                return .unknown(failureReason: self.localizedDescription)
         }
     }

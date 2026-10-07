@@ -135,11 +135,15 @@ final class PipelineRunner: Sendable
             }
         }
         
+        // COMBINED_COREDEVICE_PIPELINE_BATCH_V1: lease before readiness, release on every returning path.
+        let transportCore = minimuxer.core
+        await transportCore.beginTransportBatch()
+        do {
         /* Minimuxer Readiness Check */
         if !CellularRefreshManager.shared.isEnabled,
            case .failure(let error) = await isMinimuxerReady()
         {
-            let opError = error.asOperationError
+            let opError = V3HeadlessPairingFailure.tagIfInvalidPairing(error.asOperationError)
             group.context.error = opError
             for operation in operations {
                 let elapsed = CFAbsoluteTimeGetCurrent() - group.context.operationStartTime
@@ -149,7 +153,8 @@ final class PipelineRunner: Sendable
         }
         
         group.progress.totalUnitCount = Int64(operations.count * 100)
-        group.progress.completedUnitCount = 1
+        // V3_PROGRESS_BASELINE_FIX_V1: child weights already span the full total.
+        group.progress.completedUnitCount = 0
         
         for operation in operations
         {
@@ -187,22 +192,37 @@ final class PipelineRunner: Sendable
         }
         
         
-        // run the operation pipeline
+        // Finish standalone apps before a host replacement can terminate us.
+        let hostOperations = operations.filter {
+            ($0.app as? ALTApplication)?.isAltStoreApp == true || $0.bundleIdentifier.isAltStoreAppID
+        }
+        let normalOperations = operations.filter {
+            !(($0.app as? ALTApplication)?.isAltStoreApp == true || $0.bundleIdentifier.isAltStoreAppID)
+        }
         try await withThrowingTaskGroup(of: Void.self) { taskGroup in
-            for operation in operations {
+            for operation in normalOperations {
                 taskGroup.addTask {
                     try await self.performOperation(for: operation, handler: handler, group: group)
                 }
             }
             while let _ = try await taskGroup.next() {}
         }
+        for operation in hostOperations {
+            try Task.checkCancellation()
+            try await self.performOperation(for: operation, handler: handler, group: group)
+        }
         await MainActor.run {
             group.completionHandler?(group.results)
         }
         
+        await transportCore.endTransportBatch()
         return group
+        } catch {
+            await transportCore.endTransportBatch()
+            throw error
+        }
     }
-    
+
     func performOperation(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup) async throws {
         debugLog("[AppManager] performOperation: Starting execution for app: \(operation.bundleIdentifier)")
         defer {
@@ -219,16 +239,15 @@ final class PipelineRunner: Sendable
             // persist the result
             let bundleID = result.bundleIdentifier
             let dbContext = group.context.dbBackgroundContext
-            do {
-                try await dbContext.perform {
-                    let hasChanges = dbContext.hasChanges
-                    if hasChanges {
-                        try dbContext.save()
-                    }
-                    debugLog("[AppManager] performOperation: Context changes were saved for installedApp: \(bundleID)")
+            // V3_POST_MUTATION_PERSISTENCE_CONTRACT_V1: the device mutation may
+            // already have happened. A failed durable commit is a non-retryable
+            // persistence outcome, never operation success. Do not log native error text.
+            try await dbContext.perform {
+                let hasChanges = dbContext.hasChanges
+                try V3MutationPersistencePolicy.persistResult(hasChanges: hasChanges) {
+                    try dbContext.save()
                 }
-            } catch {
-                debugLog("[AppManager] perform(): Failed to save InstalledApp to database. \(error.localizedDescription)")
+                debugLog("[AppManager] performOperation: InstalledApp result persistence confirmed for \(bundleID)")
             }
             
             group.set(.success(result), forAppWithBundleIdentifier: bundleID)

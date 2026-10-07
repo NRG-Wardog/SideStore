@@ -6,7 +6,8 @@
 //  Copyright © 2026 SideStore. All rights reserved.
 //
 
-import UIKit
+import Foundation
+import Darwin
 
 public final class SideJITManager {
     public static let shared = SideJITManager()
@@ -137,43 +138,11 @@ public final class SideJITManager {
         }
     }
 
-    public func isSideJITServerDetected() async throws {
-        let SJSURL = await resolveServerURL()
-        guard let url = URL(string: SJSURL) else {
-            debugLog("[SideJITManager] isSideJITServerDetected: invalid URL '\(SJSURL)'")
-            throw URLError(.badURL)
-        }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = AppConstants.SideJIT.timeout
-        debugLog("[SideJITManager] isSideJITServerDetected: testing detection at \(url)")
-        
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask {
-                let (_, response) = try await URLSession.shared.data(for: request)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 200
-                debugLog("[SideJITManager] isSideJITServerDetected: SideJITServer detected at \(url) (status: \(status))")
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(AppConstants.SideJIT.timeout * 1_000_000_000))
-                throw URLError(.timedOut)
-            }
-            try await group.next()
-            group.cancelAll()
-        }
-    }
+    // V3_HEADLESS_SIDEJIT_DETECTION_REMOVED_V1: automatic server detection only existed to show the removed prompt.
 }
 
 // MARK: - UI Extension
 extension SideJITManager {
-    @MainActor
-    public func presentJITPrompt(presentingVC: UIViewController) {
-        let alert = UIAlertController(
-            title: "SideJITServer Detected",
-            message: "Would you like to enable SideJITServer",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in UserDefaults.standard.isSideJITServerEnabled = true })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        presentingVC.present(alert, animated: true)
-    }
+    // V3_HEADLESS_SIDEJIT_PROMPT_REMOVED_V1
+
 }
