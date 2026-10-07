@@ -7,7 +7,8 @@
 //
 
 
-@preconcurrency import UIKit
+import Foundation
+import Security
 import SideSign
 import CryptoKit
 import CommonCrypto
@@ -33,11 +34,8 @@ enum BackupEncryptionError: Error, LocalizedError {
 }
 
 class ImportExport {
+    // LC_HEADLESS_IMPORT_EXPORT_UI_REMOVED_V1: account backup encryption remains available to the host pipeline.
     
-    #if !os(tvOS)
-    public static var documentPickerHandler: DocumentPickerHandler?
-    #endif
-
     private static func deriveKey(password: String, salt: Data) -> SymmetricKey {
         let passwordData = Data(password.utf8)
         var derivedKeyData = Data(count: 32)
@@ -63,18 +61,20 @@ class ImportExport {
     }
 
     public static func exportAccount(password: String, includeApplePassword: Bool) throws -> Data {
-        guard let email = AuthManager.shared.currentAppleID,
+        // LC_IMPORT_EXPORT_CREDENTIAL_SNAPSHOT_V1
+        let authSnapshot = AuthManager.shared.authenticationSnapshot
+        guard let email = authSnapshot?.appleIDEmailAddress,
               let activeCert = CertificateManager.shared.activeCertificate,
               let identifier = AnisetteConfigManager.shared.anisetteIdentifier,
               let adiPB = AnisetteConfigManager.shared.anisetteAdiBlob else {
             throw OperationError.invalidParameters("Account or signing data is missing.")
         }
         
-        if let applePass = AuthManager.shared.password, password == applePass {
+        if let applePass = authSnapshot?.appleIDPassword, password == applePass {
             throw BackupEncryptionError.exportPasswordMatchesApplePassword
         }
 
-        let applePasswordToInclude = includeApplePassword ? AuthManager.shared.password : nil
+        let applePasswordToInclude = includeApplePassword ? authSnapshot?.appleIDPassword : nil
         let account: ImportedAccount
         if let certPass = activeCert.password {
             account = ImportedAccount(version: ImportedAccount.currentVersion, email: email, password: applePasswordToInclude, certificateData: activeCert.p12Data, certificatePassword: certPass, anisetteIdentifier: identifier, anisetteAdiBlob: adiPB)
@@ -134,126 +134,16 @@ class ImportExport {
         }
     }
     
-    public static func getPreviousBackupURL(_ backupURL: URL) -> URL {
-        let backupParentDirectory = backupURL.deletingLastPathComponent()
-        let backupName = backupURL.lastPathComponent
-        let backupBakURL = backupParentDirectory.appendingPathComponent("\(backupName).bak")
-        return backupBakURL
-    }
-    
-    /// Renames the existing backup contents at `backupURL` to `<foldername>.bak`.
-    private static func renameBackupContents(at backupURL: URL) throws {
-        
-        // rename backup to backup.bak dir only if backup dir exists
-        guard FileManager.default.fileExists(atPath: backupURL.path) else { return }
-        
-        let backupBakURL = getPreviousBackupURL(backupURL)
-        
-        let fileManager = FileManager.default
-        if fileManager.fileExists(atPath: backupBakURL.path) {
-            try fileManager.removeItem(at: backupBakURL) // Remove any existing .bak directory
-        }
-        
-        try fileManager.moveItem(at: backupURL, to: backupBakURL)
-    }
-    
-    /// Handles importing new backup data into the designated backup directory.
-    private static func importBackupContents(from documentPickerURL: URL, to backupURL: URL) throws {
-        let fileManager = FileManager.default
-        
-        // Ensure the backup directory exists.
-        if !fileManager.fileExists(atPath: backupURL.path) {
-            try fileManager.createDirectory(at: backupURL, withIntermediateDirectories: true, attributes: nil)
-        }
-        
-        debugLog("Backup URL: \(backupURL)")
-        debugLog("Document Picker URL: \(documentPickerURL)")
-        
-        // Enumerate the contents of the selected directory and copy them to the backup directory.
-        let selectedContents = try fileManager.contentsOfDirectory(
-            at: documentPickerURL,
-            includingPropertiesForKeys: nil,
-            options: .skipsHiddenFiles
-        )
-        for itemURL in selectedContents {
-            let destinationURL = backupURL.appendingPathComponent(itemURL.lastPathComponent)
-            
-            // Remove the existing file if it exists at the destination.
-            if fileManager.fileExists(atPath: destinationURL.path) {
-                try fileManager.removeItem(at: destinationURL)
-            }
-            
-            // Copy the item.
-            try fileManager.copyItem(at: itemURL, to: destinationURL)
-        }
-    }
-    
-    public static func importBackup(presentingViewController: UIViewController,
-                                    for installedApp: InstalledApp,
-                                    completionHandler: @escaping (Result<Void, Error>) -> Void){
-        guard let backupURL = FileManager.default.backupDirectoryURL(for: installedApp) else {
-            return completionHandler(.failure(OperationError.invalidParameters("Error: Backup directory URL not found.")))
-        }
-        
-        let handleSelectedURL: (URL?) -> Void = { selectedURL in
-            guard let selectedURL = selectedURL else {
-                return completionHandler(.failure( OperationError.cancelled))
-            }
-            
-            // resolve symlinks if any, so that prefix match works
-            let appUserDataDir = FileManager.default.documentsDirectory.resolvingSymlinksInPath()
-            let tempDir = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
-            let isAllowedPath = selectedURL.resolvingSymlinksInPath().path.hasPrefix(appUserDataDir.path) || selectedURL.resolvingSymlinksInPath().path.hasPrefix(tempDir.path)
-            guard isAllowedPath else {
-                return completionHandler(.failure(
-                    OperationError.forbidden(failureReason: "Selected backup data directory is not within the app's user data directory"))
-                )
-            }
-            
-            do {
-                // Rename existing backup contents to `<foldername>.bak`.
-                try Self.renameBackupContents(at: backupURL)
-                
-                // Import the contents of the selected folder into the backup directory.
-                try Self.importBackupContents(from: selectedURL, to: backupURL)
-                
-                debugLog("Backup imported successfully to: \(backupURL.path)")
-                return completionHandler(.success(()))
-            } catch {
-                debugLog("Backup Error: \(error)")
-                return completionHandler(.failure( OperationError.invalidParameters(error.localizedDescription)))
-            }
-        }
 
-        #if !os(tvOS)
-        let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
-        documentPicker.allowsMultipleSelection = false
-                
-        // Create a handler and set it as the delegate
-        Self.documentPickerHandler = DocumentPickerHandler { selectedURL in
-            handleSelectedURL(selectedURL)
-        }
-        
-        documentPicker.delegate = Self.documentPickerHandler
-        // Present the picker
-        presentingViewController.present(documentPicker, animated: true, completion: nil)
-        #else
-        TVWebFileTransferManager.shared.startImport(
-            acceptedExtensions: ["zip", "backup"],
-            title: "Import App Backup",
-            presentingVC: presentingViewController
-        ) { selectedURL in
-            handleSelectedURL(selectedURL)
-        }
-        #endif
-    }
 }
 
 #if DEBUG
 extension ImportExport {
     static func exportAccountJSON(password: String) -> ImportedAccount? {
-        guard let email = AuthManager.shared.currentAppleID,
-              let passwordStr = AuthManager.shared.password,
+        // LC_IMPORT_EXPORT_CREDENTIAL_SNAPSHOT_V1
+        let authSnapshot = AuthManager.shared.authenticationSnapshot
+        guard let email = authSnapshot?.appleIDEmailAddress,
+              let passwordStr = authSnapshot?.appleIDPassword,
               let activeCert = CertificateManager.shared.activeCertificate,
               let identifier = AnisetteConfigManager.shared.anisetteIdentifier,
               let adiPB = AnisetteConfigManager.shared.anisetteAdiBlob else {
@@ -281,29 +171,6 @@ extension ImportExport {
         
         let altCert = try CertificateManager.parse(account.certificateData, password: account.certificatePassword)
         try CertificateManager.shared.setActiveCertificate(altCert)
-    }
-}
-#endif
-
-#if !os(tvOS)
-private struct AssociatedKeys {
-    static var documentPickerHandler: UInt8 = 0
-}
-
-
-class DocumentPickerHandler: NSObject, UIDocumentPickerDelegate {
-    private let completion: (URL?) -> Void
-
-    init(completion: @escaping (URL?) -> Void) {
-        self.completion = completion
-    }
-
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        completion(urls.first)
-    }
-
-    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        completion(nil)
     }
 }
 #endif
