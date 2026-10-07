@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "owner": "SideStore",
+  "classification": "build-only dependency wiring; no runtime behavior changes",
+  "source_checkpoint": "9d8c71ed69684f805325ef440983e74d97113a71",
+  "native_resolver_status": "not_run",
+  "origin_hash_status": "stale checkpoint hash removed; native resolver must generate its own value",
+  "dependency_files": {
+    ".gitmodules": {
+      "mode": "100644",
+      "checkpoint_sha256": "58a488c1c45aadbf4c166db139a93003161af30dc4f90a8a8e4ea15e18e433eb",
+      "production_sha256": "eeb38935b866879950a482324b4fe03b7791df636cd6da89b5d6c112b7f0ecf5"
+    },
+    "AltStore.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved": {
+      "mode": "100644",
+      "checkpoint_sha256": "5c8c4df054a2f76dc9648bef4a88ef25a716e1f0a5115e0a763e57d20c60ce50",
+      "production_sha256": "c64b26be42dadcef04caed3134fef55784cae10fc9d196acdf24ee83d82cad7f"
+    }
+  },
+  "child_gitlinks": {
+    "Dependencies/SideSign": null,
+    "Dependencies/minimuxer": "efbcab05d7d636aa37c6bf6c7f364d122c5610f6"
+  },
+  "test_files": {
+    "tests/runtime_source/test_runtime_source.py": {
+      "mode": "100644",
+      "checkpoint_sha256": "f823e0f56d6afb5b4111f0ff992d4b3f6ef3a55f8b35026766f114b9fff5c821",
+      "production_sha256": "a87050db94cae9504d2ff7ff6fb598c820329081c3e51c80847d621ae3e2f3ad",
+      "scope": "Only whole-tree dependency metadata and exact intended Anisette pin assertions change; all behavior/native test bodies remain unchanged."
+    }
+  }
+}

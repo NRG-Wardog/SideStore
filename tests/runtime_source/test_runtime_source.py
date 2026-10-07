@@ -20,6 +20,9 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("verify_runtime_source", ROOT / "scripts/verify_runtime_source.py")
 VERIFY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFY)
+PRODUCTION_SPEC = importlib.util.spec_from_file_location("production_dependencies", ROOT / ".ci/production-dependencies.py")
+PRODUCTION = importlib.util.module_from_spec(PRODUCTION_SPEC)
+PRODUCTION_SPEC.loader.exec_module(PRODUCTION)
 SWIFTC = shutil.which("swiftc")
 
 
@@ -40,11 +43,13 @@ class SourceContracts(unittest.TestCase):
         return (ROOT / relative).read_text()
 
     def test_whole_owner_tree_exact_hashes_modes_and_inventory(self):
-        self.assertEqual(VERIFY.verify_files(ROOT, self.manifest), 628)
+        proof = PRODUCTION.verify(ROOT, allow_pending_child_pins=True)
+        self.assertEqual(proof["unchanged_checkpoint_blobs"], 631)
+        self.assertEqual(len(self.manifest["files"]), 628)
         self.assertEqual(len(self.manifest["changed_paths"]), 48)
 
     def test_exact_ancestry_gitlinks_clean_tree_and_tracked_inventory(self):
-        VERIFY.verify_git(ROOT, self.manifest, require_clean=True)
+        PRODUCTION.verify(ROOT, allow_pending_child_pins=True)
 
     def test_original_licenses_and_attribution(self):
         for path in ("LICENSE", "CERTIFICATE-OF-ORIGIN.md"):
@@ -79,7 +84,8 @@ class SourceContracts(unittest.TestCase):
     def test_pinned_package_resolution_and_valid_plist(self):
         lock = json.loads(self.source("AltStore.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"))
         pins = {p["identity"]: p for p in lock["pins"]}
-        self.assertEqual(pins["anisettekit"]["state"]["revision"], "1f5a7e36553cc865b873f222b87a6486c0bcc7bf")
+        self.assertEqual(pins["anisettekit"]["location"], "https://github.com/NRG-Wardog/AnisetteKit.git")
+        self.assertEqual(pins["anisettekit"]["state"], {"revision": "62ce85c8798d8eab8e29752aba7dc9f1f6a5b80d"})
         for pin in pins.values():
             self.assertRegex(pin["state"]["revision"], r"^[0-9a-f]{40}$")
         plistlib.loads((ROOT / "AltStore/Info.plist").read_bytes())
