@@ -7,6 +7,7 @@
 //
 
 import AppIntents
+// V3_SHORTCUT_WIDGET_BACKEND_FORWARD_V1: retain the upstream guest-to-backend adapter.
 
 @available(iOS 17, tvOS 17, *)
 struct RefreshAllAppsWidgetIntent: AppIntent, ProgressReportingIntent
@@ -27,7 +28,9 @@ struct RefreshAllAppsWidgetIntent: AppIntent, ProgressReportingIntent
         }
         catch
         {
-            debugLog("Failed to refresh apps via widget. \(error)")
+            // V3_WIDGET_REFRESH_FAILURE_PRIVACY_V1: never log a raw provider error.
+            debugLog("[V3_WIDGET_REFRESH] failed")
+            throw error
         }
     #endif
         

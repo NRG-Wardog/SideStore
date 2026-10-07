@@ -30,6 +30,9 @@ public struct LogNameInfo {
 }
 
 class ConsoleLog {
+    // LIVE_REFRESH_LOG_RETENTION_V1: bound diagnostic storage on device.
+    private static let MAX_LOG_BYTES = 2 * 1024 * 1024
+    private static let MAX_LOG_FILES = 5
     private static let CONSOLE_LOGS_DIRECTORY = "ConsoleLogs"
     private static let CONSOLE_LOG_NAME_PREFIX = "console"
     private static let CONSOLE_LOG_EXTN = ".log"
@@ -103,6 +106,8 @@ class ConsoleLog {
         if !FileManager.default.fileExists(atPath: parentDir.path) {
             try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true, attributes: nil)
         }
+        pruneConsoleLogs(keeping: url)
+        trimLogFileIfNeeded(at: url)
         let fileExists = FileManager.default.fileExists(atPath: url.path)
         if !fileExists {
             FileManager.default.createFile(atPath: url.path, contents: nil, attributes: nil)
@@ -129,6 +134,35 @@ class ConsoleLog {
         return handle
     }
     
+    private func trimLogFileIfNeeded(at url: URL) {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber,
+              size.intValue > ConsoleLog.MAX_LOG_BYTES,
+              let data = try? Data(contentsOf: url) else { return }
+
+        let tail = data.suffix(ConsoleLog.MAX_LOG_BYTES)
+        try? tail.write(to: url, options: .atomic)
+    }
+
+    private func pruneConsoleLogs(keeping activeURL: URL) {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: consoleLogsDir,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ))?.filter { url in
+            url.pathExtension == String(ConsoleLog.CONSOLE_LOG_EXTN.dropFirst())
+                && url.lastPathComponent.hasPrefix(ConsoleLog.CONSOLE_LOG_NAME_PREFIX)
+        }.sorted { lhs, rhs in
+            let left = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let right = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return left > right
+        } ?? []
+
+        for (index, url) in files.enumerated() where index >= ConsoleLog.MAX_LOG_FILES && url != activeURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     private lazy var consoleLogsDir: URL = {
         // create a directory for console logs
         let docsDir = FileManager.default.documentsDirectory

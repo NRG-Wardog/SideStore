@@ -3306,6 +3306,354 @@ struct V3SettingsWriteGeneration {
     }
 }
 
+enum V3RefreshResultVerifier {
+    static func verified<Value>(expectedBundleID: String,
+                                results: [String: Result<Value, Error>],
+                                bundleIdentifier: (Value) -> String) throws -> Value {
+        guard let result = results[expectedBundleID] else { throw CombinedRefreshVerificationError.missingResult }
+        switch result {
+        case .failure(let error): throw error
+        case .success(let value):
+            guard bundleIdentifier(value) == expectedBundleID else { throw CombinedRefreshVerificationError.staleResult }
+            return value
+        }
+    }
+}
+
+// Customization reviews every target extension, including fresh installs
+// (where upstream reports no excess extensions). Only an empty target skips UI.
+enum V3ExtensionRemovalPromptPolicy {
+    static func decide<Element: Hashable, Decision>(
+        targetExtensions: Set<Element>,
+        whenEmpty: Decision,
+        prompt: () async throws -> Decision
+    ) async rethrows -> Decision {
+        guard !targetExtensions.isEmpty else { return whenEmpty }
+        return try await prompt()
+    }
+}
+
+enum V3RefreshAllPhase: String {
+    case idle, starting, refreshing, verifying, completed, failed
+}
+
+enum V3RefreshAllButtonPresentationPolicy {
+    static func title(phase: V3RefreshAllPhase, activeRunID: String) -> String {
+        switch phase {
+        case .starting: return "Starting Refresh..."
+        case .refreshing: return "Refreshing..."
+        case .verifying: return "Verifying..."
+        case .idle where !activeRunID.isEmpty: return "Refresh Already Running"
+        default: return "Refresh All"
+        }
+    }
+
+    static func explainsConcurrentRun(phase: V3RefreshAllPhase, activeRunID: String) -> Bool {
+        phase == .idle && !activeRunID.isEmpty
+    }
+}
+
+enum V3RefreshAllTerminalEvidencePolicy {
+    private static func integer(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              ["c", "s", "i", "l", "q", "C", "S", "I", "L", "Q"].contains(String(cString: number.objCType)) else {
+            return nil
+        }
+        return number.intValue
+    }
+
+    static func verifiedSummary(_ summary: [String: Any]?, record: [String: Any],
+                                runID: String) -> Bool {
+        guard let summary,
+              integer(summary["version"]) == 2,
+              summary["schema"] as? String == "LiveContainerRefreshManifestSummaryV2",
+              summary["run_id"] as? String == runID,
+              let verified = summary["verified"] as? NSNumber,
+              CFGetTypeID(verified) == CFBooleanGetTypeID(), verified.boolValue,
+              let expectedCount = integer(summary["expected_count"]),
+              expectedCount > 0, expectedCount <= 1024,
+              integer(summary["result_count"]) == expectedCount,
+              integer(summary["failed_count"]) == 0,
+              let skippedCount = integer(summary["skipped_count"]),
+              skippedCount >= 0, skippedCount <= 1024,
+              let requestedCount = integer(summary["requested_count"]),
+              requestedCount <= 1024,
+              expectedCount + skippedCount == requestedCount,
+              record["run_id"] as? String == runID,
+              record["state"] as? String == "completed",
+              record["terminal_intent"] as? String == "verified",
+              record["health"] as? String == "REFRESH_SUCCEEDED",
+              record["manifest_run_id"] as? String == runID else { return false }
+        return true
+    }
+
+    static func count(_ key: String, in summary: [String: Any]?) -> Int? {
+        guard let summary else { return nil }
+        return integer(summary[key])
+    }
+}
+
+// A result dictionary is written before the scheduler verifies it, including
+// failures. Home must consume settled scheduler evidence, never mere presence.
+enum V3HomeRefreshVerificationPolicy {
+    static func isVerified(manifest: [String: Any]?, ledger: [String: Any],
+                           activeRunID: String?, hostHandoffPending: Bool,
+                           uncertainMutationRunID: String?) -> Bool {
+        guard activeRunID?.isEmpty != false, !hostHandoffPending,
+              uncertainMutationRunID?.isEmpty != false,
+              let manifest, let runID = manifest["run_id"] as? String,
+              CombinedVerification.hasCompleteTerminalResults(manifest, runID: runID),
+              let record = ledger[runID] as? [String: Any],
+              let summary = record["manifest_summary"] as? [String: Any],
+              V3RefreshAllTerminalEvidencePolicy.verifiedSummary(summary, record: record, runID: runID),
+              let expected = manifest["expected_ids"] as? [String],
+              let results = manifest["results"] as? [[String: Any]],
+              summary["expected_count"] as? Int == expected.count,
+              summary["result_count"] as? Int == results.count,
+              summary["skipped_count"] as? Int == (manifest["skipped_ids"] as? [String] ?? []).count,
+              summary["requested_count"] as? Int == (manifest["requested_ids"] as? [String] ?? []).count else {
+            return false
+        }
+        // A completed result set can still contain failures. The canonical
+        // coverage check above already requires actual plist boolean values.
+        return results.allSatisfy { $0["success"] as? Bool == true }
+    }
+}
+
+enum V3SetupRefreshTerminalOutcome: Equatable {
+    case pending
+    case failed
+    case completedUnverified
+    case verified
+}
+
+enum V3SetupRefreshTerminalEvidencePolicy {
+    static func outcome(state: String, hasVerifiedManifest: Bool,
+                        hasVerifiedSummary: Bool) -> V3SetupRefreshTerminalOutcome {
+        switch state {
+        case "failed": return .failed
+        case "completed":
+            return hasVerifiedManifest || hasVerifiedSummary ? .verified : .completedUnverified
+        default: return .pending
+        }
+    }
+}
+
+// Request identity, rather than process-local notifications or global health,
+// owns the Home refresh UI. A terminal record is absorbing for this attempt.
+struct V3RefreshAllAttemptState {
+    private(set) var requestID = ""
+    private(set) var runID = ""
+    private(set) var phase: V3RefreshAllPhase = .idle
+    private(set) var terminalMessage = ""
+
+    var isTerminal: Bool { phase == .completed || phase == .failed }
+
+    mutating func begin(requestID: String) {
+        self.requestID = requestID
+        runID = ""
+        phase = .starting
+        terminalMessage = ""
+    }
+
+    @discardableResult
+    mutating func observe(_ record: [String: Any], schedulerHealth: String? = nil,
+                          activeRunID: String? = nil) -> Bool {
+        guard !isTerminal,
+              record["request_id"] as? String == requestID,
+              let observedRunID = record["run_id"] as? String,
+              UUID(uuidString: observedRunID) != nil else { return false }
+        _ = schedulerHealth
+        _ = activeRunID
+        if runID.isEmpty { runID = observedRunID }
+        guard runID == observedRunID else { return false }
+
+        switch record["state"] as? String {
+        case "running":
+            if phase == .starting { phase = .refreshing }
+        case "verifying":
+            phase = .verifying
+        case "completed":
+            // Health and activeRun defaults may be observed out of order. The
+            // correlated terminal record is authoritative, including when a
+            // stale activeRun value is still visible to this view.
+            let manifest = record["manifest"] as? [String: Any]
+            let hasVerifiedManifest = Self.manifestIsVerified(manifest, runID: runID)
+            let hasVerifiedSummary = V3RefreshAllTerminalEvidencePolicy.verifiedSummary(
+                record["manifest_summary"] as? [String: Any], record: record, runID: runID)
+            guard hasVerifiedManifest || hasVerifiedSummary else {
+                phase = .failed
+                terminalMessage = "Refresh reported completion without a matching verified manifest."
+                return true
+            }
+            phase = .completed
+            let skippedCount = (manifest?["skipped_ids"] as? [String])?.count ??
+                V3RefreshAllTerminalEvidencePolicy.count("skipped_count",
+                    in: record["manifest_summary"] as? [String: Any]) ?? 0
+            terminalMessage = skippedCount == 0
+                ? "Refresh completed. All requested app results were verified."
+                : "Refresh completed. Results for this run were verified; \(skippedCount) running app(s) were skipped."
+        case "failed":
+            phase = .failed
+            guard let failureWire = record["failure"] as? [String: Any],
+                  let failure = CombinedFailure.decode(failureWire, expectedID: runID),
+                  failure.operation == "refresh" else {
+                terminalMessage = "Refresh failed, but no matching safe cause was available."
+                return true
+            }
+            terminalMessage = failure.safeMessage
+        default:
+            return false
+        }
+        return true
+    }
+
+    mutating func markDidNotStart() {
+        guard !isTerminal else { return }
+        phase = .failed
+        terminalMessage = "Refresh did not start." + "\nError ID: SS-CMD-D047"
+    }
+
+    mutating func markTimedOut() {
+        guard !isTerminal else { return }
+        phase = .failed
+        terminalMessage = "Refresh did not reach a verified terminal result."
+    }
+
+    mutating func failBeforeStart(message: String) {
+        guard !isTerminal else { return }
+        phase = .failed
+        terminalMessage = message
+    }
+
+    mutating func acknowledge() {
+        requestID = ""
+        runID = ""
+        phase = .idle
+        terminalMessage = ""
+    }
+
+    static func record(in ledger: [String: Any], requestID: String,
+                       runID: String? = nil) -> [String: Any]? {
+        let records = ledger.values.compactMap { $0 as? [String: Any] }
+        return records.first { record in
+            guard record["request_id"] as? String == requestID,
+                  let recordRunID = record["run_id"] as? String,
+                  UUID(uuidString: recordRunID) != nil else { return false }
+            return runID == nil || recordRunID == runID
+        }
+    }
+
+    private static func manifestIsVerified(_ manifest: [String: Any]?, runID: String) -> Bool {
+        guard let manifest, CombinedVerification.hasCompleteTerminalResults(manifest, runID: runID),
+              let results = manifest["results"] as? [[String: Any]] else { return false }
+        return results.allSatisfy { $0["success"] as? Bool == true }
+    }
+}
+
+enum V3RefreshAllFailureDiagnostics {
+    static func withoutRunRecord(requestID: String, runID: String?, message: String,
+                                 health: String) -> String? {
+        guard let request = UUID(uuidString: requestID), request.uuidString == requestID else { return nil }
+        let safeRunID: String
+        if let runID, let parsed = UUID(uuidString: runID), parsed.uuidString == runID {
+            safeRunID = runID
+        } else {
+            safeRunID = "not_started"
+        }
+        let safeCorrelation = safeRunID == "not_started" ? requestID : safeRunID
+        func safeLine(_ value: String) -> String {
+            String(value.filter { $0.isASCII && $0 != "\n" && $0 != "\r" }.prefix(512))
+        }
+        return [
+            "schema=1", "diagnostic_code=SS-REFRESH-UNKNOWN", "builder_commit=\(V3DiagnosticBuild.commit)", "request_id=\(requestID)", "manual_refresh_request=\(requestID)",
+            "run_id=\(safeRunID)", "state=failed", "operation=refresh", "stage=unknown",
+            "code=unknown", "correlation=\(safeCorrelation)",
+            "underlying_domain=redacted", "underlying_code=unknown", "retryable=unknown",
+            "safe_cause=unknown", "source_step=unknown", "health=\(safeLine(health))",
+            "safe_message=\(safeLine(message))"
+        ].joined(separator: "\n")
+    }
+
+    static func text(requestID: String, runID: String,
+                     record: [String: Any]) -> String? {
+        guard UUID(uuidString: requestID) != nil, UUID(uuidString: runID) != nil,
+              record["request_id"] as? String == requestID,
+              record["run_id"] as? String == runID,
+              record["state"] as? String == "failed" else { return nil }
+        let failureWire = record["failure"] as? [String: Any]
+        let failure = failureWire.flatMap { CombinedFailure.decode($0, expectedID: runID) }
+        let manifest = record["manifest"] as? [String: Any]
+            ?? record["manifest_summary"] as? [String: Any] ?? [:]
+        func safeIDs(_ key: String) -> String {
+            guard let values = manifest[key] as? [String] else { return "unknown" }
+            let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+            return values.prefix(64).map { value in
+                String(value.filter { character in
+                    character.unicodeScalars.allSatisfy { allowed.contains($0) }
+                }.prefix(160))
+            }.joined(separator: ",")
+        }
+        func recordScalar(_ key: String) -> String {
+            let value = (record[key] as? String ?? "unknown")
+            return String(value.filter { $0.isASCII && $0 != "\n" && $0 != "\r" }.prefix(80))
+        }
+        if failure?.operation != "refresh" {
+            return [
+                "schema=1", "diagnostic_code=SS-REFRESH-UNKNOWN", "builder_commit=\(V3DiagnosticBuild.commit)", "request_id=\(requestID)", "manual_refresh_request=\(requestID)", "run_id=\(runID)",
+                "state=failed", "operation=refresh", "stage=unknown",
+                "code=staleResult", "correlation=\(runID)",
+                "underlying_domain=redacted", "underlying_code=unknown",
+                "retryable=unknown", "safe_cause=unknown", "source_step=unknown",
+                "source=\(recordScalar("source"))", "origin=\(recordScalar("origin"))",
+                "network_preflight=\(recordScalar("network_preflight"))",
+                "active_run_id=\(recordScalar("active_run_id"))", "health=\(recordScalar("health"))",
+                "terminal_ledger_state=failed", "manifest_run_id=\(recordScalar("manifest_run_id"))",
+                "target_app_ids=\(safeIDs("requested_ids"))",
+                "requested_app_ids=\(safeIDs("requested_ids"))",
+                "attempted_app_ids=\(safeIDs("expected_ids"))",
+                "skipped_app_ids=\(safeIDs("skipped_ids"))",
+                "safe_message=Refresh failed, but no matching safe cause was available."
+            ].joined(separator: "\n")
+        }
+        guard let failure else { return nil }
+        let retryable = failure.retryable.map { $0 ? "true" : "false" } ?? "unknown"
+        let underlying = CombinedFailure.safeDiagnosticUnderlying(domain: failure.underlyingDomain,
+                                                                    code: failure.underlyingCode)
+        return [
+            "schema=1",
+            "diagnostic_code=\(failure.diagnosticCode)",
+            "builder_commit=\(V3DiagnosticBuild.commit)",
+            "request_id=\(requestID)",
+            "manual_refresh_request=\(requestID)",
+            "run_id=\(runID)",
+            "state=failed",
+            "source=\(recordScalar("source"))",
+            "origin=\(recordScalar("origin"))",
+            "network_preflight=\(recordScalar("network_preflight"))",
+            "active_run_id=\(recordScalar("active_run_id"))",
+            "health=\(recordScalar("health"))",
+            "terminal_ledger_state=failed",
+            "manifest_run_id=\(recordScalar("manifest_run_id"))",
+            "target_app_ids=\(safeIDs("requested_ids"))",
+            "requested_app_ids=\(safeIDs("requested_ids"))",
+            "attempted_app_ids=\(safeIDs("expected_ids"))",
+            "skipped_app_ids=\(safeIDs("skipped_ids"))",
+            "operation=\(failure.operation)",
+            "stage=\(failure.stage.rawValue)",
+            "code=\(failure.code.rawValue)",
+            "correlation=\(failure.correlationID)",
+            "underlying_domain=\(underlying.domain)",
+            "underlying_code=\(underlying.code)",
+            "retryable=\(retryable)",
+            "safe_cause=\(failure.safeCause?.rawValue ?? "unknown")",
+            "source_step=\(failure.sourceStep?.rawValue ?? "unknown")",
+            "safe_message=\(failure.safeMessage.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " "))"
+        ].joined(separator: "\n")
+    }
+}
+
 // V3_STATUS_PRESENTATION_V1
 // One reusable semantic status model. Success, warning and failure were drawn
 // with almost the same treatment in the operation sheet, Sources, Setup
@@ -6212,6 +6560,81 @@ enum V3ServiceMutationBusyCausePolicy {
         }
         if operation == "sourceRemoveConfirmed" { return .sourceRemoveBusy }
         return .operationInProgress
+    }
+}
+
+struct V3RefreshAdmissionLease {
+    static let nativeRefreshTimeout: TimeInterval = 600
+    static let retirementGrace: TimeInterval = 60
+    static let lifetime: TimeInterval = nativeRefreshTimeout + retirementGrace
+    static let nativeRefreshTimeoutNanoseconds: UInt64 = 600_000_000_000
+
+    private(set) var runID: String?
+    private(set) var requestID: String?
+    private(set) var expiresAt: Date?
+    private(set) var ownerLost = false
+
+    var isActive: Bool { runID != nil }
+
+    mutating func expire(now: Date = Date()) -> Bool {
+        guard let expiresAt, expiresAt <= now, !ownerLost else { return false }
+        ownerLost = true
+        self.expiresAt = nil
+        return true
+    }
+
+    mutating func acquire(runID: String, requestID: String,
+                          authenticationActive: Bool,
+                          anotherMutationActive: Bool,
+                          now: Date = Date()) -> Bool {
+        _ = expire(now: now)
+        guard let parsed = UUID(uuidString: runID), parsed.uuidString == runID,
+              let parsedRequest = UUID(uuidString: requestID), parsedRequest.uuidString == requestID,
+              self.runID == nil, !authenticationActive, !anotherMutationActive,
+              Self.lifetime > 0 else { return false }
+        self.runID = runID
+        self.requestID = requestID
+        expiresAt = now.addingTimeInterval(Self.lifetime)
+        ownerLost = false
+        return true
+    }
+
+    func owns(_ candidate: String) -> Bool { runID == candidate }
+
+    mutating func restoreLost(runID: String) -> Bool {
+        guard self.runID == nil,
+              let parsed = UUID(uuidString: runID), parsed.uuidString == runID else { return false }
+        self.runID = runID
+        requestID = nil
+        expiresAt = nil
+        ownerLost = true
+        return true
+    }
+
+    @discardableResult
+    mutating func release(runID: String) -> Bool {
+        guard self.runID == runID else { return false }
+        self.runID = nil
+        requestID = nil
+        expiresAt = nil
+        ownerLost = false
+        return true
+    }
+
+    @discardableResult
+    mutating func release(requestID: String) -> Bool {
+        guard self.requestID == requestID else { return false }
+        runID = nil
+        self.requestID = nil
+        expiresAt = nil
+        ownerLost = false
+        return true
+    }
+
+    @discardableResult
+    mutating func reconcileAfterDeviceCheck(runID: String, userConfirmed: Bool) -> Bool {
+        guard ownerLost, userConfirmed, owns(runID) else { return false }
+        return release(runID: runID)
     }
 }
 
@@ -13600,6 +14023,153 @@ enum V3BackendCommands {
 import Foundation
 import CoreFoundation
 
+public struct CombinedRefreshTargetPlan: Equatable {
+    public let requestedIDs: [String]
+    public let attemptedIDs: [String]
+    public let skippedIDs: [String]
+}
+
+public enum CombinedRefreshTargetPolicy {
+    public static func plan(requestedIDs: [String], runningIDs: Set<String>,
+                            isCorrelatedManualRun: Bool) -> CombinedRefreshTargetPlan {
+        let attempted = isCorrelatedManualRun
+            ? requestedIDs
+            : requestedIDs.filter { !runningIDs.contains($0) }
+        let attemptedSet = Set(attempted)
+        return CombinedRefreshTargetPlan(requestedIDs: requestedIDs,
+            attemptedIDs: attempted,
+            skippedIDs: requestedIDs.filter { !attemptedSet.contains($0) })
+    }
+}
+
+// LC_REFRESH_METADATA_SANITIZED_V1: never forward arbitrary saved result dictionaries.
+public enum CombinedVerification {
+    static let uncertainMutationKey = "liveContainerAutoRefreshUncertainMutationRunID"
+    static func clearUncertainty(_ defaults: UserDefaults, runID: String) {
+        guard defaults.string(forKey: uncertainMutationKey) == runID else { return }
+        defaults.removeObject(forKey: uncertainMutationKey)
+    }
+    // Complete terminal results establish completion, not verified refresh success.
+    // Empty, duplicated or omitted app results leave mutation completion uncertain.
+    // The Setup Assistant reuses this exact contract: a partial manifest (for
+    // example two expected apps but only one result) never verifies.
+    public static func hasCompleteTerminalResults(_ manifest: [String: Any], runID: String) -> Bool {
+        guard UUID(uuidString: runID) != nil, manifest["run_id"] as? String == runID,
+              manifest["version"] as? Int == 2, manifest["schema"] as? String == "LiveContainerRefreshManifestV2",
+              let expected = manifest["expected_ids"] as? [String], !expected.isEmpty, expected.count <= 1024,
+              expected.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 }), Set(expected).count == expected.count,
+              (manifest["host_handoff"] == nil || strictBoolean(manifest["host_handoff"]) != nil),
+              targetCoverageIsValid(manifest, expected: expected),
+              let entries = manifest["results"] as? [[String: Any]], entries.count == expected.count else { return false }
+        var received = Set<String>()
+        for entry in entries {
+            guard let identifier = entry["bundle_id"] as? String, expected.contains(identifier),
+                  received.insert(identifier).inserted,
+                  let success = entry["success"] as? NSNumber, CFGetTypeID(success) == CFBooleanGetTypeID() else { return false }
+        }
+        return received == Set(expected)
+    }
+    private static func strictBoolean(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+    private static func targetCoverageIsValid(_ manifest: [String: Any], expected: [String]) -> Bool {
+        guard manifest["requested_ids"] != nil || manifest["skipped_ids"] != nil else { return true }
+        guard let requested = manifest["requested_ids"] as? [String],
+              let skipped = manifest["skipped_ids"] as? [String],
+              !requested.isEmpty, requested.count <= 1024, skipped.count <= 1024,
+              requested.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 }),
+              skipped.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 }),
+              Set(requested).count == requested.count, Set(skipped).count == skipped.count else { return false }
+        let expectedSet = Set(expected), skippedSet = Set(skipped)
+        return expectedSet.isDisjoint(with: skippedSet) &&
+            expectedSet.union(skippedSet) == Set(requested)
+    }
+    static func sanitized(_ payload: [String: Any], runID: String) -> [String: Any] {
+        guard let manifest = payload["liveContainerAutoRefreshVerification"] as? [String: Any],
+              manifest["run_id"] as? String == runID,
+              let expected = manifest["expected_ids"] as? [String], expected.count <= 1024,
+              expected.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 }),
+              targetCoverageIsValid(manifest, expected: expected),
+              let entries = manifest["results"] as? [[String: Any]],
+              entries.count == expected.count,
+              entries.allSatisfy({ entry in
+                  guard let identifier = entry["bundle_id"] as? String,
+                        expected.contains(identifier), strictBoolean(entry["success"]) != nil else { return false }
+                  return true
+              }),
+              Set(entries.map { $0["bundle_id"] as? String ?? "" }) == Set(expected) else { return [:] }
+        let manifestHostHandoff: Bool?
+        if let rawHostHandoff = manifest["host_handoff"] {
+            guard let value = strictBoolean(rawHostHandoff) else { return [:] }
+            manifestHostHandoff = value
+        } else {
+            manifestHostHandoff = nil
+        }
+        let outerHostHandoffRunID: String?
+        if let rawRunID = payload["liveContainerAutoRefreshHostHandoffRunID"] {
+            guard let value = rawRunID as? String else { return [:] }
+            outerHostHandoffRunID = value
+        } else {
+            outerHostHandoffRunID = nil
+        }
+        let outerHostHandoff: Bool?
+        if let rawHostHandoff = payload["liveContainerAutoRefreshHostHandoff"] {
+            guard let value = strictBoolean(rawHostHandoff) else { return [:] }
+            outerHostHandoff = value
+        } else {
+            outerHostHandoff = nil
+        }
+        let hasCurrentHostHandoff = outerHostHandoffRunID == runID
+        // The producer persists true plus this run ID before writing the
+        // manifest's copied host_handoff flag. Never turn an incomplete or
+        // contradictory current-run handoff into false at the XPC boundary.
+        if hasCurrentHostHandoff {
+            guard manifestHostHandoff == true, outerHostHandoff == true else { return [:] }
+        } else {
+            // A true manifest/outer marker without its matching run ID is
+            // incomplete evidence. A normal refresh may omit the outer marker
+            // or carry explicit false values.
+            guard manifestHostHandoff != true, outerHostHandoff != true else { return [:] }
+        }
+        var result: [String: Any] = ["version": 2, "schema": "LiveContainerRefreshManifestV2", "run_id": runID, "expected_ids": expected]
+        if let requested = manifest["requested_ids"] as? [String] { result["requested_ids"] = requested }
+        if let skipped = manifest["skipped_ids"] as? [String] { result["skipped_ids"] = skipped }
+        if let date = manifest["date"] as? Date { result["date"] = date }
+        if let manifestHostHandoff { result["host_handoff"] = manifestHostHandoff }
+        result["results"] = entries.map { entry -> [String: Any] in
+            guard let identifier = entry["bundle_id"] as? String, expected.contains(identifier),
+                  let success = strictBoolean(entry["success"]) else { return [:] }
+            var item: [String: Any] = ["bundle_id": identifier, "success": success]
+            for key in ["refreshed_date", "expiration_date"] { if let value = entry[key] as? Date { item[key] = value } }
+            if !success {
+                let native = NSError(domain: entry["error_domain"] as? String ?? "redacted", code: entry["error_code"] as? Int ?? 0,
+                    userInfo: [NSLocalizedDescriptionKey: entry["error"] as? String ?? ""])
+                let preserved = (entry["failure"] as? [String: Any]).flatMap { CombinedFailure.decode($0, expectedID: runID) }
+                let failure = preserved ?? CombinedFailure.capture(native, operation: "refresh", stage: .refreshVerification, id: runID)
+                let safeUnderlying = CombinedFailure.safeWireUnderlying(domain: failure.underlyingDomain,
+                    code: failure.underlyingCode)
+                item["error"] = failure.localizedDescription
+                item["error_code"] = safeUnderlying.code; item["error_domain"] = safeUnderlying.domain
+                item["failure"] = failure.wire
+            }
+            return item
+        }
+        var safe: [String: Any] = ["liveContainerAutoRefreshVerification": result]
+        if hasCurrentHostHandoff {
+            safe["liveContainerAutoRefreshHostHandoffRunID"] = runID
+            safe["liveContainerAutoRefreshHostHandoff"] = true
+            for key in ["liveContainerAutoRefreshHostHandoffStartedAt", "liveContainerAutoRefreshHostPreviousExpiration"] {
+                if let value = payload[key] as? Date { safe[key] = value }
+            }
+        }
+        return safe
+    }
+}
+
+
+// LC_STRUCTURED_FAILURE_V1: fixed vocabulary, no arbitrary userInfo/descriptions on the wire.
 public struct CombinedFailure: Error, LocalizedError {
     public struct LaunchContext: Equatable {
         public static let bridgeErrorDomain = "io.sidestore.LiveContainer.ExtensionLaunch"
@@ -15406,6 +15976,41 @@ enum V3AccountDatabaseRecovery {
             throw V3AccountDatabaseOutcomeUnknownError()
         }
     }
+}
+
+// V3_POST_MUTATION_PERSISTENCE_CONTRACT_V1: the device operation may already
+// have succeeded when this local durable save fails. Keep only fixed semantic
+// markers; never retain or serialize the native Core Data error text/userInfo.
+struct V3PostMutationPersistenceError: Error, CustomNSError, LocalizedError {
+    static var errorDomain: String { "V3PostMutationPersistenceErrorDomain" }
+    var errorCode: Int { 1 }
+    var errorUserInfo: [String: Any] {
+        [NSLocalizedDescriptionKey: "SideStore could not confirm that the operation result was saved. The device may already have changed.",
+         "LCStructuredFailureStageV1": CombinedFailure.Stage.persistence.rawValue,
+         "LCStructuredFailureCauseV1": CombinedFailure.SafeCause.operationPersistenceFailed.rawValue]
+    }
+    var errorDescription: String? {
+        errorUserInfo[NSLocalizedDescriptionKey] as? String
+    }
+}
+
+enum V3MutationPersistencePolicy {
+    /// The Runner calls this only after its device-side pipeline returned success.
+    /// A false `hasChanges` means the state was already durable; a failed save
+    /// throws a fixed non-retryable outcome instead of allowing group success.
+    static func persistResult(hasChanges: Bool, save: () throws -> Void) throws {
+        guard hasChanges else { return }
+        do {
+            try save()
+        } catch {
+            throw V3PostMutationPersistenceError()
+        }
+    }
+}
+
+public enum CombinedRefreshVerificationError: Error, Equatable {
+    case missingResult
+    case staleResult
 }
 
 public struct CombinedIPAFileError: Error, LocalizedError, CustomNSError {

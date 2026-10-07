@@ -12,9 +12,38 @@ import CoreData
 import SideSign
 import UserNotifications
 import MobileCoreServices
-import Intents
 import Combine
 import UniformTypeIdentifiers
+
+// V3_PERSISTED_ERROR_PRIVACY_V1: persistent diagnostics never retain provider text or NSError userInfo.
+enum V3PersistedErrorSanitizer {
+    static let safeDescription = "The operation failed. Detailed error information was omitted to protect privacy."
+
+    private static let safeDomains: Set<String> = [
+        "ALTServerErrorDomain",
+        "SideSignErrorDomain",
+        "NSCocoaErrorDomain",
+        "NSPOSIXErrorDomain",
+        "NSURLErrorDomain",
+        "NSOSStatusErrorDomain",
+        "NSMachErrorDomain",
+        "kCFErrorDomainCFNetwork"
+    ]
+
+    static func sanitize(_ error: NSError) -> NSError {
+        let domainIsSafe = safeDomains.contains(error.domain)
+        return NSError(
+            domain: domainIsSafe ? error.domain : "V3RedactedErrorDomain",
+            code: domainIsSafe ? error.code : 0,
+            userInfo: [NSLocalizedDescriptionKey: safeDescription]
+        )
+    }
+
+    static func refreshHistoryDescription(for error: Error) -> String {
+        _ = error
+        return safeDescription
+    }
+}
 
 extension AppManager
 {
@@ -157,99 +186,10 @@ final class AppManager: ObservableObject, @unchecked Sendable
     
 
 
-    func signIn(presentingViewController: UIViewController?,
-                skipDeviceRegistration: Bool = false,
-                skipCertificateProvisioning: Bool = false,
-                completionHandler: @escaping (Result<(ALTTeam, ALTCertificate?, ALTAppleAPISession), Error>) -> Void)
-    {
-        Task.detached {
-            do {
-                let result = try await AuthManager.shared.signIn(
-                    presentingViewController: presentingViewController,
-                    skipDeviceRegistration: skipDeviceRegistration,
-                    skipCertificateProvisioning: skipCertificateProvisioning
-                )
-                completionHandler(.success((result.team, result.certificate, result.session)))
-            } catch {
-                completionHandler(.failure(error))
-            }
-        }
-    }
-    
-    func deactivateApps(for appBundle: ALTApplication, presentingViewController: UIViewController?, completion: @escaping (Result<Void, Error>) -> Void)
-    {
-        guard !UserDefaults.standard.isAppLimitDisabled, let activeAppsLimit = UserDefaults.standard.activeAppsLimit else { return completion(.success(())) }
-        
-        DispatchQueue.main.async {
-            // Only apps signed with a free developer certificate count toward the 3-app free account limit.
-            // Apps signed with a paid certificate coexist independently and must not be counted here.
-            let activeApps = InstalledApp.fetchActiveApps(in: DatabaseManager.shared.viewContext)
-                .filter { $0.bundleIdentifier != appBundle.bundleIdentifier }   // Don't count app towards total if it matches activating app
-                .filter { ($0.team?.type ?? .unknown) == .free }                // Only free-cert-signed apps count against the free limit
-                .sorted { ($0.name, $0.refreshedDate) < ($1.name, $1.refreshedDate) }
-            
-            var title: String = NSLocalizedString("Cannot Activate More than 3 Apps", comment: "")
-            let message: String
-            
-            if UserDefaults.standard.activeAppLimitIncludesExtensions
-            {
-                if appBundle.appExtensions.isEmpty
-                {
-                    message = NSLocalizedString("Non-developer Apple IDs are limited to 3 active apps and app extensions. Please choose an app to deactivate.", comment: "")
-                }
-                else
-                {
-                    title = NSLocalizedString("Cannot Activate More than 3 Apps and App Extensions", comment: "")
-                    
-                    let appExtensionText = appBundle.appExtensions.count == 1 ? NSLocalizedString("app extension", comment: "") : NSLocalizedString("app extensions", comment: "")
-                    message = String(format: NSLocalizedString("Non-developer Apple IDs are limited to 3 active apps and app extensions, and \"%@\" contains %@ %@. Please choose an app to deactivate.", comment: ""), appBundle.name, NSNumber(value: appBundle.appExtensions.count), appExtensionText)
-                }
-            }
-            else
-            {
-                message = NSLocalizedString("Non-developer Apple IDs are limited to 3 active apps. Please choose an app to deactivate.", comment: "")
-            }
-            
-            let activeAppsCount = activeApps.map { $0.requiredActiveSlots }.reduce(0, +)
-                    
-            let availableActiveApps = max(activeAppsLimit - activeAppsCount, 0)
-            let requiredActiveSlots = UserDefaults.standard.activeAppLimitIncludesExtensions ? (1 + appBundle.appExtensions.count) : 1
-            guard requiredActiveSlots > availableActiveApps else { return completion(.success(())) }
+    // V3_HEADLESS_APP_MANAGER_SIGNIN_REMOVED_V1: interactive sign-in is owned by the LiveContainer host.
 
-            guard let presentingViewController else {
-                let failureReason = String(format: NSLocalizedString("SideStore needs to deactivate another app before installing %@.", comment: ""), appBundle.name)
-                return completion(.failure(OperationError.forbidden(failureReason: failureReason)))
-            }
-            
-            let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
-            alertController.addAction(UIAlertAction(title: UIAlertAction.cancel.title, style: UIAlertAction.cancel.style) { (action) in
-                completion(.failure(OperationError.cancelled))
-            })
-            
-            for activeApp in activeApps where activeApp.bundleIdentifier != StoreApp.altstoreAppID
-            {
-                alertController.addAction(UIAlertAction(title: activeApp.name, style: .default) { (action) in
-                    activeApp.isActive = false
-                                    
-                    self.deactivate(activeApp, presentingViewController: presentingViewController) { (result) in
-                        switch result
-                        {
-                        case .failure(let error):
-                            activeApp.managedObjectContext?.perform {
-                                activeApp.isActive = true
-                                completion(.failure(error))
-                            }
-                            
-                        case .success:
-                            self.deactivateApps(for: appBundle, presentingViewController: presentingViewController, completion: completion)
-                        }
-                    }
-                })
-            }
-            
-            presentingViewController.present(alertController, animated: true, completion: nil)
-        }
-    }
+    // V3_HEADLESS_APP_MANAGER_DEACTIVATE_APPLIMIT_WRAPPER_REMOVED_V1: app-limit chooser belongs to the excluded My Apps UI; v3 uses PipelineRunner.
+
     
     func clearAppCache(completion: @escaping (Result<Void, Error>) -> Void)
     {
@@ -287,57 +227,109 @@ final class AppManager: ObservableObject, @unchecked Sendable
         }
     }
     
+    // V3_SHARED_CONFIRMED_SOURCE_MUTATIONS_V1: UI confirmation stays at the caller;
+    // persistence and notifications are shared by the UI and headless command paths.
     func add(@AsyncManaged _ source: Source,
              message: String? = NSLocalizedString("Make sure to only add sources that you trust.", comment: ""),
              presentingViewController: UIViewController) async throws
     {
         let (sourceName, sourceURL) = await $source.perform { ($0.name, $0.sourceURL) }
-        
         let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-        async let fetchedSource = try await self.fetchSource(sourceURL: sourceURL, managedObjectContext: context) // Fetch source async while showing alert.
+        async let fetchedSource = try await self.fetchSource(sourceURL: sourceURL, managedObjectContext: context)
 
         let title = String(format: NSLocalizedString("Would you like to add the source “%@”?", comment: ""), sourceName)
         let action = await UIAlertAction(title: NSLocalizedString("Add Source", comment: ""), style: .default)
         try await presentingViewController.presentConfirmationAlert(title: title, message: message ?? "", primaryAction: action)
 
-        // Wait for fetch to finish before saving context to make
-        // sure there isn't already a source with this identifier.
-        let sourceExists = try await fetchedSource.isAdded()
-        
-        // This is just a sanity check, so pass nil for existingSource to keep code simple.
-        guard !sourceExists else { throw SourceError.duplicate(source, existingSource: nil) }
-        
-        try await context.performAsync {
-            try context.save()
+        let fetched = try await fetchedSource
+        let result = try await self.persistConfirmedSource(fetched, in: context, notificationSource: source)
+        guard !result.alreadyAdded else {
+            throw SourceError.duplicate(source, existingSource: nil)
         }
-        
-        NotificationCenter.default.post(name: AppManager.didAddSourceNotification, object: source)
     }
-    
+
+    // Presenter-free entry point used after the LiveContainer host has confirmed.
+    func addConfirmed(sourceURL: URL) async throws -> (identifier: String, alreadyAdded: Bool)
+    {
+        let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+        let fetched = try await self.fetchSource(sourceURL: sourceURL, managedObjectContext: context)
+        return try await self.persistConfirmedSource(fetched, in: context, notificationSource: nil)
+    }
+
+    private func persistConfirmedSource(_ fetchedSource: Source,
+                                        in context: NSManagedObjectContext,
+                                        notificationSource: Source?) async throws -> (identifier: String, alreadyAdded: Bool)
+    {
+        let identifier = await AsyncManaged(wrappedValue: fetchedSource).identifier
+        // Source.isAdded opens an independent persistent-store context. The fetch operation
+        // has already inserted its candidate into `context`, so checking that same context
+        // would incorrectly report every new candidate as a duplicate.
+        guard try await !fetchedSource.isAdded() else { return (identifier, true) }
+
+        try await context.performAsync { try context.save() }
+        let viewContext = DatabaseManager.shared.viewContext
+        let savedSource = try await viewContext.performAsync {
+            Source.first(satisfying: NSPredicate(format: "%K == %@", #keyPath(Source.identifier), identifier), in: viewContext)
+        }
+        guard let eventSource = notificationSource ?? savedSource else {
+            throw OperationError.noSources
+        }
+        await MainActor.run {
+            NotificationCenter.default.post(name: AppManager.didAddSourceNotification,
+                                            object: eventSource)
+        }
+        return (identifier, false)
+    }
+
     func remove(@AsyncManaged _ source: Source, presentingViewController: UIViewController) async throws
     {
         let (sourceName, sourceID) = await $source.perform { ($0.name, $0.identifier) }
         guard sourceID != Source.altStoreIdentifier else {
             throw OperationError.forbidden(failureReason: NSLocalizedString("The default SideStore source cannot be removed.", comment: ""))
         }
-        
         let title = String(format: NSLocalizedString("Are you sure you want to remove the source “%@”?", comment: ""), sourceName)
         let message = NSLocalizedString("Any apps you've installed from this source will remain, but they'll no longer receive any app updates.", comment: "")
         let action = await UIAlertAction(title: NSLocalizedString("Remove Source", comment: ""), style: .destructive)
         try await presentingViewController.presentConfirmationAlert(title: title, message: message, primaryAction: action)
-        
+
+        try await self.removeConfirmed(identifier: sourceID, notificationSource: source)
+    }
+
+    // Presenter-free entry point used after the LiveContainer host has confirmed.
+    func removeConfirmed(identifier: String, notificationSource: Source? = nil) async throws
+    {
+        guard identifier != Source.altStoreIdentifier else {
+            throw OperationError.forbidden(failureReason: NSLocalizedString("The default SideStore source cannot be removed.", comment: ""))
+        }
+        let viewContext = DatabaseManager.shared.viewContext
+        let eventSource: Source?
+        if let notificationSource {
+            eventSource = notificationSource
+        } else {
+            eventSource = try await viewContext.performAsync {
+                Source.first(satisfying: NSPredicate(format: "%K == %@", #keyPath(Source.identifier), identifier), in: viewContext)
+            }
+        }
+
         let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         try await context.performAsync {
-            let predicate = NSPredicate(format: "%K == %@", #keyPath(Source.identifier), sourceID)
-            guard let source = Source.first(satisfying: predicate, in: context) else { return } // Doesn't exist == success.
-            
+            let predicate = NSPredicate(format: "%K == %@", #keyPath(Source.identifier), identifier)
+            guard let source = Source.first(satisfying: predicate, in: context) else { return }
+            guard source.identifier != Source.altStoreIdentifier else {
+                throw OperationError.forbidden(failureReason: NSLocalizedString("The default SideStore source cannot be removed.", comment: ""))
+            }
             context.delete(source)
             try context.save()
         }
-        
-        NotificationCenter.default.post(name: AppManager.didRemoveSourceNotification, object: source)
+
+        if let eventSource = notificationSource ?? eventSource {
+            await MainActor.run {
+                NotificationCenter.default.post(name: AppManager.didRemoveSourceNotification,
+                                                object: eventSource)
+            }
+        }
     }
-    
+
     @discardableResult
     func fetchSource(sourceURL: URL,
                      managedObjectContext: NSManagedObjectContext,
@@ -407,7 +399,7 @@ final class AppManager: ObservableObject, @unchecked Sendable
                         let title = String(format: NSLocalizedString("Unable to Refresh “%@” Source", comment: ""), source.name)
                         let error = nsError.withLocalizedTitle(title)
                         errors[source] = error
-                        source.error = error.sanitizedForSerialization()
+                        source.error = V3PersistedErrorSanitizer.sanitize(error as NSError)
                     }
                 }
                 
@@ -499,7 +491,7 @@ final class AppManager: ObservableObject, @unchecked Sendable
                 {
                     guard let sourceID = mergeError.sourceID else { throw mergeError }
                     
-                    let sanitizedError = (mergeError as NSError).sanitizedForSerialization()
+                    let sanitizedError = V3PersistedErrorSanitizer.sanitize(mergeError as NSError)
                     DatabaseManager.shared.persistentContainer.performBackgroundTask { context in
                         do
                         {
@@ -640,7 +632,7 @@ final class AppManager: ObservableObject, @unchecked Sendable
         return group
     }
 
-    private static func readAppMetadata(from url: URL, packageType: PackageType) throws -> (bundleIdentifier: String, name: String) {
+    static func readAppMetadata(from url: URL, packageType: PackageType) throws -> (bundleIdentifier: String, name: String) {
         switch packageType {
         case .ipa:
             let reader = try Archive.Reader.open(at: url)
@@ -873,12 +865,7 @@ typealias InstallTarget = AppManager.InstallTarget
 extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorLogger {
     
     private func makePipelineHandler(presentingViewController: UIViewController?) -> PipelineExecutionHandler {
-        return PipelineHandler(
-            isResignActive: presentingViewController is ResignAltStoreViewController,
-            presenterProvider: { [weak presentingViewController] in
-                presentingViewController?.presentedViewController ?? presentingViewController
-            }
-        )
+        return PipelineHandler()
     }
 
     private func makeAuthenticatedContext(presentingViewController: UIViewController? = nil,
@@ -993,7 +980,8 @@ extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorL
             case .removeApp, .removeDeactivatedApp: localizedTitle = String(format: NSLocalizedString("Failed to Remove %@", comment: ""), appName)
         }
         
-        let nsError = error as NSError
+        // V3_TYPED_PAIRING_FAILURE_PROPAGATION_V1: keep typed pairing failure context through AppManager mapping.
+        let nsError = V3HeadlessPairingFailure.tagIfInvalidPairing(error) as NSError
         let mappedError = nsError.withLocalizedTitle(localizedTitle)
         return mappedError
     }
@@ -1007,8 +995,8 @@ extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorL
             default: break
         }
 
-        // Sanitize NSError on same thread before performing background task.
-        let sanitizedError = (error as NSError).sanitizedForSerialization()
+        // V3_PERSISTED_ERROR_PRIVACY_V1: retain only known-safe domain/code and a fixed message.
+        let sanitizedError = V3PersistedErrorSanitizer.sanitize(error as NSError)
 
         DatabaseManager.shared.persistentContainer.performBackgroundTask { context in
             var app = app

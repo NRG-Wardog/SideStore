@@ -66,6 +66,11 @@ final class PipelineExecutor: @unchecked Sendable {
             logOperationResult(result: result, loggerType: loggerType, operation: step)
         }
 
+        // V3_PIPELINE_PHASE_REPORTING_V1: report the authoritative step before it runs.
+        if let headlessHandler = context.handler as? V3HeadlessPipelineHandler {
+            await headlessHandler.recordPipelinePhase(step,
+                downloadUsesNetwork: downloadingApp.url?.isFileURL == false)
+        }
         do {
             switch step {
             case .preflightChecks:
@@ -280,7 +285,39 @@ final class PipelineExecutor: @unchecked Sendable {
             }
         } catch {
             result = error
-            throw error
+            if error is CancellationError { throw error }
+            // LC_STRUCTURED_FAILURE_V1: preserve step responsibility and the underlying error.
+            var stage: String
+            switch step {
+            case .resignApp, .fetchProvisioningProfiles, .verifyCertificate: stage = "signing"
+            case .sendApp, .installApp: stage = "installation"
+            default: stage = "command"
+            }
+            var sourceStep: String?
+            switch step {
+            case .fetchProvisioningProfiles: sourceStep = "provisioningProfileFetch"
+            case .verifyCertificate: sourceStep = "certificateValidation"
+            case .resignApp: sourceStep = "localCodeSigning"
+            default: break
+            }
+            if let operationError = error as? OperationError, operationError == .notAuthenticated { stage = "authentication" }
+            if let portalError = error as? DeveloperPortalError {
+                switch portalError {
+                case .incorrectCredentials, .appSpecificPasswordRequired, .requiresTwoFactorAuthentication,
+                     .incorrectVerificationCode, .authenticationHandshakeFailed, .invalidAnisetteData,
+                     .tooManyAttempts, .accountRepairRequired, .invalid2FAResponse: stage = "authentication"
+                default: break
+                }
+            }
+            var facts: [String: String] = [:]
+            if stage == "signing" {
+                facts["extension_count"] = String(context.targetAppBundle?.appExtensions.count ?? 0)
+                facts["signing_certificate_present"] = context.targetSigningCertificate == nil ? "false" : "true"
+                if let certificate = context.targetSigningCertificate {
+                    facts["signing_certificate_serial_sha256"] = lcSigningHash(certificate.serialNumber)
+                }
+            }
+            throw lcStructuredSigningFailure(error, stage: stage, sourceStep: sourceStep, facts: facts)
         }
     }
     
@@ -298,5 +335,178 @@ final class PipelineExecutor: @unchecked Sendable {
             """
             )
         }
+    }
+}
+
+import CryptoKit
+// LC_SIGNING_CAUSE_CLASSIFIER_V1: only typed upstream errors gain a semantic cause.
+func lcSafeSigningCause(_ error: Error, portalResponse: Bool = false) -> String {
+    if let urlError = error as? URLError {
+        switch urlError.code {
+        case .networkConnectionLost: return "signingNetworkConnectionLost"
+        case .timedOut: return "signingNetworkTimedOut"
+        case .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost:
+            return "signingNetworkUnavailable"
+        default: break
+        }
+    }
+    let native = error as NSError
+    if native.domain == NSURLErrorDomain {
+        switch native.code {
+        case NSURLErrorNetworkConnectionLost: return "signingNetworkConnectionLost"
+        case NSURLErrorTimedOut: return "signingNetworkTimedOut"
+        case NSURLErrorNotConnectedToInternet, NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost:
+            return "signingNetworkUnavailable"
+        default: break
+        }
+    }
+    if let serverError = error as? ServerError {
+        switch serverError {
+        case .underlyingError: return portalResponse ? "developerPortalRejectedRequest" : "unknownSigningCause"
+        case .badServerResponse, .invalidResponseFormat, .missingKey:
+            return portalResponse ? "developerPortalInvalidResponse" : "unknownSigningCause"
+        }
+    }
+    if let portalError = error as? DeveloperPortalError {
+        switch portalError {
+        case .maximumAppIDLimitReached: return "appIDLimitReached"
+        case .provisioningProfileDoesNotExist: return "provisioningProfileUnavailable"
+        case .certificateDoesNotExist: return "certificateUnavailable"
+        default: break
+        }
+    }
+    return "unknownSigningCause"
+}
+
+func lcSigningHash(_ value: String) -> String {
+    SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
+private final class LCSigningHTTPObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var status: Int?
+    private var providerCode: String?
+    private var resultCode: Int?
+    func record(_ value: Int?, code: String?) {
+        lock.lock(); defer { lock.unlock() }
+        status = value.flatMap { (100...599).contains($0) ? $0 : nil }
+        providerCode = SideSignPortalDiagnostics.safeProviderCode(code)
+    }
+    func recordResultCode(_ code: Int) {
+        lock.lock(); defer { lock.unlock() }
+        resultCode = code
+    }
+    func snapshot() -> (status: Int?, providerCode: String?, resultCode: Int?) {
+        lock.lock(); defer { lock.unlock() }
+        return (status, providerCode, resultCode)
+    }
+}
+
+// Request facts are captured before calling the existing upstream API. No shared
+// last-step state: parallel extension failures retain their own request identity.
+func lcPortalSigningContext(teamID: String, generation: UInt64,
+                            bundleID: String? = nil, features: [String: String]? = nil,
+                            groupCount: Int? = nil, groupID: String? = nil, profileMode: String? = nil) -> [String: String] {
+    var facts = ["account_binding": "verified", "team_binding": "verified",
+                 "team_sha256": lcSigningHash(teamID), "session_generation": String(generation)]
+    if let bundleID { facts["requested_bundle_sha256"] = lcSigningHash(bundleID) }
+    if let features {
+        facts["capability_count"] = String(features.count)
+        facts["capabilities_sha256"] = lcSigningHash(features.sorted { $0.key < $1.key }
+            .map { $0.key + "=" + $0.value }.joined(separator: "\n"))
+        facts["capability_names"] = features.keys.filter { CombinedFailure.signingCapabilityNames.contains($0) }.sorted().joined(separator: ",")
+        facts["enabled_capability_names"] = features.filter { CombinedFailure.signingCapabilityNames.contains($0.key) && $0.value == "true" }.keys.sorted().joined(separator: ",")
+    }
+    if let groupCount { facts["app_group_count"] = String(groupCount) }
+    if let groupID { facts["requested_app_group_sha256"] = lcSigningHash(groupID) }
+    if let profileMode {
+        facts["profile_mode"] = profileMode
+        // The team-profile endpoint chooses devices server-side. Do not claim
+        // that a saved device or a UI certificate was explicitly sent to it.
+        facts["device_registration"] = "unobserved"
+    }
+    return facts
+}
+
+func lcStructuredSigningFailure(_ error: Error, stage: String, sourceStep: String?,
+                                facts: [String: String] = [:], portalResponse: Bool = false) -> NSError {
+    let native = error as NSError
+    var info: [String: Any] = ["LCStructuredFailureStageV1": stage,
+        NSUnderlyingErrorKey: native, NSLocalizedDescriptionKey: "SideStore could not complete this pipeline step."]
+    if let sourceStep { info["LCStructuredFailureSourceV1"] = sourceStep }
+    var context = facts
+    if stage == "signing" { info["LCStructuredFailureCauseV1"] = lcSafeSigningCause(error, portalResponse: portalResponse) }
+    // Associated provider descriptions are not transport/stage evidence.
+    // Reuse the wire boundary's existing typed-body guard for portal enums too.
+    if error is DeveloperPortalError { context["typed_error"] = "sideSignDeveloperPortalError" }
+    if let server = error as? ServerError {
+        switch server {
+        case .underlyingError(let code, _):
+            context["typed_error"] = "sideSignServerReportedError"
+            // -1 is SideSign's sentinel for a detail-only response, not an
+            // observed numeric Apple result code. NSError's ordinal is never used.
+            context["server_code"] = code == -1 ? "unknown" : String(code)
+        case .badServerResponse: context["typed_error"] = "sideSignBadResponse"
+        case .invalidResponseFormat: context["typed_error"] = "sideSignInvalidResponse"
+        case .missingKey: context["typed_error"] = "sideSignMissingKey"
+        }
+        if context["http_status"] == nil { context["http_status"] = "unavailable" }
+    }
+    if let prior = native.userInfo["LCStructuredSigningContextV1"] as? [String: String] {
+        context.merge(prior) { _, requestFact in requestFact }
+    }
+    for key in ["LCStructuredFailureStageV1", "LCStructuredFailureSourceV1", "LCStructuredFailureCauseV1"] {
+        if let prior = native.userInfo[key] as? String { info[key] = prior }
+    }
+    if let safe = CombinedFailure.validatedSigningContext(context), !safe.isEmpty {
+        info["LCStructuredSigningContextV1"] = safe
+    }
+    return NSError(domain: native.domain, code: native.code, userInfo: info)
+}
+
+func lcPortalSigningRequest<T>(sourceStep: String, facts: [String: String],
+                               operation: () async throws -> T) async throws -> T {
+    let observation = LCSigningHTTPObservation()
+    do {
+        return try await SideSignPortalDiagnostics.$responseObserver.withValue({ observation.record($0, code: $1) }) {
+            try await SideSignPortalDiagnostics.$resultCodeObserver.withValue({ observation.recordResultCode($0) }) {
+                try await operation()
+            }
+        }
+    }
+    catch let portal as DeveloperPortalError {
+        // Only annotate the proven App ID capacity result; leave other typed
+        // upstream business handling unchanged.
+        guard sourceStep == "appIDRegistration",
+              case .maximumAppIDLimitReached = portal else { throw portal }
+        let response = observation.snapshot()
+        var observed = facts
+        observed["http_status"] = response.status.map { String($0) } ?? "unavailable"
+        observed["provider_code"] = response.providerCode ?? "unavailable"
+        observed["server_code"] = response.resultCode.map { String($0) } ?? "unknown"
+        throw lcStructuredSigningFailure(portal, stage: "signing", sourceStep: sourceStep,
+                                         facts: observed, portalResponse: true)
+    }
+    catch let server as ServerError {
+        var observed = facts
+        let response = observation.snapshot()
+        observed["http_status"] = response.status.map { String($0) } ?? "unavailable"
+        observed["provider_code"] = response.providerCode ?? "unavailable"
+        // Keep business handling of other typed upstream errors unchanged.
+        throw lcStructuredSigningFailure(server, stage: "signing", sourceStep: sourceStep,
+                                         facts: observed, portalResponse: true)
+    }
+}
+
+func lcProvisioningBundleRequest<T>(role: String, originalBundleID: String, preferredParentMatch: Bool,
+                                    operation: () async throws -> T) async throws -> T {
+    do { return try await operation() }
+    catch {
+        guard (error as? ServerError) != nil ||
+              (error as NSError).userInfo["LCStructuredSigningContextV1"] != nil else { throw error }
+        throw lcStructuredSigningFailure(error, stage: "signing", sourceStep: "provisioningProfileFetch",
+            facts: ["provisioning_bundle_role": role,
+                    "provisioning_bundle_sha256": lcSigningHash(originalBundleID),
+                    "preferred_parent_id_match": String(preferredParentMatch)])
     }
 }
