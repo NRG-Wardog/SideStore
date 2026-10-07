@@ -142,11 +142,17 @@ class MyAppsViewController: UICollectionViewController
         if minimuxerStatusCheckTask == nil {
             minimuxerStatusCheckTask = Task {
                 let status = await isMinimuxerReady()
-                updateStatusDot(isReady: status.isSuccess)
+                switch status {
+                    case .success(let ready): updateStatusDot(isReady: ready ? true : nil)
+                    case .failure: updateStatusDot(isReady: false)
+                    }
                 // Listen to subsequent updates reactively
                 for await result in minimuxerStatusPublisher.values {
                     guard !Task.isCancelled else { break }
-                    updateStatusDot(isReady: result.isSuccess)
+                    switch result {
+                    case .success(let ready): updateStatusDot(isReady: ready ? true : nil)
+                    case .failure: updateStatusDot(isReady: false)
+                    }
                 }
             }
         }
@@ -199,7 +205,7 @@ class MyAppsViewController: UICollectionViewController
         return nil
     }
 
-    private func updateStatusDot(isReady: Bool)
+    private func updateStatusDot(isReady: Bool?)
     {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -210,7 +216,7 @@ class MyAppsViewController: UICollectionViewController
                 return
             }
             
-            let targetColor: UIColor = isReady ? .systemGreen : .systemRed
+            let targetColor: UIColor = isReady == nil ? .systemGray : (isReady == true ? .systemGreen : .systemRed)
             
             let updateColorClosure: () -> Void = { [weak self] in
                 guard let self = self, let existingDot = self.statusDotView else { return }

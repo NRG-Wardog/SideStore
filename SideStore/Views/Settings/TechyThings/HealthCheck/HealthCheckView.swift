@@ -19,7 +19,12 @@ struct HealthCheckView: View {
                 VStack(spacing: 12) {
                     if let result = viewModel.minimuxerReadyResult {
                         switch result {
-                        case .success:
+                        case .success(false):
+                            Image(systemName: "clock")
+                                .foregroundColor(.secondary)
+                            Text("Not Checked")
+                                .font(.title2)
+                        case .success(true):
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.system(size: 44))
                                 .foregroundColor(.green)

@@ -178,9 +178,8 @@ final class HealthCheckViewModel: ObservableObject {
         self.networkSatisfied = network.isWifiSatisfied
         if self.connectionMode == .localVPN {
             self.vpnSatisfied = network.isUTunAvailable
-            if !self.isRPPairing {
-                self.ipsecSatisfied = network.isIKEv2IPSecAvailable
-            }
+            self.ipsecSatisfied = (self.isRPPairing || minimuxer.gateway.coreDeviceTransportEnabled)
+                ? nil : network.isIKEv2IPSecAvailable
         }
     }
     
@@ -199,7 +198,7 @@ final class HealthCheckViewModel: ObservableObject {
         let netSat = m.wifi
         let vpnSat = m.utun
         let isRp = m.protocolStr == "Remote Pairing"
-        let ipsecSat = isRp ? nil : m.ipsec
+        let ipsecSat = (isRp || minimuxer.gateway.coreDeviceTransportEnabled) ? nil : m.ipsec
 
         switch m.readyResult {
         case .success:

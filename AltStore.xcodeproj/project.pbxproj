@@ -9,10 +9,7 @@
 /* Begin PBXBuildFile section */
 		A84596F62F7DC4C90000B8CD /* SideStore.conf in Resources */ = {isa = PBXBuildFile; fileRef = A84596F52F7DC4C90000B8CD /* SideStore.conf */; };
 		A87939D3303A89CA004D9227 /* Minimuxer in Frameworks */ = {isa = PBXBuildFile; productRef = A87939D2303A89CA004D9227 /* Minimuxer */; };
-		A8C37029302DA7F30010213A /* MarkdownKit in Frameworks */ = {isa = PBXBuildFile; platformFilter = ios; productRef = A8C37028302DA7F30010213A /* MarkdownKit */; };
 		A8C3702C302DA80D0010213A /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = A8C3702B302DA80D0010213A /* KeychainAccess */; };
-		A8C3702F302DA82A0010213A /* Nuke in Frameworks */ = {isa = PBXBuildFile; productRef = A8C3702E302DA82A0010213A /* Nuke */; };
-		A8C37035302DA84D0010213A /* Starscream in Frameworks */ = {isa = PBXBuildFile; productRef = A8C37034302DA84D0010213A /* Starscream */; };
 		A8C37039302DA8D90010213A /* SemanticVersion in Frameworks */ = {isa = PBXBuildFile; productRef = A8C37038302DA8D90010213A /* SemanticVersion */; };
 		A8F5E9AF30422E3600DBD7E1 /* SideSign in Frameworks */ = {isa = PBXBuildFile; productRef = A8F5E9AE30422E3600DBD7E1 /* SideSign */; };
 		BF989177250AABF4002ACF50 /* AltWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = BF989167250AABF3002ACF50 /* AltWidgetExtension.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -110,6 +107,97 @@
 			membershipExceptions = (
 				Info.plist,
 				Resources/ReleaseEntitlements.plist,
+				"Components/BackgroundTaskManager.swift",
+				"Browse/FeaturedViewController.swift",
+				"Browse/BrowseViewController.swift",
+				"Browse/FeaturedComponents.swift",
+				"Browse/ScreenshotCollectionViewCell.swift",
+				"News/NewsViewController.swift",
+				"TabBarController.swift",
+				"Components/ForwardingNavigationController.swift",
+				"Components/HeaderContentViewController.swift",
+				"Components/AppBannerView.swift",
+				"Components/AppBannerCollectionViewCell.swift",
+				"Managing Apps/AppExtensionView.swift",
+				"Permissions/ReviewPermissionsViewController.swift",
+				"Components/NavigationBar.swift",
+				"App Detail/AppContentViewController.swift",
+				"App Detail/AppContentViewControllerCells.swift",
+				"App Detail/AppDetailCollectionViewController.swift",
+				"App Detail/AppPermissionsCard.swift",
+				"App Detail/AppViewController.swift",
+				"App Detail/Screenshots/AppScreenshotsViewController.swift",
+				"App Detail/Screenshots/PreviewAppScreenshotsViewController.swift",
+				"App Detail/Screenshots/AppScreenshotCollectionViewCell.swift",
+				"Components/AppCardCollectionViewCell.swift",
+				"App IDs/AppIDsViewController.swift",
+				"News/NewsCollectionViewCell.swift",
+				"LaunchViewController.swift",
+				"Resources/Silence.m4a",
+				"Authentication/Authentication.storyboard",
+				"Authentication/AuthenticationViewController.swift",
+				"Authentication/InstructionsViewController.swift",
+				"Authentication/ResignAltStoreViewController.swift",
+				"Authentication/SelectTeamViewController.swift",
+				"Authentication/tvOS/Authentication.storyboard",
+				"Components/AppBannerView.xib",
+				"Components/tvOS/AppBannerView.xib",
+				"My Apps/InstalledAppsCollectionHeaderView.xib",
+				"My Apps/UpdateCollectionViewCell.xib",
+				"My Apps/tvOS/InstalledAppsCollectionHeaderView.xib",
+				"My Apps/tvOS/UpdateCollectionViewCell.xib",
+				"My Apps/MyAppsComponents.swift",
+				"My Apps/InstalledAppsCollectionHeaderView.swift",
+				"My Apps/UpdateCollectionViewCell.swift",
+				"My Apps/MyAppsViewController.swift",
+				"News/NewsCollectionViewCell.xib",
+				"News/tvOS/NewsCollectionViewCell.xib",
+				"Core/Intents/ViewAppIntentHandler.swift",
+				"Intents/Legacy/IntentHandler.swift",
+				"Settings/AboutPatreonHeaderView.xib",
+				"Settings/tvOS/AboutPatreonHeaderView.xib",
+				"Settings/AltAppIconsViewController.swift",
+                                "Settings/SettingsViewController.swift",
+                                "Settings/SettingsHeaderFooterView.swift",
+                                "Settings/InsetGroupTableViewCell.swift",
+				"Settings/AnisetteServerList.swift",
+				"Settings/PatreonViewController.swift",
+				"Settings/LicensesViewController.swift",
+				"Settings/RefreshAttemptsViewController.swift",
+				"Settings/Error Log/ErrorDetailsViewController.swift",
+				"Settings/Error Log/ErrorLogTableViewCell.swift",
+				"Settings/Error Log/ErrorLogViewController.swift",
+				"Settings/Settings.storyboard",
+				"Settings/SettingsHeaderFooterView.xib",
+				"Settings/tvOS/Settings.storyboard",
+				"Settings/tvOS/SettingsHeaderFooterView.xib",
+				"Resources/AltIcons.plist",
+				"Resources/Icons.xcassets/Modern/BlueIcon.appiconset",
+				"Resources/Icons.xcassets/Modern/DarkIcon.appiconset",
+				"Resources/Icons.xcassets/Modern/HoneydewIcon.appiconset",
+				"Resources/Icons.xcassets/Modern/PrideIcon.appiconset",
+				"Resources/Icons.xcassets/Modern/SandyIcon.appiconset",
+				"Resources/Icons.xcassets/Modern/SkyIcon.appiconset",
+				"Resources/Icons.xcassets/Modern/SnowIcon.appiconset",
+				"Resources/Icons.xcassets/Modern/StarburstIcon.appiconset",
+				"Resources/Icons.xcassets/Modern/StormIcon.appiconset",
+				"Resources/Icons.xcassets/Modern/VistaIcon.appiconset",
+				"Resources/Icons.xcassets/Modern/WinterIcon.appiconset",
+				"Sources/Components/SourceHeaderView.xib",
+				"Sources/Components/tvOS/SourceHeaderView.xib",
+				"Sources/Components/SourceComponents.swift",
+				"Sources/Components/SourceHeaderView.swift",
+				"Sources/Components/AddSourceTextFieldCell.swift",
+				"Sources/AddSourceViewController.swift",
+				"Sources/SourcesViewController.swift",
+				"Sources/SourceDetailViewController.swift",
+				"Sources/SourceDetailContentViewController.swift",
+				"Extensions/INInteraction+AltStore.swift",
+				"Sources/Sources.storyboard",
+				"Sources/tvOS/Sources.storyboard",
+				"iOS/LaunchScreen.storyboard",
+				"iOS/Main.storyboard",
+			"tvOS/Main.storyboard",
 			);
 			platformFiltersByRelativePath = {
 				Authentication/Authentication.storyboard = (
@@ -201,6 +289,72 @@
 				Tests/UnitTests/datastructures/LinkedHashMapTests.swift,
 				Tests/UnitTests/datastructures/TreeMapTests.swift,
 				"Utils/misc/xcmapping-diff-reporter/xcmapping-diff.py",
+				"Handlers/SignInFlowHandler.swift",
+				"Views/Components/AppInfoView.swift",
+				"Views/Components/BundleResourceBrowserView.swift",
+				"Views/Components/CodeResourcesViewer.swift",
+				"Views/Components/CustomAppIDAlertViewController.swift",
+				"Views/Components/InfoPlistContainerView.swift",
+				"Views/Components/MachOResourceViewer.swift",
+				"Views/Components/UIKit/CollapsingMarkdownView.swift",
+				"Views/MyApps/DeleteAppAlertViewController.swift",
+				"Views/Settings/Advanced/Anisette/AnisetteDataView.swift",
+				"Views/Settings/Advanced/BackupRestore/BackupAndRestoreView.swift",
+				"Views/Settings/Advanced/Certificates/ActiveCertSectionView.swift",
+				"Views/Settings/Advanced/Certificates/CertificateDetailView.swift",
+				"Views/Settings/Advanced/Certificates/CertificateExporter.swift",
+				"Views/Settings/Advanced/Certificates/CertificateRowView.swift",
+				"Views/Settings/Advanced/Certificates/CertificateTypes.swift",
+				"Views/Settings/Advanced/Certificates/CertificatesListView.swift",
+				"Views/Settings/Advanced/Certificates/CertificatesView.swift",
+				"Views/Settings/Advanced/Certificates/CertificatesViewModel.swift",
+				"Views/Settings/Advanced/Certificates/PrivateKeyTextEditor.swift",
+				"Views/Settings/Advanced/Certificates/PrivateKeyTextInputView.swift",
+				"Views/Settings/Advanced/Certificates/RevokeAlertViewController.swift",
+				"Views/Settings/Advanced/Certificates/SetCertificateAlertViewController.swift",
+				"Views/Settings/Advanced/Certificates/SignableCertificatesListViewController.swift",
+				"Views/Settings/Advanced/Connection/ConnectionConfigView.swift",
+				"Views/Settings/Advanced/DeveloperServices/AppGroups/AppGroupsListView.swift",
+				"Views/Settings/Advanced/DeveloperServices/AppIDs/AppIDDetailView.swift",
+				"Views/Settings/Advanced/DeveloperServices/AppIDs/AppIDsListView.swift",
+				"Views/Settings/Advanced/DeveloperServices/Certificates/CertificatePortalDetailView.swift",
+				"Views/Settings/Advanced/DeveloperServices/Certificates/CertificatesPortalListView.swift",
+				"Views/Settings/Advanced/DeveloperServices/DeveloperServicesView.swift",
+				"Views/Settings/Advanced/DeveloperServices/DeveloperServicesViewModel.swift",
+				"Views/Settings/Advanced/DeveloperServices/Devices/DevicesListView.swift",
+				"Views/Settings/Advanced/DeveloperServices/Profiles/CreateManualProfileView.swift",
+				"Views/Settings/Advanced/DeveloperServices/Profiles/ProfilePortalDetailView.swift",
+				"Views/Settings/Advanced/DeveloperServices/Profiles/ProfilesListView.swift",
+				"Views/Settings/Advanced/JIT/SideJITServerConfigView.swift",
+				"Views/Settings/Advanced/NetworkDiscovery/BonjourDiscoveryView.swift",
+				"Views/Settings/Advanced/NetworkDiscovery/BonjourDiscoveryViewModel.swift",
+				"Views/Settings/Advanced/SideSign/SideSignConfigurationView.swift",
+				"Views/Settings/Advanced/UserCustomizations/ThemePickerView.swift",
+				"Views/Settings/Advanced/UserCustomizations/UserCustomizationsView.swift",
+				"Views/Settings/Advanced/WirelessPair/WirelessPairTargetDialog.swift",
+				"Views/Settings/Advanced/WirelessPair/WirelessPairView.swift",
+				"Views/Settings/Advanced/WirelessPair/WirelessPairViewModel.swift",
+				"Views/Settings/Auth/ExportAccountAlertViewController.swift",
+				"Views/Settings/Auth/ImportAccountAlertController.swift",
+				"Views/Settings/Auth/ResetAdiAlertViewController.swift",
+				"Views/Settings/Auth/RevokeCertificatesAlertViewController.swift",
+				"Views/Settings/Auth/SignOutAlertViewController.swift",
+				"Views/Settings/Diagnostics/DeveloperOptionsView.swift",
+				"Views/Settings/Diagnostics/ExperimentalFeaturesView.swift",
+				"Views/Settings/Diagnostics/OperationsLoggingControlView.swift",
+				"Views/Settings/TechyThings/ErrorLog/ConsoleLogView.swift",
+				"Views/Settings/TechyThings/HealthCheck/HealthCheckView.swift",
+				"Views/Settings/TechyThings/HealthCheck/HealthCheckViewModel.swift",
+				"Views/Settings/TechyThings/StorageExplorer/DirectoryExplorerView.swift",
+				"Views/Settings/TechyThings/StorageExplorer/StorageExplorerView.swift",
+				"Views/Settings/TechyThings/StorageExplorer/StorageExplorerViewModel.swift",
+				"Views/SplashView.swift",
+				"DeepLinks/ExportCertificateDialog.swift",
+				"DeepLinks/InstallAppDialog.swift",
+				"Views/Settings/Advanced/CacheMgmt/CacheManagementView.swift",
+				"Views/Settings/Advanced/CacheMgmt/CacheViewModel.swift",
+				"Views/Settings/Advanced/Connection/ConnectionConfig.swift",
+				"Handlers/PresenterProvider.swift",
 			);
 			target = BFD247692284B9A500981D42 /* SideStore */;
 		};
@@ -246,10 +400,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A8F5E9AF30422E3600DBD7E1 /* SideSign in Frameworks */,
-				A8C37029302DA7F30010213A /* MarkdownKit in Frameworks */,
 				A8C3702C302DA80D0010213A /* KeychainAccess in Frameworks */,
-				A8C3702F302DA82A0010213A /* Nuke in Frameworks */,
-				A8C37035302DA84D0010213A /* Starscream in Frameworks */,
 				A8C37039302DA8D90010213A /* SemanticVersion in Frameworks */,
 				A87939D3303A89CA004D9227 /* Minimuxer in Frameworks */,
 			);
@@ -357,10 +508,7 @@
 			);
 			name = SideStore;
 			packageProductDependencies = (
-				A8C37028302DA7F30010213A /* MarkdownKit */,
 				A8C3702B302DA80D0010213A /* KeychainAccess */,
-				A8C3702E302DA82A0010213A /* Nuke */,
-				A8C37034302DA84D0010213A /* Starscream */,
 				A8C37038302DA8D90010213A /* SemanticVersion */,
 				A87939D2303A89CA004D9227 /* Minimuxer */,
 				A8F5E9AE30422E3600DBD7E1 /* SideSign */,
@@ -412,10 +560,7 @@
 			mainGroup = BFD247612284B9A500981D42;
 			packageReferences = (
 				A8C37021302DA7A70010213A /* XCLocalSwiftPackageReference "Dependencies/SideSign" */,
-				A8C37027302DA7F30010213A /* XCRemoteSwiftPackageReference "MarkdownKit" */,
 				A8C3702A302DA80D0010213A /* XCRemoteSwiftPackageReference "KeychainAccess" */,
-				A8C3702D302DA82A0010213A /* XCRemoteSwiftPackageReference "Nuke" */,
-				A8C37033302DA84D0010213A /* XCRemoteSwiftPackageReference "Starscream" */,
 				A8C37037302DA8D90010213A /* XCRemoteSwiftPackageReference "SemanticVersion" */,
 				A87939D1303A89C9004D9227 /* XCLocalSwiftPackageReference "Dependencies/minimuxer" */,
 			);
@@ -802,7 +947,7 @@
 			baseConfigurationReferenceRelativePath = AltStore.xcconfig;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				ASSETCATALOG_COMPILER_OPTIMIZATION = space;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = "$(CODE_SIGN_ENTITLEMENTS)";
@@ -851,7 +996,7 @@
 			baseConfigurationReferenceRelativePath = AltStore.xcconfig;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				ASSETCATALOG_COMPILER_OPTIMIZATION = space;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = "$(CODE_SIGN_ENTITLEMENTS)";
@@ -948,36 +1093,12 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		A8C37027302DA7F30010213A /* XCRemoteSwiftPackageReference "MarkdownKit" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/bmoliveira/MarkdownKit.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.7.3;
-			};
-		};
 		A8C3702A302DA80D0010213A /* XCRemoteSwiftPackageReference "KeychainAccess" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/kishikawakatsumi/KeychainAccess";
 			requirement = {
 				branch = master;
 				kind = branch;
-			};
-		};
-		A8C3702D302DA82A0010213A /* XCRemoteSwiftPackageReference "Nuke" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/kean/Nuke";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 13.2.0;
-			};
-		};
-		A8C37033302DA84D0010213A /* XCRemoteSwiftPackageReference "Starscream" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/daltoniam/Starscream";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 4.0.8;
 			};
 		};
 		A8C37037302DA8D90010213A /* XCRemoteSwiftPackageReference "SemanticVersion" */ = {
@@ -995,25 +1116,10 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = Minimuxer;
 		};
-		A8C37028302DA7F30010213A /* MarkdownKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A8C37027302DA7F30010213A /* XCRemoteSwiftPackageReference "MarkdownKit" */;
-			productName = MarkdownKit;
-		};
 		A8C3702B302DA80D0010213A /* KeychainAccess */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A8C3702A302DA80D0010213A /* XCRemoteSwiftPackageReference "KeychainAccess" */;
 			productName = KeychainAccess;
-		};
-		A8C3702E302DA82A0010213A /* Nuke */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A8C3702D302DA82A0010213A /* XCRemoteSwiftPackageReference "Nuke" */;
-			productName = Nuke;
-		};
-		A8C37034302DA84D0010213A /* Starscream */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A8C37033302DA84D0010213A /* XCRemoteSwiftPackageReference "Starscream" */;
-			productName = Starscream;
 		};
 		A8C37038302DA8D90010213A /* SemanticVersion */ = {
 			isa = XCSwiftPackageProductDependency;
