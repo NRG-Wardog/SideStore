@@ -7868,6 +7868,53 @@ enum V3IPAStaging {
 // V3_HEADLESS_SERVICE_V2: headless backend. This file owns the command gate,
 // snapshots, and non-interactive reads. All interactive work runs through
 // V3HeadlessRuntime sessions; no window, presenter, or visible UI exists here.
+// V3_CERTIFICATE_CREATE_ADAPTER_V1: use the upstream portal and persistence
+// implementations, but make their non-throwing persistence contract explicit
+// at the v3 boundary. Certificate creation must never implicitly activate it.
+enum V3CertificateCreateAdapter {
+    enum Outcome: String {
+        case createdAndStored
+        case remoteCreatedLocalStorageUnverified
+    }
+
+    static func createAndPersist<Certificate>(
+        create: () async throws -> Certificate,
+        persist: (Certificate) -> Void,
+        verifyStored: (Certificate) -> Bool
+    ) async throws -> Outcome {
+        let certificate = try await create()
+        persist(certificate)
+        return verifyStored(certificate) ? .createdAndStored : .remoteCreatedLocalStorageUnverified
+    }
+
+    static func matchesStoredCertificate(expectedSerial: String, parsedSerial: String?,
+                                         enumeratedSerials: [String]) -> Bool {
+        guard !expectedSerial.isEmpty, let parsedSerial, !parsedSerial.isEmpty,
+              expectedSerial == parsedSerial else { return false }
+        return enumeratedSerials.contains(expectedSerial)
+    }
+}
+
+// V3_ACTIVE_CERTIFICATE_EXPORT_V1: export only the upstream active certificate
+// tuple to the host's explicit, request-owned import flow. This does not read or
+// write another Keychain group and never places private material in diagnostics.
+enum V3ActiveCertificateExportAdapter {
+    static let maximumP12Bytes = 1_048_576
+    static let maximumPasswordBytes = 512
+
+    static func response(p12Data: Data, password: String, teamIdentifier: String,
+                         identitySHA256: String) -> [String: Any]? {
+        guard !p12Data.isEmpty, p12Data.count <= maximumP12Bytes,
+              password.utf8.count <= maximumPasswordBytes,
+              !teamIdentifier.isEmpty, teamIdentifier.utf8.count <= 64,
+              identitySHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
+            return nil
+        }
+        return ["data": p12Data, "password": password,
+                "teamIdentifier": teamIdentifier, "identitySHA256": identitySHA256]
+    }
+}
+
 // V3_OPERATION_RECOVERY_JOURNAL_V1
 // Shared by LiveContainer's App Group and this service process. Serialization
 // uses the existing process-shared App Group lock; the record stores only IDs
@@ -10803,6 +10850,210 @@ func v3ClassifyAuthError(_ error: Error) -> V3AuthFailureKind? {
     return .unknown
 }
 
+// MARK: - Provisioning failure guidance (typed, never numeric)
+
+// User-facing message plus what Retry means for a concrete
+// DeveloperPortalError. The bridged NSError integer (e.g.
+// SideSign.DeveloperPortalError 20) is never a stable semantic identifier,
+// so classification switches on the typed cases only; the numeric code
+// travels exclusively inside the separate technical details. Associated
+// values are never forwarded (they can carry raw portal payloads).
+// The switch is compiler-checked: @unknown default stays honest instead of
+// inventing a cause.
+func v3ProvisioningGuidance(_ error: DeveloperPortalError) -> (message: String, hint: String) {
+    switch error {
+    case .unknown:
+        return ("The developer portal request failed for an unknown reason.",
+                "You can retry; if it keeps failing, check the connection and try again later.")
+    case .invalidParameters:
+        return ("The provisioning request was malformed.",
+                "Retry will repeat the same failure. Check the app configuration before trying again.")
+    case .incorrectCredentials:
+        return ("Apple did not accept the Apple ID or password.",
+                "Signing in again with the correct credentials is required before retrying.")
+    case .noTeams:
+        return ("No Apple Developer team is available for this account.",
+                "Join or create a developer team for this Apple ID before retrying.")
+    case .appSpecificPasswordRequired:
+        return ("Apple requires an app-specific password for this authentication path.",
+                "Create an app-specific password for this Apple ID, then use it for this sign-in path.")
+    case .invalidDeviceID:
+        return ("This device could not be identified for registration.",
+                "Retry will repeat the same failure until the device identifier issue is resolved.")
+    case .deviceAlreadyRegistered:
+        return ("This device is already registered with the selected developer team.",
+                "No action is needed for the device itself; retry continues provisioning.")
+    case .invalidCertificateRequest:
+        return ("Apple rejected the development certificate request.",
+                "Check the team certificates before retrying.")
+    case .certificateDoesNotExist:
+        return ("The selected development certificate no longer exists on the Apple Developer account.",
+                "Choose or create a current certificate before retrying.")
+    case .invalidAppIDName:
+        return ("An App ID name was rejected as invalid.",
+                "Fix the app identifier configuration before retrying.")
+    case .invalidBundleIdentifier:
+        return ("An app bundle identifier was rejected as invalid.",
+                "Fix the bundle identifier before retrying.")
+    case .bundleIdentifierUnavailable:
+        return ("Apple could not register this app identifier for the selected team.",
+                "Use a different identifier or team before retrying.")
+    case .appIDDoesNotExist:
+        return ("A required App ID no longer exists on the developer team.",
+                "Recreate the App ID or sync app data before retrying.")
+    case .maximumAppIDLimitReached:
+        return ("The Apple Developer account has reached its App ID limit.",
+                "Check App IDs for the selected team and retry when capacity is available. Changing certificates will not free an App ID slot.")
+    case .invalidAppGroup:
+        return ("An app group value was rejected as invalid.",
+                "Fix the app group configuration before retrying.")
+    case .appGroupDoesNotExist:
+        return ("A required app group does not exist on the developer team.",
+                "Recreate the app group before retrying.")
+    case .invalidProvisioningProfileIdentifier:
+        return ("Apple rejected the provisioning profile identifier.",
+                "Check the provisioning configuration before retrying.")
+    case .provisioningProfileDoesNotExist:
+        return ("The required provisioning profile no longer exists.",
+                "Create the missing provisioning profile before retrying.")
+    case .requiresTwoFactorAuthentication:
+        return ("Two-factor authentication is required to continue.",
+                "Complete two-factor authentication, then retry.")
+    case .userCancelled:
+        return ("Provisioning was cancelled.",
+                "Run the operation again when ready.")
+    case .incorrectVerificationCode:
+        return ("The verification code was not accepted.",
+                "Enter a fresh verification code when asked, then retry.")
+    case .authenticationHandshakeFailed:
+        return ("The authentication handshake with Apple failed.",
+                "Check the account sign-in state before retrying.")
+    case .invalidAnisetteData:
+        return ("Valid Anisette data could not be obtained.",
+                "You can retry; if it keeps failing, check the Anisette servers.")
+    case .tooManyCertificates:
+        return ("The developer team has reached its development certificate limit.",
+                "Revoke an unused certificate under Certificates before retrying.")
+    case .tooManyAttempts:
+        return ("Apple is temporarily limiting authentication or developer portal requests.",
+                "Wait before trying again.")
+    case .accountRepairRequired:
+        return ("Apple requires attention on this account before provisioning can continue.",
+                "Resolve the account issue with Apple before retrying.")
+    case .invalid2FAResponse:
+        return ("The two-factor authentication response was not valid.",
+                "Start sign-in again so a fresh verification can complete.")
+    @unknown default:
+        return ("The developer portal request failed for an unknown reason.",
+                "You can retry; if it keeps failing, check the connection and try again later.")
+    }
+}
+
+// MARK: - SideStore OperationError provisioning guidance (typed, never numeric)
+
+// V3_OPERATION_ERROR_PROVISIONING_GUIDANCE_V1
+// Guidance for the concrete SideStore.OperationError cases that
+// SignInOperation.provisioningLoop can raise after Apple authentication has
+// already succeeded: team fetch, certificate fetch/create, revocation, device
+// registration, and the transport/pairing prerequisites that registration needs.
+//
+// Two rules are absolute here.
+// 1. The bridged NSError integer is never consulted. OperationError conforms to
+//    CustomNSError but implements neither errorCode nor errorDomain, so every
+//    case bridges to code 0 and its case ordinal is not a pinned contract. A
+//    numeric mapping silently rots the moment upstream reorders the enum.
+// 2. No associated value is ever forwarded. unknown/forbidden embed #fileID and
+//    #line, provisioningError embeds the raw portal result, cacheClearError
+//    embeds upstream strings, and SideJITIssue embeds a transport error. Only
+//    the typed case and privacy-safe facts cross the bridge.
+func v3OperationErrorGuidance(_ error: OperationError) -> (message: String, hint: String) {
+    switch error {
+    // Device connection / pairing prerequisites. These are the transport cases
+    // MinimuxerWrapper.asOperationError can produce for a refresh pipeline.
+    case .noConnection:
+        return ("SideStore could not reach this device to finish provisioning.",
+                "Restore the LocalDevVPN connection, then retry provisioning.")
+    case .noVPN:
+        return ("LocalDevVPN is not active, so this device cannot be registered.",
+                "Connect LocalDevVPN, then retry provisioning.")
+    case .invalidVPN:
+        return ("The LocalDevVPN connection is not usable.",
+                "Reconnect LocalDevVPN, then retry provisioning.")
+    case .noDevice:
+        return ("No usable device endpoint was selected for provisioning.",
+                "Open Connection and select a working endpoint, then retry provisioning.")
+    case .notReachable:
+        return ("The device is not reachable at the selected endpoint.",
+                "Open Connection, verify the endpoint, then retry provisioning.")
+    case .invalidPairingFile:
+        return ("The pairing file is invalid or unreadable.",
+                "Place or import a current pairing file, then retry provisioning.")
+    case .minimuxerNotStarted:
+        return ("The device connection service has not started.",
+                "Complete pairing, then retry provisioning.")
+    case .pairingNotComplete:
+        return ("A pairing file is required before this device can finish provisioning.",
+                "Place or import a pairing file, then retry provisioning.")
+    case .unknownUDID:
+        return ("SideStore could not identify this device for registration.",
+                "Check LocalDevVPN and the pairing file, then retry provisioning.")
+
+    // Account / session state.
+    case .notAuthenticated:
+        return ("The saved Apple session is no longer valid.",
+                "Sign in again with this Apple ID, then retry provisioning.")
+    case .forbidden:
+        return ("Apple denied the provisioning request for this account.",
+                "Check the account and team under Account and Signing, then retry provisioning.")
+    case .missingAppGroup:
+        return ("A required app group is missing for this signing configuration.",
+                "Fix the app group configuration, then retry provisioning.")
+
+    // Certificates and profiles.
+    case .certificateRevoked:
+        return ("The signing certificate Apple holds for this app was revoked.",
+                "Re-sign or reinstall the app under Certificates.")
+    case .customCertificateRevoked:
+        return ("The active custom signing certificate was revoked on the Developer Portal.",
+                "Select or create a current certificate under Certificates.")
+    case .customCertificateExpired:
+        return ("The active custom signing certificate has expired.",
+                "Select or create a current certificate under Certificates.")
+    case .certificateExpired:
+        return ("The signing certificate Apple holds for this app has expired.",
+                "Re-sign or reinstall the app under Certificates.")
+    case .certificateChanged:
+        return ("The signing certificate for this app no longer matches the active certificate.",
+                "Re-sign or reinstall the app under Certificates.")
+    case .missingProvisioningProfile:
+        return ("A required provisioning profile is not available.",
+                "Open Certificates and review the active profile, then retry provisioning.")
+    case .provisioningError:
+        return ("Apple rejected the provisioning request for this app.",
+                "Review the app identifier and team under Account and Signing, then retry provisioning.")
+    case .maximumAppIDLimitReached:
+        return ("The Apple Developer account has reached its App ID limit.",
+                "Check App IDs for the selected team and retry when capacity is available. Changing certificates will not free an App ID slot.")
+
+    // Timing.
+    case .timedOut:
+        return ("The provisioning request to Apple timed out.",
+                "Retry once. If it repeats, check the connection and try again later.")
+    case .connectionFailed:
+        return ("The connection to the Apple Developer service failed during provisioning.",
+                "Check the connection, then retry provisioning.")
+
+    default:
+        break
+    }
+    // Honesty: a case without specific guidance is reported as unclassified
+    // rather than being relabelled as a credential, pairing, or manifest problem.
+    return ("SideStore could not finish provisioning for a reason it does not classify.",
+            "You can retry. If it keeps failing, keep the technical details and review Account and Signing and Certificates.")
+}
+
+// A new context observes committed rows, independent of any failed operation's
+// registered objects. Only opaque identity sets reach the local recovery journal.
 func v3AccountDatabaseSnapshot() async throws -> [String] {
     let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
     return try await context.perform {

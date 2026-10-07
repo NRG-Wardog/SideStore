@@ -1,3 +1,4 @@
+// V3_CERTIFICATE_SERIAL_LOG_REDACTION_V1: certificate serials are password-equivalent and never logged.
 //
 //  UpdateAppCertificateOperation.swift
 //  SideStore
@@ -23,12 +24,12 @@ final class UpdateAppCertificateOperation: BasePipelineOperation<InstallAppOpera
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         
         if let installedApp = self.context.installedApp, let serialNumber = installedApp.certificateSerialNumber {
-            debugLog("[UpdateAppCertificateOperation] InstalledApp '\(installedApp.name)' has custom certificate serial: '\(serialNumber)'")
+            debugLog("[UpdateAppCertificateOperation] Certificate identity details omitted.")
             if let customCert = CertificateManager.shared.getSignableCertificate(for: serialNumber) {
-                debugLog("[UpdateAppCertificateOperation] Loaded custom certificate '\(customCert.serialNumber)' for app '\(installedApp.name)'. Setting context.overrideSigningCertificate.")
+                debugLog("[UpdateAppCertificateOperation] Certificate identity details omitted.")
                 self.context.overrideSigningCertificate = customCert
             } else {
-                debugLog("[UpdateAppCertificateOperation] WARNING: Signable certificate with serial '\(serialNumber)' not found for app '\(installedApp.name)'.")
+                debugLog("[UpdateAppCertificateOperation] Certificate identity details omitted.")
             }
         }
         

@@ -130,29 +130,33 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
     private func provisionAndFetchProfile(for targetAppBundle: ALTApplication,
                                           parentAppBundle: ALTApplication?,
                                           team: ALTTeam) async throws -> ALTProvisioningProfile {
+        // LC_PROVISIONING_PARENT_ID_UPSTREAM_V1
         let preferredBundleID = await self.getPreferredBundleID(for: targetAppBundle, team: team)
-        
-        let bundleID: String
-        
-        if let preferredBundleID = preferredBundleID {
-            bundleID = preferredBundleID
-            self.debugLog("[FetchProvisioningProfiles] Using preferredBundleID: \(bundleID)")
+        let parentID: String
+        if let preferredBundleID {
+            parentID = preferredBundleID
+        } else if self.context.appendTeamID {
+            parentID = "\(self.context.targetBundleIdentifier).\(team.identifier)"
         } else {
-            let parentBundleID = parentAppBundle?.bundleIdentifier ?? targetAppBundle.bundleIdentifier
-            let effectiveParentBundleID = self.context.targetBundleIdentifier
-            let updatedParentBundleID = self.context.appendTeamID ? (effectiveParentBundleID + "." + team.identifier) : effectiveParentBundleID
-
-            if parentAppBundle != nil,
-               targetAppBundle.bundleIdentifier.hasPrefix(parentBundleID + ".") {
-                let suffix = String(targetAppBundle.bundleIdentifier.dropFirst(parentBundleID.count))
-                bundleID = updatedParentBundleID + suffix
-            } else {
-                bundleID = updatedParentBundleID
-            }
-            self.debugLog("[FetchProvisioningProfiles] Constructed mangled bundleID: \(bundleID) (effectiveParent: \(effectiveParentBundleID), appendTeamID: \(self.context.appendTeamID), team: \(team.identifier))")
-
+            parentID = self.context.targetBundleIdentifier
         }
-        
+
+        let bundleID: String
+        if let parentAppBundle {
+            guard targetAppBundle.bundleIdentifier.hasPrefix(parentAppBundle.bundleIdentifier + ".") else {
+                throw OperationError.invalidApp(reason: "Extension bundle ID does not start with its parent bundle ID.")
+            }
+            let suffix = String(targetAppBundle.bundleIdentifier.dropFirst(parentAppBundle.bundleIdentifier.count))
+            bundleID = parentID + suffix
+        } else {
+            bundleID = parentID
+        }
+
+        return try await lcProvisioningBundleRequest(
+            role: parentAppBundle == nil ? "main" : "extension",
+            originalBundleID: targetAppBundle.bundleIdentifier,
+            preferredParentMatch: preferredBundleID != nil
+        ) {
         let preferredName: String
         
         if let parentAppBundle = parentAppBundle {
@@ -176,6 +180,7 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         let profile = try await DeveloperPortalProxy.shared.downloadProvisioningProfile(for: groupAppID, deviceType: DeveloperPortalProxy.currentDeviceType, team: team)
         self.debugLog("[FetchProvisioningProfiles] Provisioning profile fetched for \(groupAppID.bundleIdentifier) (Name: \(profile.name), Expiration: \(String(describing: profile.expirationDate)))")
         return profile
+        }
     }
 }
 
