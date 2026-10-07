@@ -18,7 +18,7 @@
     }
   },
   "child_gitlinks": {
-    "Dependencies/SideSign": null,
+    "Dependencies/SideSign": "5ce52d12f1846e1a08fad30ed27c4cbadd176529",
     "Dependencies/minimuxer": "efbcab05d7d636aa37c6bf6c7f364d122c5610f6"
   },
   "test_files": {
