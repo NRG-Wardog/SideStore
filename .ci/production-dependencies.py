@@ -17,7 +17,7 @@ import stat
 import subprocess
 
 CHECKPOINTS = {
-    'SideSign': 'aaa4375a59075a7b0a446cf4c2dc8193c247a875',
+    'SideSign': 'ed30d3989ea0f80bcb91466d6d5ca043f4366df0',
     'SideStore': '9d8c71ed69684f805325ef440983e74d97113a71',
 }
 ANISETTE = '62ce85c8798d8eab8e29752aba7dc9f1f6a5b80d'

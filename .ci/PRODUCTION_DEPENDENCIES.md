@@ -40,14 +40,30 @@ never relax the pin-map comparison. Fail resolution if any unrelated pin moves.
 
 ## Verification layers
 
-The frozen source proof files and manifests are unchanged. They still describe
-the original prepared source checkpoint exactly. Their old whole-tree commands
-correctly reject the production tree's intentional metadata transition.
+Each source checkpoint's proof files and frozen manifests remain unchanged
+through this production dependency transition. Their whole-tree source commands
+correctly reject the production tree's intentional dependency metadata changes.
 
-1. Run the original frozen parity command from an independent, full-history
-   checkout at the exact `source_checkpoint` recorded here. Preserve its result.
-   SideSign: `python3 -B .ci/source-parity.py`.
-   SideStore: `python3 -B scripts/verify_runtime_source.py --require-clean`.
+SideSign's production source checkpoint is
+`ed30d3989ea0f80bcb91466d6d5ca043f4366df0`. It adds exactly one Foundation import
+to the existing Swift test, an exact test-import parity check and six mutation
+tests over historical checkpoint `aaa4375a59075a7b0a446cf4c2dc8193c247a875`.
+The frozen `.ci/source-parity.json`, runtime/library/CLI, manifests and licenses
+remain unchanged. The production proof inherits that import and its proof files
+without a new test exemption: SideSign `test_files` stays empty.
+
+1. Preserve three separate proof results, using independent full-history
+   checkouts. At historical SideSign `aaa4375a59075a7b0a446cf4c2dc8193c247a875`,
+   run its original `python3 -B .ci/source-parity.py`; the expected status is
+   `exact_frozen_source_pass`. At corrected SideSign
+   `ed30d3989ea0f80bcb91466d6d5ca043f4366df0`, run
+   `python3 -B .ci/source-parity.py` and `python3 -B .ci/test-source-parity.py`;
+   the source status is `exact_frozen_runtime_with_test_import_pass`, with the
+   exact single Foundation-import row and historical AAA checkpoint. On the
+   production candidate use the production gate below. Do not run the old
+   whole-tree checker on dependency-wired files and call its rejection a pass.
+   For SideStore's unchanged `9d8c71ed69684f805325ef440983e74d97113a71` checkpoint,
+   run `python3 -B scripts/verify_runtime_source.py --require-clean`.
 2. Run `python3 -B .ci/production-dependencies.py` on a clean production checkout.
    It binds the complete tracked inventory and every unchanged checkpoint blob
    and mode, verifies working files/index, and checks exact dependency pins.
