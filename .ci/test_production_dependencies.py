@@ -73,6 +73,21 @@ class RepositoryTests(unittest.TestCase):
         self.assertFalse(first['production_ready'])
         self.assertEqual(first['runtime_behavior_changes'], [])
 
+    def test_clean_linked_worktree_passes(self):
+        linked = Path(self.temp.name).resolve()/'linked'
+        self.raw_git('worktree','add','--quiet','--detach',str(linked),'HEAD')
+        self.assertTrue((linked/'.git').is_file())
+        self.assertEqual(PROOF.verify(linked, allow_pending_child_pins=True)['commit'], self.prove()['commit'])
+
+    def test_clean_initialized_submodule_passes(self):
+        parent = Path(self.temp.name).resolve()/'parent'
+        subprocess.run(['git','init','--quiet',str(parent)],check=True)
+        subprocess.run(['git','-C',str(parent),'-c','protocol.file.allow=always',
+            'submodule','add','--quiet',str(self.root),'child'],check=True)
+        child = parent/'child'
+        self.assertTrue((child/'.git').is_file())
+        self.assertEqual(PROOF.verify(child, allow_pending_child_pins=True)['commit'], self.prove()['commit'])
+
     def test_committed_runtime_drift_rejected(self):
         self.source.write_bytes(self.source.read_bytes()+b'\n// unexpected runtime edit\n')
         self.commit()

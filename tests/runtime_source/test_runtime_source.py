@@ -289,6 +289,7 @@ class GitProofAdversarialTests(unittest.TestCase):
         clone = self.directory / "full-owner"
         subprocess.run(["git", "clone", "--quiet", "--shared", str(ROOT), str(clone)],
                        check=True, env=self.fixture_environment, capture_output=True)
+        self.raw_git(clone, "checkout", "--quiet", "--detach", PRODUCTION.CHECKPOINTS["SideStore"])
         self.make_orphan(clone)
         environment = dict(self.fixture_environment, GIT_DIR=str(ROOT / ".git"), GIT_WORK_TREE=str(ROOT))
         result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/verify_runtime_source.py"),
@@ -302,6 +303,7 @@ class GitProofAdversarialTests(unittest.TestCase):
         clone = self.directory / "full-owner-committed-drift"
         subprocess.run(["git", "clone", "--quiet", "--shared", str(ROOT), str(clone)],
                        check=True, env=self.fixture_environment, capture_output=True)
+        self.raw_git(clone, "checkout", "--quiet", "--detach", PRODUCTION.CHECKPOINTS["SideStore"])
         path = clone / "AltStore/AppDelegate.swift"
         original = path.read_bytes()
         path.write_bytes(original + b"\nlet unexpectedCommittedRuntime = 123\n")

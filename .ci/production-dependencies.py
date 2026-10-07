@@ -177,7 +177,8 @@ def verify(root, *, allow_pending_child_pins=False):
             elif (root / path).is_symlink():
                 files.add(path.as_posix())
                 dirs.remove(name)
-        files.update((rel / name).as_posix() for name in names)
+        files.update((rel / name).as_posix() for name in names
+                     if (rel / name).as_posix() != ".git")
     require(files == set(after) - set(links), 'Working inventory drift')
     index = {}
     for row in git(root, 'ls-files', '--stage', '-z').split(b'\0'):

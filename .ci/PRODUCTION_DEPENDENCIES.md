@@ -62,9 +62,10 @@ correctly reject the production tree's intentional metadata transition.
    Anisette branches, duplicate identities and fabricated hashes.
 5. On SideStore run `python3 -B tests/runtime_source/test_runtime_source.py`.
    Only the two whole-tree assertions and the intended Anisette pin assertion
-   are adapted for the intentional dependency transition. The original frozen
-   verifier's adversarial tests and all native declaration/behavior tests still
-   run. Swift compiler absence is a skip, never native success.
+   are adapted for the intentional dependency transition. The two frozen
+   whole-owner adversarial fixtures explicitly check out the frozen checkpoint
+   before mutation, preserving their original rejection assertions. All other
+   verifier adversarial tests and native declaration/behavior tests still run. Swift compiler absence is a skip, never native success.
 
 The integration's seven-owner contract gate must still verify all 88 frozen
 contract-bearing source files and 22 edges against the exact selected owners.

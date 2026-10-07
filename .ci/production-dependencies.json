@@ -25,8 +25,8 @@
     "tests/runtime_source/test_runtime_source.py": {
       "mode": "100644",
       "checkpoint_sha256": "f823e0f56d6afb5b4111f0ff992d4b3f6ef3a55f8b35026766f114b9fff5c821",
-      "production_sha256": "a87050db94cae9504d2ff7ff6fb598c820329081c3e51c80847d621ae3e2f3ad",
-      "scope": "Only whole-tree dependency metadata and exact intended Anisette pin assertions change; all behavior/native test bodies remain unchanged."
+      "production_sha256": "8e2bee99ee3a729aff5d00dee774e4e2038d6ed8e430630b7e8562dc306836c9",
+      "scope": "Whole-tree metadata and exact Anisette pin assertions use the production graph; frozen whole-owner adversarial fixtures select their exact checkpoint. All native and runtime behavior test bodies remain unchanged."
     }
   }
 }
