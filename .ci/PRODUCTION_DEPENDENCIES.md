@@ -75,15 +75,20 @@ No wildcard source exclusions or rebaselined runtime hashes are appropriate.
 
 ## Publication and native acceptance order
 
-1. Resolve and test the local SideSign candidate on the target macOS toolchain
-   against the published AnisetteKit commit, using its real remote URL. Use
-   `swift package resolve` in an isolated candidate copy and fail on unrelated
-   pin drift. Do not use path overlays, package mirrors or source patchers.
-   Run the existing SideSign native test suite and iOS compiler/build checks
-   against this exact manifest and resolved graph; capture all failures.
-2. Commit the actual resolver metadata and its narrow proof update locally.
-   Publish only when separately authorized and verify that exact child SHA can
-   be fetched from `NRG-Wardog/SideSign`. No default branch move is implied.
+1. After the current native gates pass, publish the provisional SideSign
+   source candidate on its authorized isolated owner branch. Verify the exact
+   remote commit and fetch it with full history on the real Mac CI runner.
+   The lock is explicitly provisional and `production_ready` remains false;
+   neither default nor active integration branches move at this step.
+2. Run the strict production proof on that clean remote checkout before
+   resolution. Resolve and test its untouched manifest against the real remote
+   AnisetteKit dependency on the selected macOS/Xcode toolchain. Preserve every
+   unrelated pin and capture genuine resolver output. Do not use path overlays,
+   mirrors, source patchers or a guessed originHash. Record the actual lock
+   metadata and narrow proof update in a separate reviewed follow-up commit,
+   publish it on the same isolated owner branch, and verify its final remote SHA.
+   The old proof correctly rejects a resolver-modified checkout until this
+   reviewed metadata update; do not report the dirty output as a strict pass.
 3. In SideStore finalize both gitlinks atomically: published SideSign commit
    and the exact minimuxer commit above. Record the SideSign SHA in the proof,
    then run the strict gate. Initialize children from their committed URLs;
