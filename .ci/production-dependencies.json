@@ -3,8 +3,8 @@
   "owner": "SideStore",
   "classification": "build-only dependency wiring; no runtime behavior changes",
   "source_checkpoint": "9d8c71ed69684f805325ef440983e74d97113a71",
-  "native_resolver_status": "not_run",
-  "origin_hash_status": "stale checkpoint hash removed; native resolver must generate its own value",
+  "native_resolver_status": "passed_remote_iphoneos",
+  "origin_hash_status": "verified_absent_after_remote_xcode_resolution",
   "dependency_files": {
     ".gitmodules": {
       "mode": "100644",
@@ -18,7 +18,7 @@
     }
   },
   "child_gitlinks": {
-    "Dependencies/SideSign": "5ce52d12f1846e1a08fad30ed27c4cbadd176529",
+    "Dependencies/SideSign": "06351a87d44ff8faa7d5a2e8c7ed3096fff73d2c",
     "Dependencies/minimuxer": "efbcab05d7d636aa37c6bf6c7f364d122c5610f6"
   },
   "test_files": {
@@ -27,6 +27,98 @@
       "checkpoint_sha256": "f823e0f56d6afb5b4111f0ff992d4b3f6ef3a55f8b35026766f114b9fff5c821",
       "production_sha256": "8e2bee99ee3a729aff5d00dee774e4e2038d6ed8e430630b7e8562dc306836c9",
       "scope": "Whole-tree metadata and exact Anisette pin assertions use the production graph; frozen whole-owner adversarial fixtures select their exact checkpoint. All native and runtime behavior test bodies remain unchanged."
+    }
+  },
+  "native_receipt": {
+    "schema_version": 1,
+    "phase": "permanent_graph_iphoneos",
+    "run_url": "https://github.com/NRG-Wardog/LiveContainer/actions/runs/37702648560",
+    "run_id": 37702648560,
+    "run_attempt": 1,
+    "validation_host_commit": "5fcff4214fc459b30b37843aaa2cf075232f52f2",
+    "validation_host_tree": "cb1ce172bdec083b779862160b9877a873cc2056",
+    "artifact_id": 11519176173,
+    "artifact_zip_sha256": "d8dd30c49648a5e2706edc185e9c1ce15c584075ce41e85cbde80ce4934cc75b",
+    "approved_inputs_sha256": "a75b040498bcc02d8857c013a974db3dd769c71fc3312e6f0389f2086739d370",
+    "tested_owners": {
+      "LiveContainer": {
+        "commit": "47db163356dc419d2b6a894fdc5dbeb9d011dc69",
+        "tree": "f9d8560f6f35c26a66feeeb99e6ac0091d79a98b"
+      },
+      "SideStore": {
+        "commit": "f6e9e0ed6c3f4d02e99a0dcff0660faa0e5372b8",
+        "tree": "2f33f7caed7f6ef13522421446ade4d79d8f901e"
+      },
+      "AnisetteKit": {
+        "commit": "62ce85c8798d8eab8e29752aba7dc9f1f6a5b80d",
+        "tree": "77bfbe938fa967b2531305ddb9264f939c90dfd6"
+      },
+      "SideSign": {
+        "commit": "5ce52d12f1846e1a08fad30ed27c4cbadd176529",
+        "tree": "352e92723c34a47bcfef5e0a984ba9828bade33b"
+      },
+      "minimuxer": {
+        "commit": "efbcab05d7d636aa37c6bf6c7f364d122c5610f6",
+        "tree": "30aa947645c5befb0c3210700095c8b039893d83"
+      },
+      "idevice": {
+        "commit": "0182d7d8ce0c8bbeb440adbc989d88dc1d4c0789",
+        "tree": "0a911c3397ed8fd423f6b3da32a5e7d1d92dae23"
+      },
+      "jktcp": {
+        "commit": "82277a1f366e8d92e775d14212ff21621b25f3f3",
+        "tree": "6cd19fb9fa378477bfb58bd8f473049d3176b9d9"
+      }
+    },
+    "locks": {
+      "SideSign": {
+        "sha256": "5ccebb5f4fadcde4377db365de53e3c29806f5ed66ca0e039e7f70dd368343bb",
+        "originHash": null
+      },
+      "SideStore": {
+        "sha256": "c64b26be42dadcef04caed3134fef55784cae10fc9d196acdf24ee83d82cad7f",
+        "originHash": null
+      }
+    },
+    "observed_metadata_status": "absent_requires_review",
+    "review_outcome": "accepted_observed_absence",
+    "sidestore_native_tests": {
+      "owner": "SideStore",
+      "expected": 46,
+      "executed": 46,
+      "skipped": [],
+      "failures": 0,
+      "errors": 0,
+      "status": "PASS"
+    },
+    "native_builds": {
+      "SideStore": "PASS_UNSIGNED_RELEASE_IPHONEOS26.4",
+      "LiveContainer": "PASS_UNSIGNED_RELEASE_IPHONEOS26.4"
+    },
+    "readiness_scope": "eligible_for_gated_full_build",
+    "final_exact_ref_ipa_build_required": true,
+    "evidence_sha256": {
+      "provenance/production-phase-status.json": "9f05500479785367745689be6b7deb96c8b933b4b711da10cb6dca226e22135b",
+      "provenance/resolution.json": "3d4283742d3639e93605d368ddfbb70c2763f792ee049a52d249ff152809eaa8",
+      "provenance/resolution-after-build.json": "c6e043e8b77d3931a247f724bab36840f21515abf81e251b2f46744de28d5662",
+      "provenance/source-proof-before.json": "281609fe01c0063a0b87e80cd9b20e453f6c51c924ae43fa08445366d2678b55",
+      "provenance/source-proof-after-build.json": "accfff8ee1878b6ff377c3475168e766058b8cff2901f3433b8f5c7732687b56",
+      "provenance/compiler-input-proof.json": "2cd422d997a98f0b20a80aa5a67f577e4049e36cde5745d084c2bf72b006f063",
+      "provenance/generated-sources-proof.json": "88413ccdc71c755c8b98b050e3c81489ce89e852d19d88b0d4af15bd091cbb69",
+      "provenance/sidestore-native-tests.json": "85725acd2048a2951f80d97cf70b6b8446543de05944427f668abc7444d1bed0",
+      "provenance/local-ffi-link-hashes.json": "d0fca942e1f46088e5e9a53e5ddca0d1f6b303f432302eb61a043afa1039cf73",
+      "provenance/binary-artifacts.json": "accd22368a8bbd3fe4b043b2b6776000421a2772db56dd1464f751882629a452",
+      "provenance/reviewed-production-inputs.json": "a75b040498bcc02d8857c013a974db3dd769c71fc3312e6f0389f2086739d370",
+      "provenance/reviewed-toolchain.json": "8397a85f1fe0ae25f3c808dd81befb0d8882a182fb4a8be723e744dbf6079800",
+      "logs/sidestore-production-build.log": "5747925888f7bf27038227c7f7f7ef08fd74d00cd3f6ed0bdac3201bbc6f4401",
+      "logs/livecontainer-production-build.log": "8e9d69fb8bad74993bf7e4e2552d4313095197a1c3f077ca9257ae8102daf3e6"
+    },
+    "owner": "SideStore",
+    "native_tested_commit": "f6e9e0ed6c3f4d02e99a0dcff0660faa0e5372b8",
+    "native_tested_tree": "2f33f7caed7f6ef13522421446ade4d79d8f901e",
+    "native_tested_children": {
+      "Dependencies/SideSign": "5ce52d12f1846e1a08fad30ed27c4cbadd176529",
+      "Dependencies/minimuxer": "efbcab05d7d636aa37c6bf6c7f364d122c5610f6"
     }
   }
 }

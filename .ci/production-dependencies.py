@@ -23,6 +23,8 @@ CHECKPOINTS = {
 ANISETTE = '62ce85c8798d8eab8e29752aba7dc9f1f6a5b80d'
 ANISETTE_URL = 'https://github.com/NRG-Wardog/AnisetteKit.git'
 MINIMUXER = 'efbcab05d7d636aa37c6bf6c7f364d122c5610f6'
+NATIVE_RECEIPT_SHA256 = '82ca6fbfa1a51d28de31b38f42abc6b7d5f662da54e33b9e841f778cf053cfc4'
+READINESS_SIDESIGN_COMMIT = '06351a87d44ff8faa7d5a2e8c7ed3096fff73d2c'
 LOCKS = {'SideSign': 'Package.resolved',
          'SideStore': 'AltStore.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved'}
 DEPENDENCY_FILES = {'SideSign': {'Package.swift', LOCKS['SideSign']},
@@ -104,13 +106,44 @@ def pin_map(lock):
 
 
 def verify_lock(current, baseline):
-    require(set(current) == {'pins', 'version'}, 'Provisional lock must omit stale/unverified originHash')
+    require(set(current) == {'pins', 'version'}, 'Lock must preserve the reviewed absent originHash state')
     require(current['version'] == baseline['version'] == 3, 'Lock schema changed')
     expected = pin_map(baseline)
     expected['anisettekit'] = {'identity': 'anisettekit', 'kind': 'remoteSourceControl',
         'location': ANISETTE_URL, 'state': {'revision': ANISETTE}}
     require(pin_map(current) == expected, 'SwiftPM pin drift outside exact AnisetteKit transition')
     return len(expected) - 1
+
+
+
+def verify_native_lineage(root, spec, current, lock_bytes):
+    receipt = spec.get('native_receipt')
+    require(isinstance(receipt, dict), 'Missing reviewed native receipt')
+    encoded = json.dumps(receipt, sort_keys=True, separators=(',', ':')).encode()
+    require(sha(encoded) == NATIVE_RECEIPT_SHA256, 'Reviewed native receipt mismatch')
+    require(spec['native_resolver_status'] == 'passed_remote_iphoneos' and
+            spec['origin_hash_status'] == 'verified_absent_after_remote_xcode_resolution',
+            'Resolver status differs from reviewed observed absence')
+    tested = receipt['native_tested_commit']
+    git(root, 'merge-base', '--is-ancestor', tested, 'HEAD')
+    require(git(root, 'rev-parse', tested + '^{tree}').decode().strip() ==
+            receipt['native_tested_tree'], 'Native-tested source tree changed')
+    native_tree = inventory(root, tested)
+    require(set(current) == set(native_tree), 'Native-tested inventory changed')
+    changed = {path for path in current if current[path] != native_tree[path]}
+    require(changed <= ADDITIONS | {'Dependencies/SideSign'},
+            'Native-tested tree changed outside readiness metadata and SideSign gitlink')
+    tested_children = {path: entry[2] for path, entry in native_tree.items() if entry[0] == '160000'}
+    require(tested_children == receipt['native_tested_children'], 'Native-tested child graph changed')
+    require(current['Dependencies/SideSign'] == ('160000', 'commit', READINESS_SIDESIGN_COMMIT),
+            'SideSign readiness child differs from reviewed publication')
+    require(sha(lock_bytes) == receipt['locks']['SideStore']['sha256'] and
+            git(root, 'show', tested + ':' + LOCKS['SideStore']) == lock_bytes,
+            'Lock differs from actual Xcode-tested bytes')
+    require(receipt['readiness_scope'] == 'eligible_for_gated_full_build' and
+            receipt['final_exact_ref_ipa_build_required'] is True,
+            'Final gated build requirement changed')
+    return receipt
 
 
 def verify(root, *, allow_pending_child_pins=False):
@@ -191,6 +224,7 @@ def verify(root, *, allow_pending_child_pins=False):
     require(not git(root, 'status', '--porcelain', '--untracked-files=all').strip(), 'Dirty repository')
     lockpath = LOCKS[owner]
     frozen_pins = verify_lock(json.loads(data[after[lockpath][2]]), json.loads(data[before[lockpath][2]]))
+    native = verify_native_lineage(root, spec, after, data[after[lockpath][2]])
     if owner == 'SideSign':
         original = data[before['Package.swift'][2]].decode()
         old = '.package(url: "https://github.com/mahee96/AnisetteKit.git",   branch: "main"),'
@@ -208,7 +242,18 @@ def verify(root, *, allow_pending_child_pins=False):
             'checkpoint':checkpoint, 'commit':git(root, 'rev-parse', 'HEAD').decode().strip(),
             'unchanged_checkpoint_blobs':unchanged, 'dependency_files':sorted(DEPENDENCY_FILES[owner]),
             'test_files':sorted(TEST_FILES[owner]), 'unrelated_swiftpm_pins_preserved':frozen_pins,
-            'child_gitlinks':links, 'native_resolver_status':'not_run', 'production_ready':False,
+            'child_gitlinks':links, 'native_resolver_status':spec['native_resolver_status'],
+            'ios_compilation':'PASS_ON_NATIVE_TESTED_GRAPH',
+            'native_tested_commit':native['native_tested_commit'],
+            'native_tested_tree':native['native_tested_tree'],
+            'native_tested_children':native['native_tested_children'],
+            'native_run_url':native['run_url'],
+            'native_validation_host_commit':native['validation_host_commit'],
+            'native_artifact_sha256':native['artifact_zip_sha256'],
+            'native_receipt_sha256':NATIVE_RECEIPT_SHA256,
+            'readiness_scope':native['readiness_scope'],
+            'final_exact_ref_ipa_build_required':True,
+            'production_ready':True,
             'runtime_behavior_changes':[]}
 
 

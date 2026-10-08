@@ -70,8 +70,42 @@ class RepositoryTests(unittest.TestCase):
     def test_exact_transition_and_repeatability(self):
         first = self.prove()
         self.assertEqual(first, self.prove())
-        self.assertFalse(first['production_ready'])
+        self.assertTrue(first['production_ready'])
+        self.assertEqual(first['readiness_scope'], 'eligible_for_gated_full_build')
+        self.assertEqual(first['native_tested_commit'], 'f6e9e0ed6c3f4d02e99a0dcff0660faa0e5372b8')
+        self.assertNotEqual(first['commit'], first['native_tested_commit'])
+        self.assertEqual(first['native_tested_children']['Dependencies/SideSign'], '5ce52d12f1846e1a08fad30ed27c4cbadd176529')
+        self.assertTrue(first['final_exact_ref_ipa_build_required'])
         self.assertEqual(first['runtime_behavior_changes'], [])
+
+    def test_missing_native_receipt_rejected(self):
+        path = self.root/'.ci/production-dependencies.json'
+        spec = json.loads(path.read_text())
+        del spec['native_receipt']
+        path.write_text(json.dumps(spec))
+        self.commit()
+        with self.assertRaisesRegex(PROOF.ProofError, 'Missing reviewed native receipt'):
+            self.prove()
+
+    def test_changed_native_receipt_rejected(self):
+        path = self.root/'.ci/production-dependencies.json'
+        spec = json.loads(path.read_text())
+        spec['native_receipt']['native_tested_tree'] = '0'*40
+        path.write_text(json.dumps(spec))
+        self.commit()
+        with self.assertRaisesRegex(PROOF.ProofError, 'Reviewed native receipt mismatch'):
+            self.prove()
+
+    def test_readiness_cannot_rebaseline_a_manifest_change(self):
+        manifest = self.root/'.gitmodules'
+        manifest.write_bytes(manifest.read_bytes()+b'\n# untested manifest change\n')
+        path = self.root/'.ci/production-dependencies.json'
+        spec = json.loads(path.read_text())
+        spec['dependency_files']['.gitmodules']['production_sha256'] = PROOF.sha(manifest.read_bytes())
+        path.write_text(json.dumps(spec))
+        self.commit()
+        with self.assertRaisesRegex(PROOF.ProofError, 'outside readiness metadata'):
+            self.prove()
 
     def test_shallow_history_rejected(self):
         (self.root/'.git/shallow').write_bytes(self.raw_git('rev-parse','HEAD'))
