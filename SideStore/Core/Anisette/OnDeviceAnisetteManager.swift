@@ -182,6 +182,38 @@ extension OnDeviceAnisetteManager {
         if original is CancellationError { throw original }
         guard let native = original as? AnisetteKit.AnisetteError,
               case .adiError(let code, let description) = native else { throw original }
+        // DEBUG TEMPORARY: inspect only already-entitled legacy pair keys after
+        // this exact existing-blob OTP failure. Never select, probe or write them.
+        if V3TemporaryAnisetteTrace.temporaryAnisetteTraceEnabled,
+           code == -45061, snapshot.adiBlob != nil,
+           V3AnisetteNativeEvidence.capture(code: code, description: description).phase == .nativeOTP {
+            let comparison: LCAnisetteLegacyComparison
+            do { comparison = try Keychain.shared.observeLegacyAnisetteComparison(snapshot) }
+            catch {
+                try Task.checkCancellation()
+                if error is CancellationError { throw error }
+                comparison = .unavailable
+            }
+            try Task.checkCancellation()
+            let identifierStep: V3TemporaryAnisetteTrace.Step
+            switch comparison.identifier {
+            case .missing: identifierStep = .legacyIdentifierMissing
+            case .equal: identifierStep = .legacyIdentifierEqual
+            case .different: identifierStep = .legacyIdentifierDifferent
+            case .ambiguous: identifierStep = .legacyIdentifierAmbiguous
+            case .unavailable: identifierStep = .legacyIdentifierUnavailable
+            }
+            let blobStep: V3TemporaryAnisetteTrace.Step
+            switch comparison.blob {
+            case .missing: blobStep = .legacyBlobMissing
+            case .equal: blobStep = .legacyBlobEqual
+            case .different: blobStep = .legacyBlobDifferent
+            case .ambiguous: blobStep = .legacyBlobAmbiguous
+            case .unavailable: blobStep = .legacyBlobUnavailable
+            }
+            debugTrace.record(step: identifierStep, outcome: .succeeded)
+            debugTrace.record(step: blobStep, outcome: .succeeded)
+        }
         guard LCAnisetteRecoveryPolicy.automaticRecoveryEnabled else {
             debugTrace.record(step: .currentProbe, outcome: .skipped)
             debugTrace.record(step: .legacyProbe, outcome: .skipped)

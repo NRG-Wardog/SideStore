@@ -15,6 +15,8 @@ struct ADIConsumerPipelineHarness {
         var trace = V3TemporaryAnisetteTrace()
         trace.appendNative(errorDescription: base + old + suffix, scope: .primary)
         if enabled { precondition(trace.failedStep == "primary.native.otp") }
+        trace.record(step: .legacyIdentifierDifferent, outcome: .succeeded)
+        trace.record(step: .legacyBlobMissing, outcome: .succeeded)
         let underlying = AnisetteKit.AnisetteError.adiError(code: -45061, description: base + old + suffix)
         let attempt = V3AnisetteAttemptError(underlying: underlying,
             context: V3AnisetteAttemptContext(blobState: .existing, recovery: .automaticRecoveryDisabled, trace: trace))
@@ -32,12 +34,27 @@ struct ADIConsumerPipelineHarness {
         let copy = decoded.technicalDetails
         precondition(copy.contains("DEBUG TEMPORARY adi_consumption=") == enabled)
         precondition(!copy.contains("SECRET"))
+        precondition(copy.contains("swift.legacyIdentifierDifferent.succeeded") == enabled)
+        precondition(copy.contains("swift.legacyBlobMissing.succeeded") == enabled)
         try failure.encodedString.write(toFile: CommandLine.arguments[3], atomically: true, encoding: .utf8)
 
+        // Both versions survive exact SDK -> app -> wire -> host parsing.
+        let observedRows = "|5,0,1,1,0,0,0,-1|5,1,1,1,0,639,639,0"
+        for prefix in ["v1|0", "v2|0|0|0", "v2|0|1|0", "v2|0|1|1", "v2|0|2|0", "v2|1|1|1"] {
+            let value = prefix + observedRows
+            precondition(V3TemporaryADIConsumption(encoded: value)?.encoded == value)
+            precondition(!TemporaryADIConsumptionTrace.suffix(value).isEmpty)
+            let evidence = V3AnisetteNativeEvidence.capture(code: -45061,
+                description: base + old + TemporaryADIConsumptionTrace.suffix(value))
+            precondition(evidence.phase == .nativeOTP)
+            precondition((evidence.consumption != nil) == enabled)
+        }
         let malformed = ["SECRET_PASSWORD", "v1|0|5,1,4,-1,5,4,0,SECRET_TOKEN", "v1|0|05,0,1,1,0,0,0,-1",
             "v1|0|6,0,1,1,0,0,0,-1", "v1|0|5,2,1,1,0,0,0,-1", "v1|0|5,0,5,1,0,0,0,-1",
             "v1|0|5,0,1,1,4096,0,0,-1", "v1|0|5,0,1,1,0,1048578,0,-1", "v1|0|5,0,1,1,0,0,0,33",
-            "v1|2", "v1|0|", raw + "\n", String(repeating: "7", count: 2049),
+            "v1|2", "v1|0|", "v2|0", "v2|0|1", "v2|0|3|0", "v2|0|01|0",
+            "v2|0|0|1", "v2|0|2|1", "v2|0|1|2", "v2|0|1|01", "v2|0|SECRET|0",
+            "v2|0|1|1" + String(repeating: "|5,0,1,1,0,0,0,-1", count: 33), raw + "\n", String(repeating: "7", count: 2049),
             "v1|0" + String(repeating: "|5,0,1,1,0,0,0,-1", count: 33)]
         for body in malformed {
             precondition(V3TemporaryADIConsumption(encoded: body) == nil)
@@ -70,6 +87,17 @@ struct ADIConsumerPipelineHarness {
         precondition(boundedFields["native_code"] == "-45061")
         if enabled { precondition(boundedFields[key]?.hasPrefix("v1|1") == true) }
         else { precondition(boundedFields[key] == nil) }
+        let v2Long = "v2|0|1|1" + String(repeating: "|5,1,4,-1,4095,1048577,1048577,32", count: 32)
+        var v2Envelope = envelope
+        v2Envelope["signingContext"] = ["native_code": "-45061", key: v2Long]
+        let v2Bounded = V3TemporaryADIConsumption.boundingWire(v2Envelope)
+        let v2Fields = v2Bounded["signingContext"] as! [String: String]
+        precondition(v2Bounded["mainFailure"] as? String == envelope["mainFailure"] as? String)
+        precondition(v2Fields["native_code"] == "-45061")
+        let v2Data = try PropertyListSerialization.data(fromPropertyList: v2Bounded, format: .binary, options: 0)
+        precondition(v2Data.count <= 4096)
+        if enabled { precondition(v2Fields[key]?.hasPrefix("v2|1|1|1") == true) }
+        else { precondition(v2Fields[key] == nil) }
         let cancellation = V3AuthenticationPhaseError(step: .anisetteFetch, underlying: CancellationError())
         precondition(v3IsAuthCancellation(cancellation))
         let network = v3CaptureAuthFailure(V3AuthenticationPhaseError(step: .anisetteFetch, underlying: URLError(.timedOut)),

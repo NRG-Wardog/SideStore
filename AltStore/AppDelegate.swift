@@ -15539,16 +15539,32 @@ public struct V3TemporaryADIConsumption {
     public static let maximumWireBytes = 4096
     private static let marker = " [DEBUG_TEMPORARY_ADI_CONSUMPTION:"
     private let truncated: Bool
+    private let comparison: Int?
+    private let inputCovered: Bool
     private let rows: [[Int]]
 
     public init?(encoded: String) {
         guard encoded.utf8.count <= Self.maximumBytes,
               encoded.utf8.allSatisfy({ $0 < 128 }) else { return nil }
         let pieces = encoded.split(separator: "|", omittingEmptySubsequences: false)
-        guard pieces.count >= 2, pieces.count <= Self.maximumEvents + 2,
-              pieces[0] == "v1", pieces[1] == "0" || pieces[1] == "1" else { return nil }
+        guard pieces.count >= 2, pieces[1] == "0" || pieces[1] == "1" else { return nil }
+        let offset: Int
+        if pieces[0] == "v1" {
+            offset = 2
+            comparison = nil
+            inputCovered = false
+        } else if pieces[0] == "v2" {
+            guard pieces.count >= 4,
+                  pieces[2] == "0" || pieces[2] == "1" || pieces[2] == "2",
+                  pieces[3] == "0" || pieces[3] == "1",
+                  pieces[3] != "1" || pieces[2] == "1" else { return nil }
+            offset = 4
+            comparison = pieces[2] == "0" ? 0 : (pieces[2] == "1" ? 1 : 2)
+            inputCovered = pieces[3] == "1"
+        } else { return nil }
+        guard pieces.count <= Self.maximumEvents + offset else { return nil }
         var decoded: [[Int]] = []
-        for row in pieces.dropFirst(2) {
+        for row in pieces.dropFirst(offset) {
             let parts = row.split(separator: ",", omittingEmptySubsequences: false)
             guard parts.count == 8 else { return nil }
             let fields = parts.compactMap { Int($0) }
@@ -15564,12 +15580,16 @@ public struct V3TemporaryADIConsumption {
         truncated = pieces[1] == "1"
         rows = decoded
     }
-    private init(truncated: Bool, rows: [[Int]]) {
+    private init(truncated: Bool, comparison: Int?, inputCovered: Bool, rows: [[Int]]) {
         self.truncated = truncated
+        self.comparison = comparison
+        self.inputCovered = inputCovered
         self.rows = rows
     }
     public var encoded: String {
-        "v1|\(truncated ? 1 : 0)" + rows.map { "|" + $0.map(String.init).joined(separator: ",") }.joined()
+        let prefix = comparison.map { "v2|\(truncated ? 1 : 0)|\($0)|\(inputCovered ? 1 : 0)" }
+            ?? "v1|\(truncated ? 1 : 0)"
+        return prefix + rows.map { "|" + $0.map(String.init).joined(separator: ",") }.joined()
     }
     public var technicalDetails: String {
         guard V3TemporaryAnisetteTrace.temporaryAnisetteTraceEnabled else { return "" }
@@ -15612,7 +15632,7 @@ public struct V3TemporaryADIConsumption {
             }
             // Trim only this optional observer, retain later observations and
             // explicitly mark loss. Never discard the main failure fields.
-            trace = Self(truncated: true, rows: Array(trace.rows.dropFirst()))
+            trace = Self(truncated: true, comparison: trace.comparison, inputCovered: trace.inputCovered, rows: Array(trace.rows.dropFirst()))
         }
     }
 }
@@ -15625,6 +15645,8 @@ public struct V3TemporaryAnisetteTrace: Equatable, Sendable {
     public enum Step: String, CaseIterable, Sendable {
         case keychainRead, pairValidation, blobPresence, requestHeaders, primaryProvider
         case currentProbe, currentProof, currentSnapshot, legacyRead, legacyCandidate
+        case legacyIdentifierMissing, legacyIdentifierEqual, legacyIdentifierDifferent, legacyIdentifierAmbiguous, legacyIdentifierUnavailable
+        case legacyBlobMissing, legacyBlobEqual, legacyBlobDifferent, legacyBlobAmbiguous, legacyBlobUnavailable
         case legacyProbe, legacyProof, identityCommit, freshBlobCommit
     }
     public enum Outcome: String, CaseIterable, Sendable { case started, succeeded, failed, skipped }

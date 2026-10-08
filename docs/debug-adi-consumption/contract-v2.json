@@ -1,0 +1,86 @@
+{
+  "maximum_events": 32,
+  "maximum_encoded_bytes": 2048,
+  "maximum_failure_plist_bytes": 4096,
+  "fields": [
+    "phase",
+    "operation",
+    "target",
+    "result",
+    "errno",
+    "requested",
+    "returned",
+    "guest_copy"
+  ],
+  "ranges": [
+    [
+      0,
+      5
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      4
+    ],
+    [
+      -1,
+      1
+    ],
+    [
+      0,
+      4095
+    ],
+    [
+      0,
+      1048577
+    ],
+    [
+      0,
+      1048577
+    ],
+    [
+      -1,
+      32
+    ]
+  ],
+  "target_untracked": 4,
+  "context_key": "debug_temporary_adi_consumption",
+  "suffix": " [DEBUG_TEMPORARY_ADI_CONSUMPTION:",
+  "retention": {
+    "setup_first": 16,
+    "otp_last": 16,
+    "overflow": "explicit truncated bit; retained order preserved"
+  },
+  "contract": "debug-temporary-adi-consumption-v2",
+  "variant": "controlled-staging-order-experiment",
+  "producer_commit": "f494494ede88890555df345054f7fbb87b53aea5",
+  "producer_header_sha256": "077b377c87b201893f83afbff5a4dd37e01354253f08045a3831adcb50022346",
+  "producer_swift_sha256": "356d5bb03a12c8e7bf366f364078099e2f3945103c2d0c43965ac2650590287f",
+  "accepted_encodings": [
+    "v1",
+    "v2"
+  ],
+  "v2_prefix": [
+    "version",
+    "truncated",
+    "comparison",
+    "input_covered"
+  ],
+  "comparison": {
+    "0": "unavailable_or_unobserved",
+    "1": "compared_host_bytes_match_so_far",
+    "2": "mismatch"
+  },
+  "input_covered": "1 only when comparison1 and one tracked expected-file stream compared all supplied input bytes with successful guest copies; does not prove EOF, cryptographic binding or ADI acceptance",
+  "comparison_budget_bytes": 1048576,
+  "integration_checkpoint": "f9f23d980df363eb0f6eb5093b48e3639b03e137",
+  "owner_bases": {
+    "SideStore": "1ebc69390f5b570f95cd823ac8df97c3a2f082f9",
+    "LiveContainer": "2a1d297ed94840b134a6ea5111065d228a51cf2b"
+  },
+  "previous_contract": "contract-v1.json",
+  "evidence_scope": "Source contract only; native and product acceptance require separate exact-source receipts"
+}

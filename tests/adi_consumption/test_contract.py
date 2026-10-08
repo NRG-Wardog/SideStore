@@ -31,14 +31,14 @@ class ConsumerContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app=owner(ROOT).read_text()
-        cls.schema=json.loads((ROOT/'docs/debug-adi-consumption/contract-v1.json').read_text())
+        cls.schema=json.loads((ROOT/'docs/debug-adi-consumption/contract-v2.json').read_text())
 
     def test_shared_parser_and_schema_are_exact_across_owners(self):
         if PEER is None: self.skipTest('Provide the independently owned peer source root')
         peer=owner(PEER).read_text()
         for signature in ['public struct V3TemporaryADIConsumption {','public struct V3TemporaryAnisetteTrace:', 'struct V3AnisetteNativeEvidence {']:
             self.assertEqual(declaration(self.app,signature),declaration(peer,signature))
-        self.assertEqual(self.schema,json.loads((PEER/'docs/debug-adi-consumption/contract-v1.json').read_text()))
+        self.assertEqual(self.schema,json.loads((PEER/'docs/debug-adi-consumption/contract-v2.json').read_text()))
         view=(lc_root()/'LiveContainerSwiftUI/Views/V3UnifiedShell.swift').read_text()
         self.assertIn('import SideStoreSupport',view)
         self.assertIn('V3TemporaryADIConsumption.init(encoded:)',declaration(view,'enum V3AuthFailureDiagnosticsPolicy {'))
@@ -83,15 +83,16 @@ class ConsumerContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             d=Path(directory);(d/'main.cpp').write_text('''#include "adi_consumption_debug.h"
 #include <cstdio>
-int main(){uint8_t id[16]={};ADIConsumptionDebug t("/SECRET_PATH",id);t.phase=ADIConsumptionDebug::OTP;
+int main(){uint8_t id[16]={};const uint8_t input[]={1,2,3,4};ADIConsumptionDebug t("/SECRET_PATH",id,input,4);t.phase=ADIConsumptionDebug::OTP;
+t.track(10,ADIConsumptionDebug::ExpectedBlob);
 t.record(ADIConsumptionDebug::Open,ADIConsumptionDebug::ExpectedBlob,1,0);
+t.observeRead(10,input,4,0);
 t.record(ADIConsumptionDebug::Read,ADIConsumptionDebug::ExpectedBlob,1,0,4,4,0);
-t.record(ADIConsumptionDebug::Read,ADIConsumptionDebug::Untracked,-1,5,4,0,-1);
 char *out=strdup("{\\"error\\":\\"synthetic\\"}");t.append(&out);puts(out);free(out);}
 ''')
             subprocess.run([compiler,'-std=c++17','-I',str(header.parent),str(d/'main.cpp'),'-o',str(d/'producer')],check=True,capture_output=True,timeout=60)
             value=json.loads(subprocess.check_output([str(d/'producer')],text=True,timeout=10))['v3_native_consumption']
-        self.assertEqual(value,'v1|0|5,0,1,1,0,0,0,-1|5,1,1,1,0,4,4,0|5,1,4,-1,5,4,0,-1')
+        self.assertEqual(value,'v2|0|1|1|5,0,1,1,0,0,0,-1|5,1,1,1,0,4,4,0')
         self.assertNotIn('SECRET',value)
         return value
 
@@ -130,7 +131,7 @@ let id="00000000-0000-0000-0000-000000000001"
 let failure=CombinedFailure.fromEncodedString(text,expectedID:id)!
 var wire=failure.wire;wire["kind"]="anisette"
 let rendered=V3AuthFailureDiagnosticsPolicy.render(wire,underlyingCode:0,retryableValue:nil)
-precondition(rendered.contains("DEBUG TEMPORARY adi_consumption=v1|"))
+precondition(rendered.contains("DEBUG TEMPORARY adi_consumption=v2|"))
 precondition(rendered.contains("native_phase=nativeOTP"))
 precondition(!rendered.contains("SECRET"))
 print("HOST_CONSUMER_PASS")
@@ -140,6 +141,35 @@ print("HOST_CONSUMER_PASS")
         env=dict(os.environ);env['DYLD_LIBRARY_PATH' if sys.platform=='darwin' else 'LD_LIBRARY_PATH']=str(d)
         run=subprocess.run([str(d/'host'),str(failure)],env=env,capture_output=True,text=True,timeout=30)
         self.assertEqual(run.returncode,0,run.stderr);self.assertIn('HOST_CONSUMER_PASS',run.stdout)
+
+    def test_legacy_comparison_is_read_only_snapshot_bound_and_failure_scoped(self):
+        if ss_root() is None: self.skipTest('SideStore owner source required')
+        keychain=(ss_root()/'AltStore/Core/Components/Keychain.swift').read_text()
+        method=declaration(keychain,'    static func observeLegacyAnisetteComparison(')
+        self.assertEqual(method.count('LCAnisetteStoredPair.read'),2)
+        self.assertEqual(method.count('legacyAnisetteItems()'),1)
+        self.assertIn('withSharedTransaction',method)
+        for forbidden in ['.set(', 'writeOne(', 'remove', 'delete', 'reconcile', 'resolveAnisetteSnapshot']:
+            self.assertNotIn(forbidden,method)
+        manager=(ss_root()/'SideStore/Core/Anisette/OnDeviceAnisetteManager.swift').read_text()
+        observation=manager[manager.index('// DEBUG TEMPORARY: inspect only already-entitled'):manager.index('        guard LCAnisetteRecoveryPolicy.automaticRecoveryEnabled else {')]
+        for required in ['temporaryAnisetteTraceEnabled','code == -45061','snapshot.adiBlob != nil','.phase == .nativeOTP','observeLegacyAnisetteComparison(snapshot)','comparison = .unavailable','Task.checkCancellation()']:
+            self.assertIn(required,observation)
+        for forbidden in ['commitAnisette','anisetteRecoveryCandidate','IsolatedProbe','set(', 'resolveAnisetteSnapshot']:
+            self.assertNotIn(forbidden,observation)
+        if not SWIFTC: self.skipTest('Swift compiler unavailable; actual read-only wrapper not executed')
+        types='\n'.join(declaration(keychain,signature) for signature in [
+            'struct LCAnisetteStoredPair:', 'struct LCEmbeddedAnisetteSnapshot:',
+            'struct LCLegacyKeychainItem {', 'struct LCAnisetteLegacyComparison:'])
+        harness=(ROOT/'tests/adi_consumption/legacy_comparison_harness.swift').read_text()
+        source=harness.replace('// ACTUAL_TYPES',types).replace('// ACTUAL_WRAPPER',method)
+        with tempfile.TemporaryDirectory() as directory:
+            d=Path(directory);(d/'main.swift').write_text(source)
+            build=subprocess.run([SWIFTC,'-parse-as-library',str(d/'main.swift'),'-o',str(d/'test')],capture_output=True,text=True,timeout=180)
+            self.assertEqual(build.returncode,0,build.stderr)
+            result=subprocess.run([str(d/'test')],capture_output=True,text=True,timeout=30)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertIn('LEGACY_COMPARISON_READ_ONLY_PASS',result.stdout)
 
     def test_native_pipeline_wire_copy_and_importing_host(self):self.execute()
     def test_disabled_trace_preserves_classification_and_drops_diagnostics(self):self.execute(True)

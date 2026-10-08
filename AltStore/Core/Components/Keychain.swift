@@ -239,6 +239,48 @@ struct LCEmbeddedAnisetteSnapshot: Sendable {
     let stored: LCAnisetteStoredPair
 }
 
+// DEBUG TEMPORARY: read-only per-key comparison, never a recovery candidate.
+// UUID-only history must not be described as a complete matching legacy pair.
+struct LCAnisetteLegacyComparison: Equatable, Sendable {
+    enum Status: String, Sendable { case missing, equal, different, ambiguous, unavailable }
+    let identifier: Status
+    let blob: Status
+    static let unavailable = Self(identifier: .unavailable, blob: .unavailable)
+
+    static func compare(selected: LCAnisetteStoredPair, selectedGroup: String,
+                        items: [LCLegacyKeychainItem]) -> Self {
+        // Bound diagnostic decoding and hashing independently from normal use.
+        guard items.count <= 64, (selected.identifier?.count ?? 0) <= 128,
+              (selected.blob?.count ?? 0) <= 1_398_104 else { return .unavailable }
+        var remaining = 4_194_304 - (selected.identifier?.count ?? 0) - (selected.blob?.count ?? 0)
+        for item in items where ["identifier", "adiPb"].contains(item.key) {
+            let limit = item.key == "identifier" ? 128 : 1_398_104
+            guard item.data.count <= limit, item.data.count <= remaining else { return .unavailable }
+            remaining -= item.data.count
+        }
+        guard let current = try? selected.validated(),
+              let currentID = current.identifier, let currentBlob = current.blob else { return .unavailable }
+        let legacy = items.filter { $0.group != selectedGroup && ["identifier", "adiPb"].contains($0.key) }
+        let groups = Set(legacy.map(\.group))
+        let ids = legacy.filter { $0.key == "identifier" }
+        let blobs = legacy.filter { $0.key == "adiPb" }
+        let parsedIDs = ids.compactMap { item -> UUID? in
+            (try? LCAnisetteStoredPair(identifier: item.data, blob: nil).validated())?.identifier
+        }
+        let parsedBlobs = blobs.compactMap { item -> Data? in
+            (try? LCAnisetteStoredPair(identifier: selected.identifier, blob: item.data).validated())?.blob
+        }
+        func status<T: Hashable>(_ values: [T], items: [LCLegacyKeychainItem], current: T) -> Status {
+            if items.isEmpty { return .missing }
+            guard values.count == items.count else { return .unavailable }
+            guard Set(values).count == 1, Set(items.map(\.group)) == groups else { return .ambiguous }
+            return values[0] == current ? .equal : .different
+        }
+        return Self(identifier: status(parsedIDs, items: ids, current: currentID),
+                    blob: status(parsedBlobs, items: blobs, current: currentBlob))
+    }
+}
+
 // LC_ANISETTE_VERIFIED_LEGACY_RECOVERY_V1: an alternative identifier is only
 // a probe candidate. It never becomes a normal pair before isolated native OTP
 // validation succeeds and the exact stored/source snapshots still match.
@@ -793,6 +835,22 @@ fileprivate enum LCEmbeddedSharedKeychain {
                   try LCAnisetteStoredPair.read({ try client.getData($0) }) == snapshot.stored else {
                 throw LCAnisettePairError.stateChanged
             }
+        }
+    }
+
+    // DEBUG TEMPORARY: same scoped legacy pair-key reads, no fallback or writes.
+    static func observeLegacyAnisetteComparison(for snapshot: LCEmbeddedAnisetteSnapshot,
+                                                client: KeychainAccess.Keychain) throws -> LCAnisetteLegacyComparison {
+        guard let group = installedGroup else { return .unavailable }
+        return try withSharedTransaction {
+            try Task.checkCancellation()
+            guard try client.getData(anisetteRecoveryJournal) == nil,
+                  try LCAnisetteStoredPair.read({ try client.getData($0) }) == snapshot.stored else { return .unavailable }
+            let items = try legacyAnisetteItems()
+            try Task.checkCancellation()
+            guard try client.getData(anisetteRecoveryJournal) == nil,
+                  try LCAnisetteStoredPair.read({ try client.getData($0) }) == snapshot.stored else { return .unavailable }
+            return LCAnisetteLegacyComparison.compare(selected: snapshot.stored, selectedGroup: group, items: items)
         }
     }
 
@@ -1632,6 +1690,9 @@ extension Keychain {
     }
     func validateAnisetteSnapshot(_ snapshot: LCEmbeddedAnisetteSnapshot) throws {
         try LCEmbeddedSharedKeychain.validateAnisetteSnapshot(snapshot, client: self.keychain)
+    }
+    func observeLegacyAnisetteComparison(_ snapshot: LCEmbeddedAnisetteSnapshot) throws -> LCAnisetteLegacyComparison {
+        try LCEmbeddedSharedKeychain.observeLegacyAnisetteComparison(for: snapshot, client: self.keychain)
     }
     func anisetteRecoveryCandidate(for snapshot: LCEmbeddedAnisetteSnapshot) throws -> LCAnisetteRecoveryCandidate? {
         try LCEmbeddedSharedKeychain.anisetteRecoveryCandidate(for: snapshot, client: self.keychain)

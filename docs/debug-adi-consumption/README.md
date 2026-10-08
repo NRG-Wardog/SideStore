@@ -31,3 +31,18 @@ The observer diagnoses native file consumption; it does not repair errno propaga
 Production alignment: the SideStore debug commits were rebased onto the verified permanent dependency graph after parity IPA a939e4c passed. The three diagnostic owners remain local only; the other four production owners and the frozen registry are listed in contract-v1.json. A new diagnostic receipt must never borrow the old parity run as evidence for these runtime changes.
 
 Event retention reserves16 setup rows and16 latest OTP rows. A tested40-setup/40-OTP sequence followed by an OTP read failure retains that failure with truncation explicitly set. Early setup cannot exhaust the OTP budget.
+
+
+# Controlled staging-order experiment
+
+The physical-device f9f23d98 result records an untruncated OTP-phase open of the expected adi.pb path and a successful 639-byte host read plus guest-memory copy, followed by nativeOTP -45061. This does not prove byte identity or cryptographic binding. No setup imported open/read was observed, which weakens a file-read caching explanation.
+
+The separately maintained native candidate stages the unchanged supplied blob before common setup, retaining the current provider, UUID/path/Android-ID derivation, VM policy, mutex and single OTP invocation. Provisioning entry points and authoritative storage are not changed. This is a controlled experiment, not a proven authentication repair.
+
+The v2 observer prefix adds only finite host-byte comparison and successful-copy input coverage. Comparison 0 is unavailable/unobserved, 1 means all compared host bytes match so far, 2 is a sticky mismatch. Coverage 1 requires comparison 1 and complete supplied-input comparison within one tracked sequential expected-file stream, with successful guest copies. Coverage does not establish EOF, total file length, blob validity or identity binding. Work is capped at 1 MiB per invocation; unknown offsets, tracking or budget loss remain incomplete. No raw bytes, paths, identifiers or hashes leave memory.
+
+Both maintained consumers preserve v1 support, strict numeric parsing, 32 rows, 2048 encoded bytes and 4096 failure-wire bytes. Only optional diagnostic rows may be trimmed; the main failure and finite summary survive unchanged when they fit. Existing native code and phase classification remain intact.
+
+Native producer and cross-module Swift validation are pending. The frozen contract-v1.json and accepted f9 receipts remain historical evidence.
+
+The temporary failure-only legacy observation emits separate per-key missing/equal/different/ambiguous/unavailable statuses. It reads only existing entitled groups for the same service and two pair keys under the existing transaction lock, with selected snapshot checks before and after. It never chooses a legacy identity, probes it or writes it. Partial/conflicting groups are ambiguous; malformed/oversized values and stale/query failures are unavailable. UUID-only history remains explicit through a missing blob result. Diagnostic decoding is capped at 64 rows, 128 identifier bytes, 1,398,104 encoded blob bytes and 4 MiB aggregate bytes.
