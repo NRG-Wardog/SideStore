@@ -516,7 +516,7 @@ print("MAINTAINED_SOURCE_PASS")
 
     def test_real_finite_trace_rejects_injected_tokens(self):
         app = (ROOT / "AltStore/AppDelegate.swift").read_text()
-        declarations = section(app, "public struct V3TemporaryAnisetteTrace", "struct V3AnisetteAttemptContext")
+        declarations = section(app, "public struct V3TemporaryADIConsumption", "struct V3AnisetteAttemptContext")
         self.run_swift(declarations, '''
 precondition(V3TemporaryAnisetteTrace.temporaryAnisetteTraceEnabled)
 var trace = V3TemporaryAnisetteTrace()
