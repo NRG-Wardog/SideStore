@@ -33,13 +33,15 @@ TEST_FILES = {'SideSign': set(), 'SideStore': {'tests/runtime_source/test_runtim
 ADDITIONS = {'.ci/production-dependencies.py', '.ci/production-dependencies.json',
              '.ci/test_production_dependencies.py', '.ci/PRODUCTION_DEPENDENCIES.md'}
 
-DIAGNOSTIC_ACCEPTED = {'commit': 'dd4f0ca36e8ef1d858548f583c65842a8fc0ced3',
-                       'tree': 'b0c1d4f03785bbbf0d09b7329c0842a7a4d89d86'}
-DIAGNOSTIC_SOURCE_CHECKPOINT = {'commit': '364e65211f8678758542e3716e7b757c4dbd35ed',
-                                'tree': 'e765c3d23c3299ec7e1e57ac31ad0a76a91ff658'}
-DIAGNOSTIC_ANISETTE = 'e530b84687ebea2e7d1115119e1a6d18372de14b'
-DIAGNOSTIC_REGISTRY_SHA256 = '97c9d0b81e9b59c8271ae1155393b2fcb534dc97ea367095d3adfcde8a3783ad'
-DIAGNOSTIC_DELTA_SHA256 = '4d55fdeed931af02f9d44865c0c712695b471d8a101aa1643c3770484f158106'
+DIAGNOSTIC_ACCEPTED = {'commit': '1ebc69390f5b570f95cd823ac8df97c3a2f082f9',
+                       'tree': '4d043ad782d6dc782e765fe94564be353cb35e80'}
+DIAGNOSTIC_SOURCE_CHECKPOINT = {'commit': '7b3f356c5128b17fdd76eed81285096b3cc41da7',
+                                'tree': '5eec041d13f5eb5d805189f5827d6a60ddfa91f2'}
+DIAGNOSTIC_ACCEPTED_ANISETTE = 'e530b84687ebea2e7d1115119e1a6d18372de14b'
+DIAGNOSTIC_ANISETTE = 'f494494ede88890555df345054f7fbb87b53aea5'
+DIAGNOSTIC_REGISTRY_SHA256 = '2333ff8e03dea9fa4b8620e64e15ec76cb6a870a2d61c42dd057ddce0c13354f'
+DIAGNOSTIC_DELTA_SHA256 = '65a3689c1609cfbcfaa317e33401d500c5bde88a80cf054b240124f93b025165'
+DIAGNOSTIC_ACCEPTED_SIDESIGN = '3bd4afa0addbf95a8666ac91d8bfcf99f5182eea'
 DIAGNOSTIC_METADATA = {'.ci/production-dependencies.py',
                        '.ci/test_diagnostic_dependencies.py',
                        '.ci/DIAGNOSTIC_DEPENDENCIES.md'}
@@ -394,14 +396,20 @@ def verify_diagnostic(root, *, basis_path, basis_sha256,
             basis['owner'] == 'SideStore' and
             basis['purpose'] == 'diagnostic_dependency_source_transition',
             'Unexpected diagnostic basis identity')
+    require(isinstance(DIAGNOSTIC_REGISTRY_SHA256, str) and
+            re.fullmatch('[0-9a-f]{64}', DIAGNOSTIC_REGISTRY_SHA256),
+            'Diagnostic source registry awaiting reviewed hash')
     require(basis['source_registry_sha256'] == DIAGNOSTIC_REGISTRY_SHA256,
             'Unexpected diagnostic source registry')
+    require(isinstance(DIAGNOSTIC_DELTA_SHA256, str) and
+            re.fullmatch('[0-9a-f]{64}', DIAGNOSTIC_DELTA_SHA256),
+            'Diagnostic source delta awaiting reviewed hash')
     require(basis['source_delta_sha256'] == DIAGNOSTIC_DELTA_SHA256,
             'Unexpected accepted-to-diagnostic source delta')
     require(basis['accepted'] == DIAGNOSTIC_ACCEPTED, 'Unexpected accepted production base')
     require(basis['source_checkpoint'] == DIAGNOSTIC_SOURCE_CHECKPOINT,
             'Unexpected diagnostic source checkpoint')
-    require(basis['anisette'] == {'repository': ANISETTE_URL, 'accepted_commit': ANISETTE,
+    require(basis['anisette'] == {'repository': ANISETTE_URL, 'accepted_commit': DIAGNOSTIC_ACCEPTED_ANISETTE,
             'diagnostic_commit': DIAGNOSTIC_ANISETTE}, 'Unexpected diagnostic AnisetteKit pin')
     exact_keys(basis['candidate'], {'commit', 'tree'}, 'Unexpected diagnostic candidate schema')
     exact_keys(basis['sidesign'], {'repository', 'commit', 'tree', 'basis_sha256'},
@@ -413,7 +421,7 @@ def verify_diagnostic(root, *, basis_path, basis_sha256,
             isinstance(sidesign['basis_sha256'], str) and
             re.fullmatch('[0-9a-f]{64}', sidesign['basis_sha256']) and
             sidesign['basis_sha256'] != '0' * 64 and
-            sidesign['commit'] != READINESS_SIDESIGN_COMMIT,
+            sidesign['commit'] != DIAGNOSTIC_ACCEPTED_SIDESIGN,
             'Unresolved or invalid diagnostic SideSign dependency identity')
     require(git(root, 'rev-parse', '--is-shallow-repository').strip() == b'false', 'Shallow history')
     accepted = DIAGNOSTIC_ACCEPTED['commit']
@@ -438,7 +446,7 @@ def verify_diagnostic(root, *, basis_path, basis_sha256,
             'Missing reviewed diagnostic metadata or SideSign gitlink transition')
     require(isinstance(basis['changes'], dict) and set(basis['changes']) == changed,
             'Diagnostic basis changed-path inventory mismatch')
-    require(before[DIAGNOSTIC_CHILD] == ('160000', 'commit', READINESS_SIDESIGN_COMMIT),
+    require(before[DIAGNOSTIC_CHILD] == ('160000', 'commit', DIAGNOSTIC_ACCEPTED_SIDESIGN),
             'Diagnostic source checkpoint SideSign pin mismatch')
     require(after[DIAGNOSTIC_CHILD] == ('160000', 'commit', sidesign['commit']),
             'Diagnostic SideSign gitlink differs from approved dependency identity')

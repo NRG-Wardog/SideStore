@@ -1,14 +1,14 @@
-# Explicit SideStore diagnostic dependency proof
+# Explicit SideStore ADI v2 staging-order dependency proof
 
 This gate prepares a separately reviewed dependency transition over the published
-ADI observer source checkpoint `364e65211f8678758542e3716e7b757c4dbd35ed`, tree
-`e765c3d23c3299ec7e1e57ac31ad0a76a91ff658`. That checkpoint already contains the
+ADI observer source checkpoint `7b3f356c5128b17fdd76eed81285096b3cc41da7`, tree
+`5eec041d13f5eb5d805189f5827d6a60ddfa91f2`. That checkpoint already contains the
 reviewed observer delta from accepted production
-`dd4f0ca36e8ef1d858548f583c65842a8fc0ced3`, tree
-`b0c1d4f03785bbbf0d09b7329c0842a7a4d89d86`. It is immutable. The diagnostic
-registry SHA256 is `97c9d0b81e9b59c8271ae1155393b2fcb534dc97ea367095d3adfcde8a3783ad`;
+`1ebc69390f5b570f95cd823ac8df97c3a2f082f9`, tree
+`4d043ad782d6dc782e765fe94564be353cb35e80`. It is immutable. The diagnostic
+registry SHA256 is `2333ff8e03dea9fa4b8620e64e15ec76cb6a870a2d61c42dd057ddce0c13354f`;
 the accepted-to-diagnostic delta SHA256 is
-`4d55fdeed931af02f9d44865c0c712695b471d8a101aa1643c3770484f158106`.
+`65a3689c1609cfbcfaa317e33401d500c5bde88a80cf054b240124f93b025165`.
 
 The dependency transition permits only:
 
@@ -41,20 +41,21 @@ python3 -B .ci/production-dependencies.py --root /clean/SideStore \
   --diagnostic-basis-sha256 INDEPENDENTLY_APPROVED_SHA256
 ```
 
-The strict basis has exactly these fields:
+The integration selects `maintained-adi-consumption-v2`; the owner basis schema
+stays unchanged and gains no outcome fields. The strict basis has exactly these fields:
 
 - `schema_version: 1`, `owner: "SideStore"`,
   `purpose: "diagnostic_dependency_source_transition"`;
 - `source_registry_sha256` and `source_delta_sha256`, matching the immutable
   digests above;
-- `accepted: { "commit": "dd4f0ca36e8ef1d858548f583c65842a8fc0ced3",
-  "tree": "b0c1d4f03785bbbf0d09b7329c0842a7a4d89d86" }`;
-- `source_checkpoint: { "commit": "364e65211f8678758542e3716e7b757c4dbd35ed",
-  "tree": "e765c3d23c3299ec7e1e57ac31ad0a76a91ff658" }`;
+- `accepted: { "commit": "1ebc69390f5b570f95cd823ac8df97c3a2f082f9",
+  "tree": "4d043ad782d6dc782e765fe94564be353cb35e80" }`;
+- `source_checkpoint: { "commit": "7b3f356c5128b17fdd76eed81285096b3cc41da7",
+  "tree": "5eec041d13f5eb5d805189f5827d6a60ddfa91f2" }`;
 - `candidate`, with the actual committed candidate's `commit` and `tree`;
 - `anisette: { "repository": "https://github.com/NRG-Wardog/AnisetteKit.git",
-  "accepted_commit": "62ce85c8798d8eab8e29752aba7dc9f1f6a5b80d",
-  "diagnostic_commit": "e530b84687ebea2e7d1115119e1a6d18372de14b" }`;
+  "accepted_commit": "e530b84687ebea2e7d1115119e1a6d18372de14b",
+  "diagnostic_commit": "f494494ede88890555df345054f7fbb87b53aea5" }`;
 - `sidesign`, with repository `https://github.com/NRG-Wardog/SideSign.git`, its
   actual final `commit`, `tree`, and independently reviewed `basis_sha256`;
 - `changes`, an exact path map of changes from `source_checkpoint` to
@@ -79,7 +80,8 @@ they intentionally reject the diagnostic owner tree.
 ## Actual Xcode resolution and separate evidence
 
 Before resolution, the app lock must remain byte-identical to accepted production,
-including its absent `originHash`. After actual resolution, only AnisetteKit may
+including its genuine present `originHash`. Its exact lock SHA256 is
+`75ffdbb23481eed06e3d46210f24f2eb95a633dc55ece83a4295dc1e261f0c96`. After actual resolution, only AnisetteKit may
 move to the diagnostic revision; the other nine pins must retain every field.
 Capture the lock exactly as written. Do not reformat it manually or fabricate,
 remove, or substitute the observed origin metadata.
@@ -118,6 +120,7 @@ Historical production receipts do not establish readiness for this graph.
 Only the outer, separately reviewed new native receipt may establish it.
 
 Run `.ci/test_diagnostic_dependencies.py` for adversarial coverage. Run the
-unchanged original production tests against accepted-production fixture clones
+unchanged original production tests against legacy
+`dd4f0ca36e8ef1d858548f583c65842a8fc0ced3` fixture clones
 loading the updated verifier, and original source parity at its frozen source
 checkpoint. These portable checks never run Xcode or establish native success.

@@ -61,7 +61,7 @@ class DiagnosticTests(unittest.TestCase):
             'accepted': dict(PROOF.DIAGNOSTIC_ACCEPTED),
             'candidate': {'commit': self.raw_git('rev-parse', 'HEAD').decode().strip(),
                           'tree': self.raw_git('rev-parse', 'HEAD^{tree}').decode().strip()},
-            'anisette': {'repository': PROOF.ANISETTE_URL, 'accepted_commit': PROOF.ANISETTE,
+            'anisette': {'repository': PROOF.ANISETTE_URL, 'accepted_commit': PROOF.DIAGNOSTIC_ACCEPTED_ANISETTE,
                          'diagnostic_commit': PROOF.DIAGNOSTIC_ANISETTE},
             'sidesign': {'repository': 'https://github.com/NRG-Wardog/SideSign.git',
                          'commit': '1' * 40, 'tree': '2' * 40, 'basis_sha256': '3' * 64},
@@ -84,6 +84,7 @@ class DiagnosticTests(unittest.TestCase):
         tested = copy.deepcopy(self.basis['candidate'])
         lock = json.loads((self.root / PROOF.DIAGNOSTIC_LOCK).read_bytes())
         PROOF.pin_map(lock)['anisettekit']['state']['revision'] = PROOF.DIAGNOSTIC_ANISETTE
+        lock.pop('originHash', None)  # Synthetic fixtures exercise both observed states.
         if origin_hash is not None:
             lock['originHash'] = origin_hash
         (self.root / PROOF.DIAGNOSTIC_LOCK).write_text(json.dumps(lock, indent=2) + '\n')
@@ -114,7 +115,7 @@ class DiagnosticTests(unittest.TestCase):
         self.assertFalse(proof['production_ready'])
         self.assertEqual(proof['native_validation_status'], 'not_established_for_candidate')
         self.assertTrue(proof['historical_receipts_only'])
-        self.assertEqual(proof['origin_hash'], {'present': False, 'value': None})
+        self.assertEqual(proof['origin_hash'], {'present': True, 'value': 'c9e3c6042136849ac21835264cf5aece849ed3e487b36b9242a3ab0b5fcf6d17'})
         self.assertEqual(proof['runtime_source_changes'], [])
 
     def test_default_gate_rejects_diagnostic_candidate(self):
@@ -134,8 +135,8 @@ class DiagnosticTests(unittest.TestCase):
                 result = subprocess.run(command + options, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
 
-    def test_default_gate_still_accepts_accepted_graph(self):
-        self.raw_git('checkout', '--quiet', '--detach', PROOF.DIAGNOSTIC_ACCEPTED['commit'])
+    def test_default_gate_still_accepts_legacy_graph(self):
+        self.raw_git('checkout', '--quiet', '--detach', 'dd4f0ca36e8ef1d858548f583c65842a8fc0ced3')
         proof = PROOF.verify(self.root)
         self.assertEqual(proof['status'], 'exact_dependency_transition_pass')
         self.assertTrue(proof['production_ready'])
@@ -180,6 +181,23 @@ class DiagnosticTests(unittest.TestCase):
         self.save_basis()
         with self.assertRaisesRegex(PROOF.ProofError, 'AnisetteKit pin'):
             self.prove()
+
+    def test_unreviewed_registry_placeholder_is_rejected(self):
+        with patch.object(PROOF, 'DIAGNOSTIC_REGISTRY_SHA256', None):
+            with self.assertRaisesRegex(PROOF.ProofError, 'registry awaiting reviewed hash'):
+                self.prove()
+
+    def test_diagnostic_accepted_pin_cannot_reuse_legacy_default_pin(self):
+        self.assertNotEqual(PROOF.DIAGNOSTIC_ACCEPTED_ANISETTE, PROOF.ANISETTE)
+        self.basis['anisette']['accepted_commit'] = PROOF.ANISETTE
+        self.save_basis()
+        with self.assertRaisesRegex(PROOF.ProofError, 'diagnostic AnisetteKit pin'):
+            self.prove()
+
+    def test_unreviewed_source_delta_placeholder_is_rejected(self):
+        with patch.object(PROOF, 'DIAGNOSTIC_DELTA_SHA256', None):
+            with self.assertRaisesRegex(PROOF.ProofError, 'delta awaiting reviewed hash'):
+                self.prove()
 
     def test_wrong_candidate_commit_and_tree_rejected(self):
         for key in ('commit', 'tree'):
@@ -228,7 +246,7 @@ class DiagnosticTests(unittest.TestCase):
             self.prove()
 
     def test_old_or_unresolved_child_identity_rejected(self):
-        for identity in (None, PROOF.READINESS_SIDESIGN_COMMIT, '0' * 40):
+        for identity in (None, PROOF.DIAGNOSTIC_ACCEPTED_SIDESIGN, '0' * 40):
             with self.subTest(identity=identity):
                 self.basis['sidesign']['commit'] = identity
                 self.save_basis()
@@ -236,7 +254,7 @@ class DiagnosticTests(unittest.TestCase):
                     self.prove()
 
     def test_child_gitlink_cannot_remain_on_accepted_graph(self):
-        self.raw_git('update-index', '--cacheinfo', '160000,' + PROOF.READINESS_SIDESIGN_COMMIT + ',' + PROOF.DIAGNOSTIC_CHILD)
+        self.raw_git('update-index', '--cacheinfo', '160000,' + PROOF.DIAGNOSTIC_ACCEPTED_SIDESIGN + ',' + PROOF.DIAGNOSTIC_CHILD)
         self.commit()
         self.refresh_basis()
         with self.assertRaisesRegex(PROOF.ProofError, 'Missing reviewed diagnostic metadata or SideSign'):
