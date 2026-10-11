@@ -32,6 +32,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     let v3ForceProvisioningRetry: Bool
     // V3_PROVISIONING_REAUTHENTICATION_V1
     let v3RequireFullProvisioning: Bool
+    let v3FinishPendingCertificateActivation: Bool
     // V3_EXPLICIT_SIGNIN_CREDENTIALS_V1: manual sign-in never replays saved credentials.
     let v3RequireInteractiveCredentials: Bool
     let v3ReauthenticateAppleID: String?
@@ -46,16 +47,21 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         skipCertificateProvisioning: Bool = false,
         v3ForceProvisioningRetry: Bool = false,
         v3RequireFullProvisioning: Bool = false,
+        v3FinishPendingCertificateActivation: Bool = false,
         v3RequireInteractiveCredentials: Bool = false,
         v3ReauthenticateAppleID: String? = nil,
         v3ReauthenticationIdentityStamp: String? = nil
     ) throws {
+        guard !v3FinishPendingCertificateActivation || v3RequireFullProvisioning else {
+            throw V3PendingCertificateCreationError.pending
+        }
         self.signInHandler = signInHandler
         self.anisetteServerHandler = anisetteServerHandler
         self.skipDeviceRegistration = skipDeviceRegistration
         self.skipCertificateProvisioning = skipCertificateProvisioning
         self.v3ForceProvisioningRetry = v3ForceProvisioningRetry
         self.v3RequireFullProvisioning = v3RequireFullProvisioning
+        self.v3FinishPendingCertificateActivation = v3FinishPendingCertificateActivation
         self.v3RequireInteractiveCredentials = v3RequireInteractiveCredentials
         self.v3ReauthenticateAppleID = v3ReauthenticateAppleID
         self.v3ReauthenticationIdentityStamp = v3ReauthenticationIdentityStamp
@@ -133,6 +139,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 forceProvisioningRetry: self.v3ForceProvisioningRetry,
                 requireFullProvisioning: self.v3RequireFullProvisioning),
                !self.v3RequireInteractiveCredentials,
+               !self.v3FinishPendingCertificateActivation,
                var session = AuthManager.shared.session,
                AuthManager.shared.v3CachedSessionMatchesCurrentRoute(session),
                let team = AuthManager.shared.team,
@@ -234,10 +241,17 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                         let details = parseCertificate(derData: data)
                         return !details.subject.contains(team.identifier) && !details.issuer.contains(team.identifier)
                     } ?? false
-                    if isCustomCert {
+                    let pending = try Keychain.shared.pendingCertificateCreation()
+                    if pending != nil && resolvedCertificate == nil && !self.v3FinishPendingCertificateActivation {
+                        throw V3PendingCertificateCreationError.pending
+                    }
+                    if self.v3FinishPendingCertificateActivation && pending == nil && resolvedCertificate == nil {
+                        throw V3PendingCertificateCreationError.pending
+                    }
+                    if isCustomCert && !self.v3FinishPendingCertificateActivation {
                         self.debugLog("[SignInOperation] Custom active certificate detected (Subject OU mismatch with Team ID '\(team.identifier)'). Bypassing portal fetch.")
                         resolvedCertificate = activeCert
-                    } else if self.skipCertificateProvisioning {
+                    } else if self.skipCertificateProvisioning && !self.v3FinishPendingCertificateActivation {
                         resolvedCertificate = activeCert
                     } else {
                         // Retain the obtained certificate across local save retries.
@@ -248,6 +262,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                         if let certificate = resolvedCertificate {
                             diagnosticStep = .activateCertificate
                             try CertificateManager.shared.setActiveCertificate(certificate)
+                            try CertificateManager.shared.v3CompletePendingCertificateIfStored(certificate)
                         }
                     }
                     isCertificateResolved = true
@@ -261,7 +276,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                         self.verboseLog("[SignInOperation] Registering current device...")
                         diagnosticStep = .registerDevice
                         let device = try await self.registerCurrentDevice(for: team, session: session)
-                        self.debugLog("[SignInOperation] Registered current device UDID: \(device.identifier).")
+                        self.debugLog("[SignInOperation] Current device registration completed.")
                         reportProgress(stepWeight * 3)
                     }
                     isDeviceRegistered = true
@@ -686,6 +701,16 @@ private extension SignInOperation {
     }
 
     private func fetchCertificate(for team: ALTTeam, session: ALTAppleAPISession) async throws -> ALTCertificate {
+        if let pending = try Keychain.shared.pendingCertificateCreation() {
+            guard self.v3FinishPendingCertificateActivation, pending.purpose == .provisioning,
+                  let certificate = try await DeveloperPortalProxy.shared.reconcilePendingCertificateCreation(team: team) else {
+                throw V3PendingCertificateCreationError.pending
+            }
+            return certificate
+        }
+        guard !self.v3FinishPendingCertificateActivation else {
+            throw V3PendingCertificateCreationError.pending
+        }
         let portalCertificates = try await DeveloperPortalProxy.shared.fetchCertificates(team: team)
         self.portalCertificates = portalCertificates
         
@@ -728,20 +753,11 @@ private extension SignInOperation {
         self.verboseLog("[SignInOperation] Requesting certificate for machineName '\(machineName)'...")
 
         do {
-            let newPortalCertificate = try await DeveloperPortalProxy.shared.createCertificate(machineName: machineName, team: team)
+            let newPortalCertificate = try await DeveloperPortalProxy.shared.createCertificate(machineName: machineName, team: team, purpose: .provisioning)
             self.debugLog("[SignInOperation] Certificate identity details omitted.")
             
-            let portalCertificates = try await DeveloperPortalProxy.shared.fetchCertificates(team: team)
-            self.portalCertificates = portalCertificates
-
-            let finalCert: ALTCertificate
-            if let fullX509 = portalCertificates.first(where: { $0.serialNumber.lowercased() == newPortalCertificate.serialNumber.lowercased() }) {
-                finalCert = ALTCertificate(x509: fullX509, privateKey: newPortalCertificate.privateKey)
-            } else {
-                finalCert = newPortalCertificate
-            }
-
-            return finalCert
+            self.portalCertificates = nil
+            return newPortalCertificate
         } catch {
             self.debugLog("[SignInOperation] requestCertificate: Failed with error: \(error)")
             throw error
@@ -799,6 +815,7 @@ private extension SignInOperation {
     @discardableResult
     private func registerCurrentDevice(for team: ALTTeam, session: ALTAppleAPISession) async throws -> ALTDevice {
         self.debugLog("[SignInOperation] registerCurrentDevice starting...")
+        var deviceQueryError: Error?
         var deviceUDID: String?
         do {
             await CellularRefreshManager.shared.turnOffDataIfNeeded()
@@ -806,28 +823,31 @@ private extension SignInOperation {
             await CellularRefreshManager.shared.turnOnDataIfNeeded(addOnDelay: 2.0)
         } catch {
             await CellularRefreshManager.shared.turnOnDataIfNeeded(addOnDelay: 2.0)
-            self.debugLog("[SignInOperation] fetchUDID failed: \(error)")
+            deviceQueryError = error
+            self.debugLog("[SignInOperation] Primary device query failed.")
         }
         
         if deviceUDID == nil || deviceUDID?.isEmpty == true || deviceUDID == "XXXXX-XXXX-XXXXX-XXXX" {
-            deviceUDID = try? await fetchUDID(useStatic: true)
+            do { deviceUDID = try await fetchUDID(useStatic: true) }
+            catch { deviceQueryError = deviceQueryError ?? error }
         }
         
         guard let udid = deviceUDID, !udid.isEmpty, udid != "XXXXX-XXXX-XXXXX-XXXX" else {
             self.debugLog("[SignInOperation] Failed to fetch device UDID.")
+            if let deviceQueryError { throw deviceQueryError }
             throw OperationError.unknownUDID
         }
-        self.debugLog("[SignInOperation] Fetched device UDID: \(udid). Fetching team devices...")
+        self.debugLog("[SignInOperation] Device registration step.")
         
         let devices = try await DeveloperPortalProxy.shared.fetchDevices(for: team, types: .all)
         if let device = devices.first(where: { $0.identifier == udid }) {
-            self.debugLog("[SignInOperation] Device '\(device.name)' (UDID: \(udid)) is registered on team.")
+            self.debugLog("[SignInOperation] Device registration step.")
             return device
         } else {
             let deviceName = await MainActor.run { UIDevice.current.name }
-            self.debugLog("[SignInOperation] Registering new device '\(deviceName)' (UDID: \(udid))...")
+            self.debugLog("[SignInOperation] Device registration step.")
             let device = try await DeveloperPortalProxy.shared.registerDevice(name: deviceName, identifier: udid, type: DeveloperPortalProxy.currentDeviceType, team: team)
-            self.debugLog("[SignInOperation] Device '\(device.name)' (UDID: \(udid)) successfully registered.")
+            self.debugLog("[SignInOperation] Device registration step.")
             return device
         }
     }

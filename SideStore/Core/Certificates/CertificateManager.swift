@@ -114,6 +114,35 @@ public final class CertificateManager: @unchecked Sendable {
         }
     }
 
+    // Clear retained key material only after a persisted, cryptographically verified copy exists.
+    public func v3CompletePendingCertificateIfStored(_ certificate: ALTCertificate) throws {
+        guard let record = try Keychain.shared.pendingCertificateCreation() else { return }
+        guard record.phase == .created, let der = record.certificateDER,
+              certificate.x509.data == der,
+              V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: record.privateKey) else {
+            throw V3PendingCertificateCreationError.pending
+        }
+        let auth = AuthManager.shared
+        let generation = auth.v3IdentityGeneration
+        guard auth.v3IdentityIsStable, !Task.isCancelled else {
+            throw V3PendingCertificateCreationError.pending
+        }
+        try Keychain.shared.completePendingCertificateCreation(record, certificateSerial: certificate.serialNumber,
+            storedCopyIsVerified: { bytes, password in
+                // Supplied bytes are read under the same shared transaction as journal deletion.
+                // Never reacquire the Keychain lock in this callback.
+                guard auth.v3IdentityIsStable, auth.v3IdentityGeneration == generation,
+                      !Task.isCancelled else { return false }
+                if record.purpose == .importedCopy &&
+                    !self.getImportedCertificateSerials().contains(certificate.serialNumber) { return false }
+                let stored = try Self.parse(bytes, password: password)
+                return stored.x509.data == der &&
+                    V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyDER: stored.privateKey) &&
+                    auth.v3IdentityIsStable && auth.v3IdentityGeneration == generation && !Task.isCancelled
+            })
+    }
+
+
     public func clearActiveCertificate() {
         do { try self.setActiveCertificate(nil) }
         catch { debugLog("[LC_KEYCHAIN] certificate_clear_failed") }

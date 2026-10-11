@@ -604,9 +604,11 @@ enum V3WireContract {
             let baseKeys: Set<String> = ["session", "sessionDeadline"]
             // A control flag, not an authentication secret. Keep its name out
             // of the raw-secret vocabulary; do not exempt it from that sweep.
-            let allowedKeys = operation == "authBegin" ? baseKeys.union(["provisioningLogin"]) : baseKeys
+            let allowedKeys = operation == "authBegin" ? baseKeys.union(["provisioningLogin", "finishPendingCertificateActivation"]) : baseKeys
             guard baseKeys.isSubset(of: Set(payload.keys)), Set(payload.keys).isSubset(of: allowedKeys),
                   payload["provisioningLogin"] == nil || strictBool(payload["provisioningLogin"]) != nil,
+                  payload["finishPendingCertificateActivation"] == nil || strictBool(payload["finishPendingCertificateActivation"]) != nil,
+                  strictBool(payload["finishPendingCertificateActivation"]) != true || strictBool(payload["provisioningLogin"]) == true,
                   let session = payload["session"] as? String,
                   canonicalSecretToken(session), session == target,
                   let sessionDeadline = payload["sessionDeadline"] as? Date,
@@ -10087,13 +10089,16 @@ final class V3SideStoreService: NSObject {
                 throw ServiceError.invalidRequest
             }
             guard !V3HeadlessRuntime.shared.auth.hasActiveSession else { throw ServiceError.busy }
-            let reauthenticate = payload["provisioningLogin"] as? Bool == true
+            let reauthenticate = V3WireContract.strictBool(payload["provisioningLogin"]) == true
+            let finishPending = V3WireContract.strictBool(payload["finishPendingCertificateActivation"]) == true
+            guard !finishPending || reauthenticate else { throw ServiceError.invalidRequest }
             if reauthenticate && !V3HeadlessRuntime.shared.auth.canReauthenticateProvisioning() {
                 throw ServiceError.busy
             }
             return await V3HeadlessRuntime.shared.auth.begin(deadline: deadline,
                 mode: reauthenticate ? .reauthenticateProvisioning : .interactive,
-                requestDeadline: request["deadline"] as? Date, sessionID: session)
+                requestDeadline: request["deadline"] as? Date, sessionID: session,
+                finishPendingCertificateActivation: finishPending)
         case "authRetryProvisioning":
             guard !V3HeadlessRuntime.shared.auth.provisioningRecoveryRequiresReconciliation else {
                 throw ServiceError.busy
@@ -10345,10 +10350,14 @@ final class V3SideStoreService: NSObject {
                         .map(\.serialNumber)
                     // These are separate persisted facts: validate the actual
                     // per-serial PKCS#12 and SideStore's canonical local index.
-                    return V3CertificateCreateAdapter.matchesStoredCertificate(
+                    guard V3CertificateCreateAdapter.matchesStoredCertificate(
                         expectedSerial: certificate.serialNumber,
                         parsedSerial: parsedSerial,
-                        enumeratedSerials: enumeratedSerials)
+                        enumeratedSerials: enumeratedSerials) else { return false }
+                    do {
+                        try CertificateManager.shared.v3CompletePendingCertificateIfStored(certificate)
+                        return true
+                    } catch { return false }
                 })
             // Do not return a generic failure after Apple has created the
             // certificate: that could encourage a duplicate portal request.
@@ -10720,6 +10729,8 @@ final class V3SideStoreService: NSObject {
                  "provisioningIncomplete": provisioningIncomplete,
                  "provisioningState": provisioningState,
                  "accountRecoveryProtocol": 1,
+                 "pendingCertificateRecoveryProtocol": 1,
+                 "pendingCertificateRecoveryState": V3HeadlessRuntime.shared.auth.pendingCertificateRecoveryState,
                  "provisioningRecoveryRequiresReconciliation": V3HeadlessRuntime.shared.auth.provisioningRecoveryRequiresReconciliation,
                  "provisioningReauthenticationAvailable": provisioningReauthenticationAvailable,
                 "provisioningRetryAvailable": provisioningRetryAvailable,
@@ -11548,6 +11559,7 @@ final class V3AuthCenter {
         var accountAppleIDAtStart: String?
         var reauthenticationAppleID: String?
         var reauthenticationIdentityStamp: String?
+        var finishPendingCertificateActivation = false
     }
 
     // Privacy-safe record of a finished-but-incomplete provisioning attempt, so
@@ -11562,19 +11574,36 @@ final class V3AuthCenter {
     }
 
 
+    var pendingCertificateRecoveryState: String {
+        do {
+            let record = try Keychain.shared.pendingCertificateCreation()
+            let auth = AuthManager.shared
+            let stamp = auth.v3IdentityStamp
+            let credentials = auth.authenticationSnapshot
+            let stable = auth.v3IdentityIsStable && stamp == auth.v3IdentityStamp && !hasActiveSession
+            return V3PendingCertificateRecoveryPolicy.state(record?.ownerDSID, credentials?.appleIDAdsid,
+                credentials?.isAuthenticated == true, !provisioningRecoveryRequiresReconciliation,
+                stable, record?.purpose == .provisioning && record?.phase == .created)
+        } catch { return "storageUnverified" }
+    }
+
     func reconcileStorage() async throws {
+        guard !hasActiveSession else { throw V3PendingCertificateCreationError.pending }
         let auth = AuthManager.shared
-        auth.v3BeginIdentityTransition()
-        defer {
-            // Repaired storage may select the old or the intended route. Drop
-            // only process-local caches; saved account/certificate data remain.
-            auth.session = nil
-            auth.team = nil
-            auth.v3CompleteIdentityTransition()
+        do {
+            auth.v3BeginIdentityTransition()
+            defer {
+                auth.session = nil
+                auth.team = nil
+                auth.v3CompleteIdentityTransition()
+            }
+            try await v3ReconcileAccountDatabaseStorage()
+            try Keychain.shared.reconcileStorage()
+            try CertificateManager.shared.loadActiveCertificate()
         }
-        try await v3ReconcileAccountDatabaseStorage()
-        try Keychain.shared.reconcileStorage()
-        try CertificateManager.shared.loadActiveCertificate()
+        if try Keychain.shared.pendingCertificateCreation() != nil {
+            _ = try await DeveloperPortalProxy.shared.reconcilePendingCertificateCreation()
+        }
     }
 
     func canReauthenticateProvisioning() -> Bool {
@@ -11641,7 +11670,8 @@ final class V3AuthCenter {
 
     func begin(deadline: Date, mode: BeginMode = .interactive,
                requestDeadline: Date? = nil,
-               sessionID requestedID: String? = nil) async -> [String: Any] {
+               sessionID requestedID: String? = nil,
+               finishPendingCertificateActivation: Bool = false) async -> [String: Any] {
         cleanupSessions()
         let id = requestedID ?? UUID().uuidString
         guard let parsedID = UUID(uuidString: id), parsedID.uuidString == id else {
@@ -11691,6 +11721,7 @@ final class V3AuthCenter {
         let previousID = activeID
         var newSession = Session(deadline: deadline)
         newSession.mode = mode
+        newSession.finishPendingCertificateActivation = mode == .reauthenticateProvisioning && finishPendingCertificateActivation
         if let activeAppleID = DatabaseManager.shared.activeAccount()?.appleID {
             newSession.accountAppleIDAtStart = activeAppleID
                 .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -11752,6 +11783,7 @@ final class V3AuthCenter {
             let operation = try SignInOperation(context: context, signInHandler: handler,
                 anisetteServerHandler: handler, v3ForceProvisioningRetry: forceProvisioningRetry,
                 v3RequireFullProvisioning: true,
+                v3FinishPendingCertificateActivation: sessions[id]?.finishPendingCertificateActivation == true,
                 v3RequireInteractiveCredentials: sessions[id]?.mode == .interactive,
                 v3ReauthenticateAppleID: sessions[id]?.reauthenticationAppleID,
                 v3ReauthenticationIdentityStamp: sessions[id]?.reauthenticationIdentityStamp)
@@ -16682,3 +16714,16 @@ public enum V3DiagnosticPresentation {
         return message + "\nError ID: " + context.rawValue
     }
 }
+
+// V3_PENDING_CERTIFICATE_RECOVERY_POLICY_BEGIN
+enum V3PendingCertificateRecoveryPolicy {
+    static func state(_ pendingOwner: String?, _ currentOwner: String?, _ authenticated: Bool,
+                      _ storageVerified: Bool, _ identityStable: Bool, _ activationRequired: Bool) -> String {
+        guard storageVerified && identityStable else { return "storageUnverified" }
+        guard let pendingOwner else { return "none" }
+        guard authenticated, let currentOwner, !currentOwner.isEmpty else { return "signInRequired" }
+        guard pendingOwner == currentOwner else { return "ownerMismatch" }
+        return activationRequired ? "activationRequired" : "ready"
+    }
+}
+// V3_PENDING_CERTIFICATE_RECOVERY_POLICY_END

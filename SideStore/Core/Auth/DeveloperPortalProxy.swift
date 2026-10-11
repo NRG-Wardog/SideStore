@@ -175,21 +175,82 @@ public class DeveloperPortalProxy {
     }
     
     @discardableResult
-    public func createCertificate(machineName: String, type: CertificateType = .development, team: ALTTeam? = nil) async throws -> ALTCertificate {
-        let context = try await self.getBoundSession()
-        let session = context.session
-        let team = try await self.getBoundTeam(team, context: context)
-        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.addCertificate(machineName: machineName, type: type, to: team, session: session) }
+    public func createCertificate(machineName: String, type: CertificateType = .development, team: ALTTeam? = nil, purpose: V3CertificateCreationPurpose = .importedCopy) async throws -> ALTCertificate {
+        let token = try V3CertificateMutationAdmission.acquire()
+        defer { V3CertificateMutationAdmission.release(token) }
+        let context = try await getBoundSession()
+        let team = try await getBoundTeam(team, context: context)
+        guard try Keychain.shared.pendingCertificateCreation() == nil else { throw V3PendingCertificateCreationError.pendingCreation }
+        try verifyCurrent(context)
+        if team.type == .free && type.isPaidOnly { throw DeveloperPortalError.invalidParameters(cause: "This certificate type requires a paid account.") }
+        let request = try CertificateRequest(machineName: machineName)
+        let prepared = try Keychain.shared.beginPendingCertificateCreation(ownerDSID: context.session.dsid, teamID: team.identifier, request: request, type: type, purpose: purpose)
+        try verifyCurrent(context)
+        let dispatched = try Keychain.shared.advancePendingCertificateCreation(prepared)
+        try verifyCurrent(context)
+        let certificate = try await ALTAppleAPI.shared.addCertificate(request: request, machineIdentifier: dispatched.machineIdentifier, type: type, to: team, session: context.session)
+        guard let der = certificate.data, V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: dispatched.privateKey) else { throw V3PendingCertificateCreationError.invalidProof }
+        // Retain the original owner's result before rejecting a stale/cancelled caller.
+        _ = try Keychain.shared.advancePendingCertificateCreation(dispatched, certificateDER: der)
+        try verifyCurrent(context)
+        return certificate
     }
-    
+
     @discardableResult
     public func revokeCertificate(_ certificate: ALTX509Certificate, team: ALTTeam? = nil) async throws -> Bool {
-        let context = try await self.getBoundSession()
-        let session = context.session
-        let team = try await self.getBoundTeam(team, context: context)
-        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.revokeCertificate(certificate, for: team, session: session) }
+        let token = try V3CertificateMutationAdmission.acquire()
+        defer { V3CertificateMutationAdmission.release(token) }
+        let context = try await getBoundSession()
+        let team = try await getBoundTeam(team, context: context)
+        guard try Keychain.shared.pendingCertificateCreation() == nil else { throw V3PendingCertificateCreationError.pendingCreation }
+        try verifyCurrent(context)
+        return try await awaitBound(context) { try await ALTAppleAPI.shared.revokeCertificate(certificate, for: team, session: context.session) }
     }
-    
+
+    public func reconcilePendingCertificateCreation(team requestedTeam: ALTTeam? = nil) async throws -> ALTCertificate? {
+        let token = try V3CertificateMutationAdmission.acquire()
+        defer { V3CertificateMutationAdmission.release(token) }
+        let context = try await getBoundSession()
+        guard var retained = try Keychain.shared.pendingCertificateCreation() else { return nil }
+        try verifyCurrent(context)
+        guard context.session.dsid == retained.ownerDSID else { throw V3PendingCertificateCreationError.ownerChanged }
+        let team: ALTTeam
+        if let requestedTeam {
+            team = try await getBoundTeam(requestedTeam, context: context)
+        } else {
+            let account = try await awaitBound(context) { try await ALTAppleAPI.shared.fetchAccount(session: context.session) }
+            let teams = try await awaitBound(context) { try await ALTAppleAPI.shared.fetchTeams(for: account, session: context.session) }
+            guard let ownedTeam = teams.first(where: { $0.identifier == retained.teamID }) else { throw V3PendingCertificateCreationError.ownerChanged }
+            team = ownedTeam
+        }
+        guard team.identifier == retained.teamID else { throw V3PendingCertificateCreationError.ownerChanged }
+        try verifyCurrent(context)
+        if retained.phase == .prepared {
+            try Keychain.shared.clearPreparedCertificateCreation(retained)
+            try verifyCurrent(context)
+            return nil
+        }
+        let certificates = try await awaitBound(context) { try await ALTAppleAPI.shared.fetchCertificates(for: team, session: context.session) }
+        let matches = certificates.filter { certificate in
+            guard let der = certificate.data else { return false }
+            return V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: retained.privateKey)
+        }
+        guard matches.count == 1, let der = matches[0].data else { throw V3PendingCertificateCreationError.ambiguousResult }
+        if retained.phase == .dispatchMayHaveOccurred {
+            retained = try Keychain.shared.advancePendingCertificateCreation(retained, certificateDER: der)
+        } else if retained.certificateDER != der {
+            throw V3PendingCertificateCreationError.invalidProof
+        }
+        try verifyCurrent(context)
+        let certificate = ALTCertificate(x509: matches[0], privateKey: retained.privateKey)
+        CertificateManager.shared.saveCertificate(certificate)
+        try verifyCurrent(context)
+        if retained.purpose == .importedCopy {
+            try CertificateManager.shared.v3CompletePendingCertificateIfStored(certificate)
+        }
+        return certificate
+    }
+
     public func fetchDevices(for team: ALTTeam? = nil, types: ALTDeviceType = .all) async throws -> [ALTDevice] {
         let context = try await self.getBoundSession()
         let session = context.session
@@ -427,3 +488,19 @@ class DeveloperPortalProxyWithAuth: DeveloperPortalProxy {
         return (account, session)
     }
 }
+
+// V3_CERTIFICATE_MUTATION_ADMISSION_BEGIN
+private enum V3CertificateMutationAdmission {
+    private static let lock = NSLock()
+    private static var owner: UUID?
+    static func acquire() throws -> UUID {
+        lock.lock(); defer { lock.unlock() }
+        guard owner == nil else { throw V3PendingCertificateCreationError.pendingCreation }
+        let token = UUID(); owner = token; return token
+    }
+    static func release(_ token: UUID) {
+        lock.lock(); defer { lock.unlock() }
+        if owner == token { owner = nil }
+    }
+}
+// V3_CERTIFICATE_MUTATION_ADMISSION_END

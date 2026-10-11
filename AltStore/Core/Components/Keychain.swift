@@ -49,6 +49,22 @@ public struct KeychainItem<Value>
 public class Keychain
 {
     public static let shared = Keychain()
+    func pendingCertificateCreation() throws -> V3PendingCertificateCreation? {
+        try LCEmbeddedSharedKeychain.pendingCertificateCreation()
+    }
+    func beginPendingCertificateCreation(ownerDSID: String, teamID: String, request: CertificateRequest, type: CertificateType, purpose: V3CertificateCreationPurpose) throws -> V3PendingCertificateCreation {
+        try LCEmbeddedSharedKeychain.beginPendingCertificateCreation(ownerDSID: ownerDSID, teamID: teamID, request: request, type: type, purpose: purpose)
+    }
+    func advancePendingCertificateCreation(_ record: V3PendingCertificateCreation, certificateDER: Data? = nil) throws -> V3PendingCertificateCreation {
+        try LCEmbeddedSharedKeychain.advancePendingCertificateCreation(record, certificateDER: certificateDER)
+    }
+    func clearPreparedCertificateCreation(_ record: V3PendingCertificateCreation) throws {
+        try LCEmbeddedSharedKeychain.clearPreparedCertificateCreation(record, client: self.keychain)
+    }
+    func completePendingCertificateCreation(_ record: V3PendingCertificateCreation, certificateSerial: String, storedCopyIsVerified: (Data, String?) throws -> Bool) throws {
+        try LCEmbeddedSharedKeychain.completePendingCertificateCreation(record, certificateSerial: certificateSerial, client: self.keychain, storedCopyIsVerified: storedCopyIsVerified)
+    }
+
     
     fileprivate let keychain = LCEmbeddedSharedKeychain.makeClient()
     
@@ -563,6 +579,80 @@ struct LCEmbeddedSigningCertificateSnapshot {
 }
 
 fileprivate enum LCEmbeddedSharedKeychain {
+    private static let pendingCertificateKey = "pending-create-v1"
+    private static func pendingClient() throws -> V3PendingCertificateKeychainClient {
+        guard let group = installedGroup, !group.isEmpty, !service.isEmpty else { throw V3PendingCertificateCreationError.storageUnverified }
+        return V3PendingCertificateKeychainClient(service: service + ".pending-certificate", accessGroup: group)
+    }
+    private static func pendingNamespace() throws -> String {
+        let client = try pendingClient()
+        return client.service + ":" + client.accessGroup
+    }
+    static func pendingCertificateCreation() throws -> V3PendingCertificateCreation? {
+        try withSharedTransaction {
+            let client = try pendingClient()
+            let record = try V3PendingCertificateRecordIO.read { try client.getData(pendingCertificateKey) }
+            if let record, record.namespace != (try pendingNamespace()) { throw V3PendingCertificateCreationError.storageUnverified }
+            return record
+        }
+    }
+    static func beginPendingCertificateCreation(ownerDSID: String, teamID: String, request: CertificateRequest, type: CertificateType, purpose: V3CertificateCreationPurpose) throws -> V3PendingCertificateCreation {
+        try withSharedTransaction {
+            let client = try pendingClient()
+            let record = V3PendingCertificateCreation(version: 1, requestID: UUID().uuidString,
+                ownerDSID: ownerDSID, teamID: teamID, namespace: try pendingNamespace(),
+                machineIdentifier: UUID().uuidString, machineName: request.machineName, certificateType: type.rawValue,
+                purpose: purpose, csr: request.csrData, privateKey: request.privateKey, phase: .prepared, certificateDER: nil)
+            try V3PendingCertificateRecordIO.write(record, replacing: nil, load: { try client.getData(pendingCertificateKey) }, save: { try client.set($0, key: pendingCertificateKey) })
+            return record
+        }
+    }
+    static func advancePendingCertificateCreation(_ record: V3PendingCertificateCreation, certificateDER: Data?) throws -> V3PendingCertificateCreation {
+        try withSharedTransaction {
+            let client = try pendingClient()
+            guard record.namespace == (try pendingNamespace()) else { throw V3PendingCertificateCreationError.storageUnverified }
+            if let der = certificateDER, !V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: record.privateKey) { throw V3PendingCertificateCreationError.invalidProof }
+            var next = record; next.phase = certificateDER == nil ? .dispatchMayHaveOccurred : .created; next.certificateDER = certificateDER
+            try V3PendingCertificateRecordIO.write(next, replacing: record, load: { try client.getData(pendingCertificateKey) }, save: { try client.set($0, key: pendingCertificateKey) })
+            return next
+        }
+    }
+    static func clearPreparedCertificateCreation(_ record: V3PendingCertificateCreation, client regular: KeychainAccess.Keychain) throws {
+        try withSharedTransaction {
+            let client = try pendingClient()
+            guard record.namespace == (try pendingNamespace()),
+                  try regular.getData(LCSharedKeychainMigration.marker) == LCSharedKeychainMigration.ready,
+                  try regular.getData("appleIDAdsid") == Data(record.ownerDSID.utf8),
+                  try regular.getData(authenticationJournal) == nil else { throw V3PendingCertificateCreationError.ownerChanged }
+            try V3PendingCertificateRecordIO.clearPrepared(record, load: { try client.getData(pendingCertificateKey) }, remove: { try client.remove(pendingCertificateKey) })
+        }
+    }
+    static func completePendingCertificateCreation(_ record: V3PendingCertificateCreation, certificateSerial: String, client regular: KeychainAccess.Keychain, storedCopyIsVerified: (Data, String?) throws -> Bool) throws {
+        try withSharedTransaction {
+            let client = try pendingClient()
+            guard record.namespace == (try pendingNamespace()), !certificateSerial.isEmpty,
+                  try regular.getData(LCSharedKeychainMigration.marker) == LCSharedKeychainMigration.ready,
+                  try regular.getData("appleIDAdsid") == Data(record.ownerDSID.utf8),
+                  try regular.getData(authenticationJournal) == nil else { throw V3PendingCertificateCreationError.ownerChanged }
+            try V3PendingCertificateRecordIO.clear(record, storedCopyIsVerified: {
+                let data: Data
+                let password: String?
+                if record.purpose == .provisioning {
+                    guard try regular.getData(certificateMarker) == LCSharedKeychainMigration.ready,
+                          try regular.getData(certificateJournal) == nil,
+                          let saved = try regular.getData("signingCertificate") else { return false }
+                    data = saved
+                    let bytes = try regular.getData("signingCertificatePassword")
+                    password = bytes.flatMap { String(data: $0, encoding: .utf8) }
+                    guard bytes == nil || password != nil else { return false }
+                } else {
+                    guard let saved = try regular.getData("importedCert_" + certificateSerial) else { return false }
+                    data = saved; password = certificateSerial
+                }
+                return try storedCopyIsVerified(data, password)
+            }, load: { try client.getData(pendingCertificateKey) }, remove: { try client.remove(pendingCertificateKey) })
+        }
+    }
     private static let certificateMarker = "LCSharedCertificateCommitV1"
     private static let certificatePending = Data("pending-v1".utf8)
     private static let authenticationJournal = "LCSharedAuthenticationTransactionV1"
@@ -1742,3 +1832,175 @@ extension Keychain {
         return LCEmbeddedSharedKeychain.authenticationFailure(for: error)
     }
 }
+
+// V3_PENDING_CERTIFICATE_CORE_BEGIN
+public enum V3CertificateCreationPurpose: String, Codable { case provisioning, importedCopy }
+enum V3PendingCertificateCreationPhase: String, Codable { case prepared, dispatchMayHaveOccurred, created }
+enum V3PendingCertificateCreationError: Error { case storageUnverified, invalidProof, ownerChanged, pendingCreation, pending, invalidRecord, ambiguousResult }
+struct V3PendingCertificateCreation: Codable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+    let version: Int
+    let requestID: String
+    let ownerDSID: String
+    let teamID: String
+    let namespace: String
+    let machineIdentifier: String
+    let machineName: String
+    let certificateType: String
+    let purpose: V3CertificateCreationPurpose
+    let csr: Data
+    let privateKey: Data
+    var phase: V3PendingCertificateCreationPhase
+    var certificateDER: Data?
+    var description: String { "<pending certificate creation>" }
+    var debugDescription: String { description }
+}
+enum V3PendingCertificateRecordIO {
+    private static let keys: Set<String> = ["version", "requestID", "ownerDSID", "teamID", "namespace", "machineIdentifier", "machineName", "certificateType", "purpose", "csr", "privateKey", "phase", "certificateDER"]
+    private static func validate(_ r: V3PendingCertificateCreation) throws {
+        guard r.version == 1, UUID(uuidString: r.requestID) != nil, UUID(uuidString: r.machineIdentifier) != nil,
+              !r.ownerDSID.isEmpty, !r.teamID.isEmpty, !r.namespace.isEmpty, !r.machineName.isEmpty,
+              !r.certificateType.isEmpty, !r.csr.isEmpty, !r.privateKey.isEmpty,
+              r.csr.count <= 32768, r.privateKey.count <= 32768,
+              r.certificateDER.map({ !$0.isEmpty && $0.count <= 32768 }) ?? true,
+              (r.phase == .created) == (r.certificateDER != nil) else { throw V3PendingCertificateCreationError.invalidRecord }
+    }
+    static func read(_ load: () throws -> Data?) throws -> V3PendingCertificateCreation? {
+        guard let data = try load() else { return nil }
+        guard data.count <= 131072,
+              let map = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              Set(map.keys).isSubset(of: keys), Set(map.keys).isSuperset(of: keys.subtracting(["certificateDER"])) else { throw V3PendingCertificateCreationError.invalidRecord }
+        let record = try PropertyListDecoder().decode(V3PendingCertificateCreation.self, from: data)
+        try validate(record)
+        return record
+    }
+    static func write(_ record: V3PendingCertificateCreation, replacing old: V3PendingCertificateCreation?, load: () throws -> Data?, save: (Data) throws -> Void) throws {
+        try validate(record)
+        guard try read(load) == old else { throw V3PendingCertificateCreationError.storageUnverified }
+        if let old {
+            var immutable = record; immutable.phase = old.phase; immutable.certificateDER = old.certificateDER
+            guard immutable == old,
+                  (old.phase == .prepared && record.phase == .dispatchMayHaveOccurred) ||
+                  (old.phase == .dispatchMayHaveOccurred && record.phase == .created) else { throw V3PendingCertificateCreationError.invalidRecord }
+        } else {
+            guard record.phase == .prepared else { throw V3PendingCertificateCreationError.invalidRecord }
+        }
+        let encoder = PropertyListEncoder(); encoder.outputFormat = .binary
+        let data = try encoder.encode(record)
+        guard data.count <= 131072 else { throw V3PendingCertificateCreationError.invalidRecord }
+        try save(data)
+        guard try load() == data else { throw V3PendingCertificateCreationError.storageUnverified }
+    }
+    static func clearPrepared(_ record: V3PendingCertificateCreation, load: () throws -> Data?, remove: () throws -> Void) throws {
+        guard record.phase == .prepared, try read(load) == record else { throw V3PendingCertificateCreationError.storageUnverified }
+        try remove()
+        guard try load() == nil else { throw V3PendingCertificateCreationError.storageUnverified }
+    }
+    static func clear(_ record: V3PendingCertificateCreation, storedCopyIsVerified: () throws -> Bool, load: () throws -> Data?, remove: () throws -> Void) throws {
+        guard record.phase == .created, try read(load) == record, try storedCopyIsVerified(),
+              try read(load) == record else { throw V3PendingCertificateCreationError.storageUnverified }
+        try remove()
+        guard try load() == nil else { throw V3PendingCertificateCreationError.storageUnverified }
+    }
+}
+// V3_PENDING_CERTIFICATE_CORE_END
+// V3_PENDING_CERTIFICATE_SECURITY_CLIENT_BEGIN
+struct V3PendingCertificateKeychainCalls {
+    var copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching
+    var add: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemAdd
+    var update: (CFDictionary, CFDictionary) -> OSStatus = SecItemUpdate
+    var delete: (CFDictionary) -> OSStatus = SecItemDelete
+}
+struct V3PendingCertificateKeychainClient {
+    let service: String
+    let accessGroup: String
+    var calls = V3PendingCertificateKeychainCalls()
+    private func query(_ key: String) -> [CFString: Any] {
+        [kSecClass: kSecClassGenericPassword,
+         kSecAttrService: service, kSecAttrAccessGroup: accessGroup,
+         kSecAttrAccount: key, kSecAttrSynchronizable: false,
+         kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+         kSecUseDataProtectionKeychain: true]
+    }
+    func getData(_ key: String) throws -> Data? {
+        var query = query(key); query[kSecReturnData] = true; query[kSecMatchLimit] = kSecMatchLimitOne
+        var value: CFTypeRef?
+        let status = calls.copyMatching(query as CFDictionary, &value)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = value as? Data else { throw V3PendingCertificateCreationError.storageUnverified }
+        return data
+    }
+    func set(_ data: Data, key: String) throws {
+        var query = query(key)
+        var status = calls.update(query as CFDictionary, [kSecValueData: data] as CFDictionary)
+        if status == errSecItemNotFound { query[kSecValueData] = data; status = calls.add(query as CFDictionary, nil) }
+        guard status == errSecSuccess else { throw V3PendingCertificateCreationError.storageUnverified }
+    }
+    func remove(_ key: String) throws {
+        let status = calls.delete(query(key) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw V3PendingCertificateCreationError.storageUnverified }
+    }
+}
+// V3_PENDING_CERTIFICATE_SECURITY_CLIENT_END
+// V3_PENDING_CERTIFICATE_NATIVE_PROOF_BEGIN
+enum V3PendingCertificateKeyProof {
+    // Security imports PKCS#1 RSA keys. CodeSignKit's P12 parser can return the
+    // surrounding PKCS#8 PrivateKeyInfo, so accept only its strict RSA wrapper.
+    private static func rsaPrivateKeyBytes(_ data: Data) -> Data? {
+        let bytes = [UInt8](data)
+        func item(_ position: inout Int, limit: Int) -> (UInt8, Range<Int>)? {
+            guard position + 2 <= limit else { return nil }
+            let tag = bytes[position]; position += 1
+            let first = Int(bytes[position]); position += 1
+            var length = first
+            if first >= 128 {
+                let count = first & 127
+                guard count > 0, count <= 4, position + count <= limit, bytes[position] != 0 else { return nil }
+                length = 0
+                for _ in 0..<count { length = length * 256 + Int(bytes[position]); position += 1 }
+                guard length >= 128 else { return nil }
+            }
+            guard length <= limit - position else { return nil }
+            let body = position..<(position + length); position += length
+            return (tag, body)
+        }
+        var outer = 0
+        guard let sequence = item(&outer, limit: bytes.count), sequence.0 == 0x30, outer == bytes.count else { return nil }
+        var child = sequence.1.lowerBound
+        guard let version = item(&child, limit: sequence.1.upperBound), version.0 == 0x02,
+              Array(bytes[version.1]) == [0],
+              let second = item(&child, limit: sequence.1.upperBound) else { return nil }
+        if second.0 == 0x02 { return data } // PKCS#1, validated by Security.
+        guard second.0 == 0x30 else { return nil }
+        var algorithm = second.1.lowerBound
+        guard let oid = item(&algorithm, limit: second.1.upperBound), oid.0 == 0x06,
+              Array(bytes[oid.1]) == [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01] else { return nil }
+        if algorithm < second.1.upperBound {
+            guard let null = item(&algorithm, limit: second.1.upperBound), null.0 == 0x05, null.1.isEmpty else { return nil }
+        }
+        guard algorithm == second.1.upperBound,
+              let key = item(&child, limit: sequence.1.upperBound), key.0 == 0x04,
+              child == sequence.1.upperBound else { return nil }
+        return Data(bytes[key.1])
+    }
+
+    static func matches(certificateDER: Data, privateKeyPEM: Data) -> Bool {
+        guard let pem = String(data: privateKeyPEM, encoding: .utf8) else { return false }
+        let lines = pem.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: .newlines).filter { !$0.isEmpty }
+        guard lines.count >= 3, lines.first == "-----BEGIN RSA PRIVATE KEY-----", lines.last == "-----END RSA PRIVATE KEY-----",
+              let der = Data(base64Encoded: lines.dropFirst().dropLast().joined()) else { return false }
+        return matches(certificateDER: certificateDER, privateKeyDER: der)
+    }
+    static func matches(certificateDER: Data, privateKeyDER: Data) -> Bool {
+        guard !certificateDER.isEmpty, certificateDER.count <= 32768, !privateKeyDER.isEmpty, privateKeyDER.count <= 32768,
+              let certificate = SecCertificateCreateWithData(nil, certificateDER as CFData),
+              let certificatePublic = SecCertificateCopyKey(certificate),
+              let normalizedKey = rsaPrivateKeyBytes(privateKeyDER),
+              let privateKey = SecKeyCreateWithData(normalizedKey as CFData,
+                [kSecAttrKeyType as String: kSecAttrKeyTypeRSA, kSecAttrKeyClass as String: kSecAttrKeyClassPrivate] as CFDictionary, nil),
+              let privatePublic = SecKeyCopyPublicKey(privateKey),
+              let left = SecKeyCopyExternalRepresentation(certificatePublic, nil) as Data?,
+              let right = SecKeyCopyExternalRepresentation(privatePublic, nil) as Data? else { return false }
+        return left == right
+    }
+}
+// V3_PENDING_CERTIFICATE_NATIVE_PROOF_END
