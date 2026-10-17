@@ -91,6 +91,19 @@ struct InitializerDiagnosticHarness {
                     }
                     precondition(full.count == 20 && CombinedFailure.validatedSigningContext(full) != nil)
                     full["session_generation"] = "1"
+                    precondition(full.count == 21)
+                    if enabled {
+                        // Existing optional telemetry yields space to required
+                        // context. Its removal must retain every constructor field.
+                        var expectedTrimmed = full
+                        expectedTrimmed.removeValue(forKey: V3TemporaryADIConsumption.contextKey)
+                        let trimmed = CombinedFailure.validatedSigningContext(full)
+                        precondition(expectedTrimmed.count == 20 && trimmed == expectedTrimmed)
+                        for key in keys { precondition(trimmed?[key] == failure.signingContext[key]) }
+                        precondition(full["capability_count"] == nil)
+                        full["capability_count"] = "0"
+                        precondition(full.count == 22)
+                    }
                     precondition(CombinedFailure.validatedSigningContext(full) == nil)
                     for key in keys {
                         var incomplete = failure.signingContext; incomplete.removeValue(forKey: key)
