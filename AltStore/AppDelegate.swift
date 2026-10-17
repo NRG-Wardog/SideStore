@@ -6245,13 +6245,17 @@ enum V3AuthFailureDiagnosticsPolicy {
         let accountDetails = " source_step=\(step) typed_error=\(fields["typed_error"] ?? "unknown") server_code=\(fields["server_code"] ?? "unknown") http_status=\(fields["http_status"] ?? "unavailable")"
         let nativeDetails = fields["typed_error"] == "anisetteKitADIError"
             ? " native_code=\(fields["native_code"] ?? "unknown") native_phase=\(fields["native_phase"] ?? "unknown") native_subcode=\(fields["native_subcode"] ?? "unknown")" : ""
+        let initializerDetails = ["native_init_kind", "native_init_reason", "native_init_engine",
+            "native_init_library", "native_init_initializer"].compactMap { key in
+                fields[key].map { " \(key)=\($0)" }
+            }.joined()
         let attemptDetails = fields["anisette_blob_state"].map {
             " anisette_blob_state=\($0) anisette_recovery=\(fields["anisette_recovery"] ?? "notAttempted")"
         } ?? ""
         let probeDetails = fields["probe_native_code"].map {
             " probe_native_code=\($0) probe_native_phase=\(fields["probe_native_phase"] ?? "unknown") probe_native_subcode=\(fields["probe_native_subcode"] ?? "unknown")"
         } ?? ""
-        return "diagnostic_code=\(diagnosticCode(for: failure)) builder_commit=\(V3DiagnosticBuild.commit) kind=\(kind) stage=\(stage) code=\(code) correlation=\(correlation) underlying=\(underlyingDomain)/\(codeText) retryable=\(retryableText)" + accountDetails + nativeDetails + attemptDetails + probeDetails +
+        return "diagnostic_code=\(diagnosticCode(for: failure)) builder_commit=\(V3DiagnosticBuild.commit) kind=\(kind) stage=\(stage) code=\(code) correlation=\(correlation) underlying=\(underlyingDomain)/\(codeText) retryable=\(retryableText)" + accountDetails + nativeDetails + initializerDetails + attemptDetails + probeDetails +
             (fields[V3TemporaryAnisetteTrace.contextKey].flatMap(V3TemporaryAnisetteTrace.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "")
     }
@@ -14655,6 +14659,8 @@ public struct CombinedFailure: Error, LocalizedError {
                 guard V3AnisetteAttemptContext.BlobState(rawValue: text) != nil else { return nil }
             case "anisette_recovery":
                 guard V3AnisetteAttemptContext.Recovery(rawValue: text) != nil else { return nil }
+            case "native_init_kind", "native_init_reason", "native_init_engine", "native_init_library", "native_init_initializer":
+                break // Validate the entire tuple and its native provenance below.
             case "native_phase", "probe_native_phase":
                 guard V3AnisetteNativeEvidence.Phase(rawValue: text) != nil else { return nil }
             case "http_status":
@@ -14683,6 +14689,7 @@ public struct CombinedFailure: Error, LocalizedError {
             default: return nil
             }
         }
+        guard V3AnisetteNativeEvidence.ConstructorFailure.validatesContext(fields) else { return nil }
         return fields
     }
 
@@ -15916,11 +15923,92 @@ struct V3AnisetteNativeEvidence {
         case unknown, nativeOTP, provisionStart, provisionEnd
         case setupLibraries, setupLoadLibrary, setupProvisioningPath, setupAndroidID
         case readProvisioningData, nativeStorage
+        case setupConstructors, setupVM, setupVMPreviouslyFailed
     }
     let code: Int32
     let phase: Phase
     let subcode: Int32?
     var consumption: V3TemporaryADIConsumption? = nil
+    var constructorFailure: ConstructorFailure? = nil
+
+    // V3_NATIVE_INITIALIZER_FAILURE_V1: finite native observations only. The
+    // engine is a Unicorn uc_err, never an ADI subcode, PC, register or address.
+    struct ConstructorFailure {
+        enum Kind: String { case unknown, dt_init, dt_init_array, array_entry_read }
+        enum Reason: String {
+            case unknown, engine_error, unsupported_interrupt, unexpected_return
+            case entry_read, invalid_vm, previously_failed
+        }
+        static let contextKeys: Set<String> = ["native_init_kind", "native_init_reason",
+            "native_init_engine", "native_init_library", "native_init_initializer"]
+        let kind: Kind
+        let reason: Reason
+        let engine: Int
+        let library: Int
+        let initializer: Int
+
+        private init?(kind: String, reason: String, engine: String, library: String, initializer: String) {
+            guard let kind = Kind(rawValue: kind), let reason = Reason(rawValue: reason),
+                  let engine = Self.number(engine, maximum: 255),
+                  let library = Self.number(library, maximum: 65535),
+                  let initializer = Self.number(initializer, maximum: 65535) else { return nil }
+            switch kind {
+            case .unknown:
+                guard [.unknown, .invalid_vm, .previously_failed].contains(reason),
+                      engine == -1, library == -1, initializer == -1 else { return nil }
+            case .dt_init, .dt_init_array:
+                guard kind != .dt_init || initializer == 0 else { return nil }
+                switch reason {
+                case .engine_error: guard engine != 0 else { return nil }
+                case .unsupported_interrupt: break
+                case .unexpected_return: guard engine == 0 else { return nil }
+                default: return nil
+                }
+            case .array_entry_read:
+                guard reason == .entry_read, engine != 0 else { return nil }
+            }
+            self.kind = kind; self.reason = reason; self.engine = engine
+            self.library = library; self.initializer = initializer
+        }
+        private static func number(_ text: String, maximum: Int) -> Int? {
+            guard text.utf8.count <= 5, let value = Int(text),
+                  String(value) == text, (-1...maximum).contains(value) else { return nil }
+            return value
+        }
+        init?(description: String) {
+            let prefix = "Library constructor execution failed ["
+            guard description.utf8.count <= 256, description.hasPrefix(prefix),
+                  description.hasSuffix("]") else { return nil }
+            let tokens = description.dropFirst(prefix.count).dropLast().components(separatedBy: ";")
+            let labels = ["kind=", "reason=", "engine=", "library=", "initializer="]
+            guard tokens.count == 6, tokens[0] == "v1" else { return nil }
+            var values: [String] = []
+            for (token, label) in zip(tokens.dropFirst(), labels) {
+                guard token.hasPrefix(label) else { return nil }
+                values.append(String(token.dropFirst(label.count)))
+            }
+            self.init(kind: values[0], reason: values[1], engine: values[2],
+                      library: values[3], initializer: values[4])
+        }
+        private init?(context: [String: String]) {
+            guard let kind = context["native_init_kind"], let reason = context["native_init_reason"],
+                  let engine = context["native_init_engine"], let library = context["native_init_library"],
+                  let initializer = context["native_init_initializer"] else { return nil }
+            self.init(kind: kind, reason: reason, engine: engine, library: library, initializer: initializer)
+        }
+        static func validatesContext(_ fields: [String: String]) -> Bool {
+            let present = contextKeys.intersection(fields.keys)
+            guard !present.isEmpty else { return true } // Legacy phase-only evidence.
+            return present == contextKeys && fields["typed_error"] == "anisetteKitADIError" &&
+                fields["native_code"] == "-2" && fields["native_phase"] == Phase.setupConstructors.rawValue &&
+                fields["native_subcode"] == "unknown" && Self(context: fields) != nil
+        }
+        var diagnosticFields: [String: String] {
+            ["native_init_kind": kind.rawValue, "native_init_reason": reason.rawValue,
+             "native_init_engine": String(engine), "native_init_library": String(library),
+             "native_init_initializer": String(initializer)]
+        }
+    }
 
     static func capture(code: Int32, description: String) -> Self {
         let observed = V3TemporaryADIConsumption.splitDescription(description)
@@ -15963,6 +16051,9 @@ struct V3AnisetteNativeEvidence {
         // All setup failures return wrapper -2, even when a setup ADI call
         // reports another number. Keep that nested scalar separate as well.
         guard code == -2 else { return unknown }
+        if let constructor = ConstructorFailure(description: description) {
+            return Self(code: code, phase: .setupConstructors, subcode: nil, constructorFailure: constructor)
+        }
         let setupSymbols: [(String, String, Phase)] = [
             ("ADILoadLibraryWithPath", "ADILoadLibraryWithPath (kq56gsgHG6)", .setupLoadLibrary),
             ("ADISetProvisioningPath", "ADISetProvisioningPath", .setupProvisioningPath),
@@ -15978,6 +16069,9 @@ struct V3AnisetteNativeEvidence {
             }
         }
         let fixedSetup: [String: Phase] = [
+            "Library constructor execution failed": .setupConstructors,
+            "VM initialization failed": .setupVM,
+            "VM initialization previously failed; restart required": .setupVMPreviouslyFailed,
             "Library directory path is null.": .setupLibraries,
             "Failed to load libraries into VM": .setupLibraries,
             "Required ADI setup symbol missing in VM": .setupLoadLibrary,
@@ -16071,6 +16165,9 @@ struct V3AccountOperationError: Error, LocalizedError {
             signingContext["native_code"] = String(nativeEvidence.code)
             signingContext["native_phase"] = nativeEvidence.phase.rawValue
             signingContext["native_subcode"] = nativeEvidence.subcode.map(String.init) ?? "unknown"
+            if let constructor = nativeEvidence.constructorFailure {
+                signingContext.merge(constructor.diagnosticFields) { _, observed in observed }
+            }
         }
         if let anisetteAttempt {
             signingContext.merge(anisetteAttempt.diagnosticFields) { _, observed in observed }
