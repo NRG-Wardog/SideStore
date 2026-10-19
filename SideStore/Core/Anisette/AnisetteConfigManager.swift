@@ -62,11 +62,31 @@ public actor AnisetteConfigManager {
     }
 
     func resolveAnisetteSnapshot() throws -> LCEmbeddedAnisetteSnapshot {
-        try Keychain.shared.resolveAnisetteSnapshot()
+        let read = LoginDiagnosticTrace.current?.begin(.keychainRead)
+        do {
+            let snapshot = try Keychain.shared.resolveAnisetteSnapshot()
+            read?.finish(.succeeded)
+            LoginDiagnosticTrace.current?.begin(.pairValidation).finish(.succeeded)
+            if snapshot.adiBlob == nil {
+                LoginDiagnosticTrace.current?.skip(.blobPresence, reason: .fresh)
+            } else {
+                LoginDiagnosticTrace.current?.begin(.blobPresence).finish(.succeeded, reason: .cached)
+            }
+            return snapshot
+        } catch {
+            read?.finish(.failed, error: error)
+            if error is LCAnisettePairError {
+                LoginDiagnosticTrace.current?.begin(.pairValidation).finish(.failed,
+                    reason: (error as? LCAnisettePairError) == .stateChanged ? .stateChanged : .rejected, error: error)
+            }
+            throw error
+        }
     }
 
     func commitAnisetteBlob(_ blob: Data, snapshot: LCEmbeddedAnisetteSnapshot) throws {
-        try Keychain.shared.commitAnisetteBlob(blob, snapshot: snapshot)
+        try v3LoginStageSync(.freshBlobCommit) {
+            try Keychain.shared.commitAnisetteBlob(blob, snapshot: snapshot)
+        }
     }
     
     private nonisolated var configFileURL: URL {
@@ -152,6 +172,8 @@ public actor AnisetteConfigManager {
     }
 
     public func makeRequestHeaders() -> AnisetteRequestHeaders {
+        let span = LoginDiagnosticTrace.current?.begin(.requestHeaders)
+        defer { span?.finish(.succeeded) }
         let config = loadConfig()
         return AnisetteRequestHeaders().with {
             $0.clientInfo = config.clientInfo.isEmpty ? AppConstants.Anisette.defaultClientInfo : config.clientInfo

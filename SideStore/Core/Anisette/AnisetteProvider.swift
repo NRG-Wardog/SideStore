@@ -8,6 +8,7 @@
 
 import Foundation
 import SideSign
+import AnisetteKit
 
 enum AnisetteProvider {
     static func fetch(handler: AnisetteServerHandler? = nil) async throws -> ALTAnisetteData {
@@ -16,7 +17,7 @@ enum AnisetteProvider {
             return try await OnDeviceAnisetteManager.shared.fetchAnisetteData()
         } else {
             debugLog("[AnisetteProvider] Fetching anisette via remote server...")
-            return try await fetchRemote(handler: handler)
+            return try await v3LoginStage(.primaryProvider) { try await fetchRemote(handler: handler) }
         }
     }
 
@@ -24,7 +25,7 @@ enum AnisetteProvider {
         let serverUrlStrings = await AnisetteServersManager.shared.getActiveServerURLs()
         let servers = serverUrlStrings.compactMap { URL(string: $0) }
         guard !servers.isEmpty else {
-            throw AnisetteError.noServersConfigured
+            throw SideSign.AnisetteError.noServersConfigured
         }
 
         let lastServer = UserDefaults.standard.menuAnisetteURL
@@ -61,13 +62,16 @@ enum AnisetteProvider {
             },
             onSuccess: { successfulServer in
                 UserDefaults.standard.menuAnisetteURL = successfulServer.absoluteString
-                debugLog("[AnisetteProvider] Successfully fetched Anisette data from \(successfulServer.absoluteString)")
+                debugLog("[AnisetteProvider] Successfully fetched Anisette data.")
             }
         )
 
         if let freshBlob = newAdiBlob {
             try await AnisetteConfigManager.shared.commitAnisetteBlob(freshBlob, snapshot: anisetteSnapshot)
+        } else {
+            LoginDiagnosticTrace.current?.skip(.freshBlobCommit, reason: .notRequired)
         }
+        LoginDiagnosticTrace.current?.skip(.recovery, reason: .notRequired)
 
         return anisetteData
     }

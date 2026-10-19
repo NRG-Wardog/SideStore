@@ -77,28 +77,35 @@ public actor OnDeviceAnisetteManager {
         debugTrace.record(step: debugStep, outcome: .started)
         let primary: (data: ALTAnisetteData, newAdiBlob: Data?)
         do {
-            primary = try await provider.fetchAnisetteData(
-                mode: mode, identifier: identifierUUID,
-                existingAdiBlob: existingAdiPbData, headers: headers)
+            primary = try await v3LoginStage(.primaryProvider) {
+                try await provider.fetchAnisetteData(
+                    mode: mode, identifier: identifierUUID,
+                    existingAdiBlob: existingAdiPbData, headers: headers)
+            }
         } catch {
             debugTrace.record(step: debugStep, outcome: .failed)
             if let native = error as? AnisetteKit.AnisetteError,
                case .adiError(_, let description) = native {
                 debugTrace.appendNative(errorDescription: description, scope: .primary)
             }
-            return try await recoverVerifiedLegacyIdentity(
-                after: error, snapshot: anisetteSnapshot, headers: headers,
-                debugTrace: debugTrace)
+            return try await v3LoginStage(.recovery) {
+                try await recoverVerifiedLegacyIdentity(
+                    after: error, snapshot: anisetteSnapshot, headers: headers,
+                    debugTrace: debugTrace)
+            }
         }
         debugTrace.record(step: debugStep, outcome: .succeeded)
         let (anisetteData, newAdiPb) = primary
+        LoginDiagnosticTrace.current?.skip(.recovery, reason: .notRequired)
 
         if let freshBlob = newAdiPb {
             debugStep = .freshBlobCommit
             debugTrace.record(step: debugStep, outcome: .started)
             try await AnisetteConfigManager.shared.commitAnisetteBlob(freshBlob, snapshot: anisetteSnapshot)
             debugTrace.record(step: debugStep, outcome: .succeeded)
-            debugLog("[OnDeviceAnisetteManager] [Fetch] Fresh local provisioning completed -> saved new adi.pb (\(freshBlob.count) bytes) to Keychain")
+            debugLog("[OnDeviceAnisetteManager] [Fetch] Fresh local provisioning committed.")
+        } else {
+            LoginDiagnosticTrace.current?.skip(.freshBlobCommit, reason: .notRequired)
         }
 
         debugLog("[OnDeviceAnisetteManager] [Fetch] SUCCESS: AnisetteData generated successfully.")
@@ -188,7 +195,7 @@ extension OnDeviceAnisetteManager {
            code == -45061, snapshot.adiBlob != nil,
            V3AnisetteNativeEvidence.capture(code: code, description: description).phase == .nativeOTP {
             let comparison: LCAnisetteLegacyComparison
-            do { comparison = try Keychain.shared.observeLegacyAnisetteComparison(snapshot) }
+            do { comparison = try v3LoginStageSync(.recoveryLegacyRead) { try Keychain.shared.observeLegacyAnisetteComparison(snapshot) } }
             catch {
                 try Task.checkCancellation()
                 if error is CancellationError { throw error }
@@ -215,6 +222,9 @@ extension OnDeviceAnisetteManager {
             debugTrace.record(step: blobStep, outcome: .succeeded)
         }
         guard LCAnisetteRecoveryPolicy.automaticRecoveryEnabled else {
+            LoginDiagnosticTrace.current?.skip(.recoveryCurrentProbe, reason: .disabled)
+            LoginDiagnosticTrace.current?.skip(.recoveryLegacyProbe, reason: .disabled)
+            LoginDiagnosticTrace.current?.skip(.recoveryCommit, reason: .disabled)
             debugTrace.record(step: .currentProbe, outcome: .skipped)
             debugTrace.record(step: .legacyProbe, outcome: .skipped)
             debugTrace.record(step: .identityCommit, outcome: .skipped)
@@ -233,8 +243,10 @@ extension OnDeviceAnisetteManager {
         var debugStep = V3TemporaryAnisetteTrace.Step.currentProbe
         debugTrace.record(step: debugStep, outcome: .started)
         do {
-            let current = try await LCAnisetteIsolatedProbe.run(libraries: libraries,
-                identifier: snapshot.identifier, blob: existingBlob, headers: headers)
+            let current = try await v3LoginStage(.recoveryCurrentProbe) {
+                try await LCAnisetteIsolatedProbe.run(libraries: libraries,
+                    identifier: snapshot.identifier, blob: existingBlob, headers: headers)
+            }
             debugTrace.record(step: debugStep, outcome: .succeeded)
             debugStep = .currentProof
             debugTrace.record(step: debugStep, outcome: .started)
@@ -272,7 +284,7 @@ extension OnDeviceAnisetteManager {
         debugStep = .legacyRead
         debugTrace.record(step: debugStep, outcome: .started)
         do {
-            guard let found = try Keychain.shared.anisetteRecoveryCandidate(for: snapshot) else {
+            guard let found = try v3LoginStageSync(.recoveryLegacyRead, perform: { try Keychain.shared.anisetteRecoveryCandidate(for: snapshot) }) else {
                 debugTrace.record(step: debugStep, outcome: .succeeded)
                 debugTrace.record(step: .legacyCandidate, outcome: .skipped)
                 throw diagnosed(.noLegacyCandidate)
@@ -304,8 +316,10 @@ extension OnDeviceAnisetteManager {
         debugTrace.record(step: debugStep, outcome: .started)
         do {
             validated = try await candidate.validateNativeOTP { identifier, blob in
-                let result = try await LCAnisetteIsolatedProbe.run(libraries: libraries,
-                    identifier: identifier, blob: blob, headers: headers)
+                let result = try await v3LoginStage(.recoveryLegacyProbe) {
+                    try await LCAnisetteIsolatedProbe.run(libraries: libraries,
+                        identifier: identifier, blob: blob, headers: headers)
+                }
                 debugTrace.record(step: .legacyProbe, outcome: .succeeded)
                 debugStep = .legacyProof
                 debugTrace.record(step: debugStep, outcome: .started)
@@ -330,7 +344,7 @@ extension OnDeviceAnisetteManager {
         debugStep = .identityCommit
         debugTrace.record(step: debugStep, outcome: .started)
         do {
-            _ = try Keychain.shared.commitAnisetteRecovery(validated.proof)
+            _ = try v3LoginStageSync(.recoveryCommit) { try Keychain.shared.commitAnisetteRecovery(validated.proof) }
             debugTrace.record(step: debugStep, outcome: .succeeded)
         }
         catch let blocked as LCAnisettePairError {

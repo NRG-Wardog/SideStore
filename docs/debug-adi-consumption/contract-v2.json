@@ -58,7 +58,7 @@
   "variant": "controlled-staging-order-experiment",
   "producer_commit": "f494494ede88890555df345054f7fbb87b53aea5",
   "producer_header_sha256": "077b377c87b201893f83afbff5a4dd37e01354253f08045a3831adcb50022346",
-  "producer_swift_sha256": "356d5bb03a12c8e7bf366f364078099e2f3945103c2d0c43965ac2650590287f",
+  "producer_swift_sha256": "9c55c035d640cae8c2b6ac173db9f118a4e49cce789c0dba24f4cffca58476de",
   "accepted_encodings": [
     "v1",
     "v2"
@@ -82,5 +82,5 @@
     "LiveContainer": "2a1d297ed94840b134a6ea5111065d228a51cf2b"
   },
   "previous_contract": "contract-v1.json",
-  "evidence_scope": "Source contract only; native and product acceptance require separate exact-source receipts"
+  "evidence_scope": "Source contract only; login instrumentation candidate not yet built or published. Native and product acceptance require separate exact-source receipts."
 }

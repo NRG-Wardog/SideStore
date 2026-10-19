@@ -580,12 +580,12 @@ private extension SettingsViewController
                     break
                     
                 case .failure(let error):
-                    debugLog("[SettingsVC] signIn() authentication failed with error: \(error)")
+                    debugLog("[AuthenticationUI] Stage result recorded; private payload omitted.")
                     let toastView = ToastView(error: error)
                     toastView.show(in: self.view)
                     
                 case .success(let (team, _, _)):
-                    debugLog("[SettingsVC] signIn() authentication succeeded for team: \(team.name) (\(team.identifier))")
+                    debugLog("[AuthenticationUI] Stage result recorded; private payload omitted.")
                 }
                 
                 debugLog("[SettingsVC] signIn() calling update()...")
