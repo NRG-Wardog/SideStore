@@ -52,7 +52,8 @@ class InitializerDiagnosticContract(unittest.TestCase):
         if PEER is None:
             self.skipTest('Set INIT_DIAGNOSTICS_PEER_ROOT to the other maintained checkout')
         peer = owner(PEER).read_text()
-        for signature in ['struct V3AnisetteNativeEvidence {',
+        for signature in ['public struct V3ConstructorFaultDiagnostic:',
+                          'struct V3AnisetteNativeEvidence {',
                           '    public static func validatedSigningContext(',
                           'struct V3AccountOperationError:',
                           'enum V3AuthFailureDiagnosticsPolicy {']:
@@ -63,7 +64,7 @@ class InitializerDiagnosticContract(unittest.TestCase):
         self.assertEqual(declaration(self.source, 'enum V3AuthFailureDiagnosticsPolicy {'),
                          declaration(host, 'enum V3AuthFailureDiagnosticsPolicy {'))
         self.assertEqual(Path(__file__).read_bytes(), (ROOT / 'tests/init_diagnostics/test_contract.py').read_bytes())
-        for name in ['pipeline_harness.swift', 'host_harness.swift', 'test_contract.py', 'README.md', 'native_fixture.cpp']:
+        for name in ['pipeline_harness.swift', 'host_harness.swift', 'test_contract.py', 'README.md', 'native_fixture.cpp', 'fault_native_fixture.cpp', 'fault_pipeline_harness.swift']:
             self.assertEqual((ROOT / 'tests/init_diagnostics' / name).read_bytes(),
                              (PEER / 'tests/init_diagnostics' / name).read_bytes())
 
@@ -114,6 +115,80 @@ class InitializerDiagnosticContract(unittest.TestCase):
     def test_real_native_producer_fixture(self):
         self.produced()
 
+    def test_fault_parser_matches_current_producer_and_all_renderers(self):
+        self.assertIsNotNone(PRODUCER, 'Exact current producer source is required')
+        consumer = declaration(self.source, 'public struct V3ConstructorFaultDiagnostic:')
+        producer = declaration((PRODUCER / 'Sources/AnisetteDataProvider.swift').read_text(),
+                               'private enum TemporaryConstructorFaultTrace {')
+        # Compare the actual full numeric/coherence/digest checks, not a mirror model.
+        def checks(text):
+            start = text.index('        let parts = ')
+            end = text.index('        self.encoded = encoded') if 'self.encoded = encoded' in text else text.index('        return " [DEBUG_TEMPORARY_CONSTRUCTOR_FAULT:')
+            return text[start:end].replace('encoded.split', 'value.split').replace('return nil', 'return ""')
+        self.assertEqual(checks(consumer), checks(producer))
+        self.assertIn('encoded.utf8.count < 256', consumer)
+        self.assertIn('encoded.utf8.allSatisfy({ $0 < 128 })', consumer)
+        native = declaration(self.source, 'struct V3AnisetteNativeEvidence {')
+        capture = declaration(native, '    static func capture(')
+        self.assertLess(capture.index('acceptsEnvelope(description)'), capture.index('splitDescription(description)'))
+        self.assertIn('description[range.upperBound...].range(of: marker) == nil', consumer)
+        base = declaration(native, '    private static func captureBase(')
+        self.assertIn('guard code == -2, let constructor = ConstructorFailure(description: description)', base)
+        self.assertIn('constructorFailure: constructor, constructorFault: diagnostic', base)
+        validate = declaration(self.source, '    public static func validatedSigningContext(')
+        self.assertLess(validate.index('ConstructorFailure.validatesContext(fields)'), validate.index('fields.count > 20'))
+        self.assertIn('guard fields.count <= 20', validate)
+        self.assertIn('V3ConstructorFaultDiagnostic(encoded: raw) != nil', validate)
+        self.assertIn('data.count <= 4096', consumer)
+        self.assertIn('return V3ConstructorFaultDiagnostic.boundingWire(result)', declaration(self.source, '    public var wire:'))
+        lc = ROOT if (ROOT / 'SideStoreSupport').exists() else PEER
+        self.assertIsNotNone(lc, 'Exact importing host source is required')
+        host = (lc / 'LiveContainerSwiftUI/Views/V3UnifiedShell.swift').read_text()
+        terminal_copy = declaration(host, '    static func failureDetails(from failure:')
+        self.assertIn('V3AuthFailureDiagnosticsPolicy.render(failure,', terminal_copy)
+        self.assertIn('UIPasteboard.general.string = V3AuthStore.failureDetails(from: failure)', host)
+        self.assertIn('UIPasteboard.general.string = V3DiagnosticCopy.details(visibleMessage: auth.currentAttemptFailure.message, technical: auth.currentAttemptFailure.technicalDetails)', host)
+        self.assertIn('V3DiagnosticCopy.details(visibleMessage:', (HERE / 'host_harness.swift').read_text())
+        for source in [self.source, host]:
+            renderer = declaration(source, 'enum V3AuthFailureDiagnosticsPolicy {')
+            self.assertIn('flatMap(CombinedFailure.validatedSigningContext)', renderer)
+            self.assertIn('V3ConstructorFaultDiagnostic.init(encoded:)', renderer)
+        self.assertIn('signingContext[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))', self.source)
+        attempt = declaration(self.source, 'struct V3AnisetteAttemptContext {')
+        self.assertNotIn('constructorFault', attempt)
+        self.assertNotIn('native_fault_', attempt)
+        for forbidden in ['UserDefaults', 'FileManager', 'print(', 'uc_reg_read', 'removeItem', 'password', 'static var']:
+            self.assertNotIn(forbidden, consumer)
+
+    def fault_produced(self):
+        self.assertIsNotNone(PRODUCER, 'Exact current producer source is required')
+        compiler = shutil.which('c++')
+        self.assertIsNotNone(compiler, 'Trusted C++ compiler required for bounded source fixture')
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / 'fault-producer'
+            built = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                '-I', str(PRODUCER / 'Native/Loader'), str(HERE / 'fault_native_fixture.cpp'),
+                '-o', str(binary)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        rows = result.stdout.splitlines()
+        self.assertEqual(len(rows), 12)
+        self.assertEqual(rows[0], 'v1;p0_fault_diag1;0;-1;0;-1;-1;0;-;-')
+        self.assertTrue(all(len(row.encode()) < 256 for row in rows))
+        self.assertTrue(all(len(row.split(';')) == 10 for row in rows))
+        self.assertTrue(rows[1].startswith('v1;p0_fault_diag1;1;8;2;0;100;1;'))
+        self.assertTrue(rows[2].startswith('v1;p0_fault_diag1;2;1;1;65535;805306367;2;'))
+        self.assertTrue(rows[3].startswith('v1;p0_fault_diag1;3;256;7;65535;805306367;2;'))
+        self.assertTrue(rows[4].startswith('v1;p0_fault_diag1;0;-1;0;'))
+        self.assertTrue(rows[5].startswith('v1;p0_fault_diag1;1;-1;0;'))
+        self.assertTrue(all(row.split(';')[5:7] == ['-1', '-1'] for row in rows[7:]))
+        self.assertEqual(rows[-1].split(';')[7], '0')
+        return result.stdout
+
+    def test_real_bounded_fault_native_producer_fixture(self):
+        self.fault_produced()
+
     def execute(self, disabled):
         if PEER is None:
             self.skipTest('Set INIT_DIAGNOSTICS_PEER_ROOT to the other maintained checkout')
@@ -128,17 +203,22 @@ class InitializerDiagnosticContract(unittest.TestCase):
         if disabled:
             source = source.replace('public static let temporaryAnisetteTraceEnabled = true',
                                     'public static let temporaryAnisetteTraceEnabled = false')
+        source += '\n' + declaration((PRODUCER / 'Sources/AnisetteDataProvider.swift').read_text(), 'private enum TemporaryConstructorFaultTrace {')
         source += '\n' + (HERE / 'pipeline_harness.swift').read_text()
+        source += '\n' + (HERE / 'fault_pipeline_harness.swift').read_text()
         produced = self.produced()
+        fault_produced = self.fault_produced()
         with tempfile.TemporaryDirectory() as directory:
             d = Path(directory)
             (d / 'Pipeline.swift').write_text(source)
             (d / 'native.txt').write_text(produced)
+            (d / 'fault-native.txt').write_text(fault_produced)
             self.compile(['-parse-as-library', str(d / 'Pipeline.swift'), '-o', str(d / 'pipeline')])
-            run = subprocess.run([str(d / 'pipeline'), 'disabled' if disabled else 'enabled', str(d / 'failure.txt'), str(d / 'native.txt')],
+            run = subprocess.run([str(d / 'pipeline'), 'disabled' if disabled else 'enabled', str(d / 'failure.txt'), str(d / 'native.txt'), str(d / 'fault-native.txt')],
                                  capture_output=True, text=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn('INITIALIZER_CONSUMER_PIPELINE_PASS', run.stdout)
+            self.assertIn('CONSTRUCTOR_FAULT_CONSUMER_PIPELINE_PASS', run.stdout)
             # Read the service-produced binary plist with an independently compiled
             # host module and the real importing UI renderer, with no type doubles.
             support = common(owner(lc).read_text())
@@ -159,6 +239,7 @@ class InitializerDiagnosticContract(unittest.TestCase):
             run = subprocess.run([str(d / 'host'), str(d / 'failure.txt')], env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn('INITIALIZER_HOST_ROUNDTRIP_PASS', run.stdout)
+            self.assertIn('CONSTRUCTOR_FAULT_HOST_ROUNDTRIP_PASS', run.stdout)
 
     def compile(self, arguments):
         run = subprocess.run([SWIFTC, *arguments], capture_output=True, text=True, timeout=180)

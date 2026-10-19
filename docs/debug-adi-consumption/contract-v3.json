@@ -1,0 +1,197 @@
+{
+  "maximum_events": 32,
+  "maximum_encoded_bytes": 2048,
+  "maximum_failure_plist_bytes": 4096,
+  "fields": [
+    "phase",
+    "operation",
+    "target",
+    "result",
+    "errno",
+    "requested",
+    "returned",
+    "guest_copy"
+  ],
+  "ranges": [
+    [
+      0,
+      5
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      4
+    ],
+    [
+      -1,
+      1
+    ],
+    [
+      0,
+      4095
+    ],
+    [
+      0,
+      1048577
+    ],
+    [
+      0,
+      1048577
+    ],
+    [
+      -1,
+      32
+    ]
+  ],
+  "target_untracked": 4,
+  "context_key": "debug_temporary_adi_consumption",
+  "suffix": " [DEBUG_TEMPORARY_ADI_CONSUMPTION:",
+  "retention": {
+    "setup_first": 16,
+    "otp_last": 16,
+    "overflow": "explicit truncated bit; retained order preserved"
+  },
+  "contract": "debug-temporary-adi-consumption-v3",
+  "variant": "p0-bounded-constructor-fault-consumer-compatibility",
+  "producer_header_sha256": "077b377c87b201893f83afbff5a4dd37e01354253f08045a3831adcb50022346",
+  "producer_swift_sha256": "2b3913be77f019de3f0520e8ea8fcdad1a1b4a638c2493e84d063f07f813e855",
+  "accepted_encodings": [
+    "v1",
+    "v2"
+  ],
+  "v2_prefix": [
+    "version",
+    "truncated",
+    "comparison",
+    "input_covered"
+  ],
+  "comparison": {
+    "0": "unavailable_or_unobserved",
+    "1": "compared_host_bytes_match_so_far",
+    "2": "mismatch"
+  },
+  "input_covered": "1 only when comparison1 and one tracked expected-file stream compared all supplied input bytes with successful guest copies; does not prove EOF, cryptographic binding or ADI acceptance",
+  "comparison_budget_bytes": 1048576,
+  "owner_bases": {
+    "SideStore": "9d90c9db20a5b07bd4a34254efb596fbc7c04616",
+    "LiveContainer": "545438e1f0a89fdef375f73273c5c9fc2735cbce"
+  },
+  "previous_contract": "contract-v2.json",
+  "evidence_scope": "Source contract and portable host checks only. Swift runtime, cross-module, Apple-framework build, physical-device, publication and authentication acceptance require separate exact-source receipts.",
+  "producer_base_commit": "227dfd8c8456cd62e4ceff4971b17afb2003d7e8",
+  "producer_base_tree_prefix": "4d31646c",
+  "owner_base_tree_prefixes": {
+    "SideStore": "f67804f8",
+    "LiveContainer": "e8014dd"
+  },
+  "historical_contract_sha256": {
+    "contract-v1.json": "d8a96183be611f907d5aab9be749e2fd3838aa4464a9f3b41a2849eca2f932ab",
+    "contract-v2.json": "a4ac915cedf8c67179a184e8ea926968a439ae6c5e7bec6e18f58a5bd162b5ed"
+  },
+  "producer_input_sha256": {
+    "Sources/AnisetteDataProvider.swift": "2b3913be77f019de3f0520e8ea8fcdad1a1b4a638c2493e84d063f07f813e855",
+    "Native/Loader/adi_consumption_debug.h": "077b377c87b201893f83afbff5a4dd37e01354253f08045a3831adcb50022346",
+    "Native/Loader/bounded_fault_diagnostics.h": "416729f9cc73ba05ec5164af2f5d7928f86db2d72e6ddb83863e5433c36d3eaa",
+    "Native/Loader/vm_initialization_diagnostics.h": "95e683f69fea4a2723ee748dd71f05bc6ec50bfdce4277e7181948e600e2b39f"
+  },
+  "producer_input_scope": "Exact local source bytes, including the constructor formatter and its bounded-fault transitive include. Base commits identify archive origins; input hashes identify the checked candidate, not a published commit.",
+  "maintained_owners": {
+    "SideStore": {
+      "consumer": "AltStore/AppDelegate.swift",
+      "test": "tests/adi_consumption/test_contract.py",
+      "contract": "docs/debug-adi-consumption/contract-v3.json"
+    },
+    "LiveContainer": {
+      "consumer": "SideStoreSupport/SideStore.swift",
+      "importing_renderer": "LiveContainerSwiftUI/Views/V3UnifiedShell.swift",
+      "test": "tests/adi_consumption/test_contract.py",
+      "contract": "docs/debug-adi-consumption/contract-v3.json"
+    }
+  },
+  "producer_suffix_order": {
+    "parseHeadersResponse": [
+      "TemporaryConstructorFaultTrace.suffix(constructorFault)",
+      "TemporaryAnisetteNativeTrace.suffix(temporaryTrace)",
+      "TemporaryADIConsumptionTrace.suffix(consumptionTrace)"
+    ],
+    "parseStartProvisionResponse": [
+      "TemporaryConstructorFaultTrace.suffix(constructorFault)",
+      "TemporaryAnisetteNativeTrace.suffix(temporaryTrace)"
+    ],
+    "parseEndProvisionResponse": [
+      "TemporaryConstructorFaultTrace.suffix(constructorFault)",
+      "TemporaryAnisetteNativeTrace.suffix(temporaryTrace)"
+    ]
+  },
+  "constructor_fault_wire": {
+    "json_key": "v3_constructor_fault",
+    "suffix": " [DEBUG_TEMPORARY_CONSTRUCTOR_FAULT:",
+    "version": "v1",
+    "variant": "p0_fault_diag1",
+    "maximum_encoded_bytes": 255,
+    "field_count": 10,
+    "fields": [
+      "version",
+      "variant",
+      "access",
+      "width",
+      "region",
+      "pc_library",
+      "pc_offset",
+      "guard",
+      "asset_0_sha256",
+      "asset_1_sha256"
+    ],
+    "numeric_ranges": {
+      "access": [
+        0,
+        3
+      ],
+      "width": [
+        1,
+        256
+      ],
+      "region": [
+        0,
+        7
+      ],
+      "pc_library": [
+        0,
+        65535
+      ],
+      "pc_offset": [
+        0,
+        805306367
+      ],
+      "guard": [
+        0,
+        2
+      ]
+    },
+    "unavailable_numeric": [
+      "width",
+      "pc_library",
+      "pc_offset"
+    ],
+    "unavailable_value": -1,
+    "digest": "- or exactly 64 lowercase hexadecimal bytes",
+    "coherence": [
+      "pc_library and pc_offset are both unavailable or both available",
+      "unknown access requires unavailable width and unknown region",
+      "unavailable width requires unknown region"
+    ],
+    "scope": "Optional bounded fault metadata. Existing v1 constructor reason/engine description remains unchanged; no raw addresses, registers, guest strings, identities or filenames.",
+    "context_key": "native_constructor_fault"
+  },
+  "producer_pending_candidate": {
+    "commit": "7ebbb4ce0ce5756fe9d7bfe1899aaaa358c8b1e2",
+    "tree": "9fa391fa6486a08e2d3db96b0fc9b1c0b372fb65",
+    "sole_parent": "227dfd8c8456cd62e4ceff4971b17afb2003d7e8",
+    "status": "local-preparation-only; not an approved remote identity",
+    "consumer_fixture_change": "Native/Loader/vm_initialization_diagnostics.h only; both Snapshot fault members now have explicit = {} defaults",
+    "previous_vm_header_sha256": "0fbe1ac033f2d2dbe7f3c5fbd0cade277f8e7eb51529264dfec3ca75279ba862"
+  }
+}

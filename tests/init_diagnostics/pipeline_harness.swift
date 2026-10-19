@@ -182,6 +182,7 @@ struct InitializerDiagnosticHarness {
         precondition(CombinedFailure.fromEncodedString(legacy.encodedString, expectedID: id) != nil)
         let unrelated = V3AnisetteNativeEvidence.capture(code: -2, description: "ADILoadLibraryWithPath failed: -45061")
         precondition(unrelated.phase == .setupLoadLibrary && unrelated.subcode == -45061 && unrelated.constructorFailure == nil)
+        try verifyFaultDiagnostics(enabled: enabled, nativePath: CommandLine.arguments[4], outputPath: CommandLine.arguments[2] + ".fault")
         print("INITIALIZER_CONSUMER_PIPELINE_PASS " + (enabled ? "enabled" : "disabled"))
     }
 }

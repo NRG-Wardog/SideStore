@@ -6256,6 +6256,7 @@ enum V3AuthFailureDiagnosticsPolicy {
             " probe_native_code=\($0) probe_native_phase=\(fields["probe_native_phase"] ?? "unknown") probe_native_subcode=\(fields["probe_native_subcode"] ?? "unknown")"
         } ?? ""
         return "diagnostic_code=\(diagnosticCode(for: failure)) builder_commit=\(V3DiagnosticBuild.commit) kind=\(kind) stage=\(stage) code=\(code) correlation=\(correlation) underlying=\(underlyingDomain)/\(codeText) retryable=\(retryableText)" + accountDetails + nativeDetails + initializerDetails + attemptDetails + probeDetails +
+            (fields[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3TemporaryAnisetteTrace.contextKey].flatMap(V3TemporaryAnisetteTrace.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:))?.technicalDetails ?? "")
@@ -14676,8 +14677,19 @@ public struct CombinedFailure: Error, LocalizedError {
         if !V3TemporaryAnisetteTrace.temporaryAnisetteTraceEnabled {
             fields.removeValue(forKey: V3TemporaryAnisetteTrace.contextKey)
         }
+        // Validate provenance before optional capacity trimming; malformed or
+        // orphaned fault data must never become an accepted constructor tuple.
+        guard V3AnisetteNativeEvidence.ConstructorFailure.validatesContext(fields) else { return nil }
+        if let raw = fields[V3ConstructorFaultDiagnostic.contextKey] {
+            guard V3ConstructorFaultDiagnostic(encoded: raw) != nil else { return nil }
+            if fields.count > 20 { fields.removeValue(forKey: V3ConstructorFaultDiagnostic.contextKey) }
+        }
         guard fields.count <= 20 else { return nil }
         for (key, text) in fields {
+            if key == V3ConstructorFaultDiagnostic.contextKey {
+                guard V3ConstructorFaultDiagnostic(encoded: text) != nil else { return nil }
+                continue
+            }
             if key == V3LoginDiagnosticSnapshot.contextKey {
                 guard V3LoginDiagnosticSnapshot(encoded: text) != nil else { return nil }
                 continue
@@ -15233,8 +15245,8 @@ public struct CombinedFailure: Error, LocalizedError {
     }
     public var technicalDetails: String {
         let displayedUnderlyingCode = underlyingDomain == "redacted" ? "unknown" : String(underlyingCode)
-        let signingDetails = signingContext.filter { $0.key != V3TemporaryAnisetteTrace.contextKey && $0.key != V3TemporaryADIConsumption.contextKey && $0.key != V3LoginDiagnosticSnapshot.contextKey }.sorted(by: { $0.key < $1.key }).map { " \($0.key)=\($0.value)" }.joined()
-        return "schema=1 diagnostic_code=\(diagnosticCode) builder_commit=\(V3DiagnosticBuild.commit) operation=\(operation) stage=\(stage.rawValue) code=\(code.rawValue) correlation=\(correlationID) underlying_domain=\(underlyingDomain) underlying_code=\(displayedUnderlyingCode) retryable=\(retryable.map(String.init) ?? "unknown") source_step=\(sourceStep?.rawValue ?? "unknown") safe_cause=\(safeCause?.rawValue ?? "unknown")" + signingDetails + installVerdict + requestContextSuffix + (launchContext?.technicalDetails ?? "") + (temporaryAnisetteTrace?.technicalDetails ?? "") + (signingContext[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") + (signingContext[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:))?.technicalDetails ?? "")
+        let signingDetails = signingContext.filter { $0.key != V3TemporaryAnisetteTrace.contextKey && $0.key != V3TemporaryADIConsumption.contextKey && $0.key != V3LoginDiagnosticSnapshot.contextKey && $0.key != V3ConstructorFaultDiagnostic.contextKey }.sorted(by: { $0.key < $1.key }).map { " \($0.key)=\($0.value)" }.joined()
+        return "schema=1 diagnostic_code=\(diagnosticCode) builder_commit=\(V3DiagnosticBuild.commit) operation=\(operation) stage=\(stage.rawValue) code=\(code.rawValue) correlation=\(correlationID) underlying_domain=\(underlyingDomain) underlying_code=\(displayedUnderlyingCode) retryable=\(retryable.map(String.init) ?? "unknown") source_step=\(sourceStep?.rawValue ?? "unknown") safe_cause=\(safeCause?.rawValue ?? "unknown")" + signingDetails + (signingContext[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") + installVerdict + requestContextSuffix + (launchContext?.technicalDetails ?? "") + (temporaryAnisetteTrace?.technicalDetails ?? "") + (signingContext[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") + (signingContext[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:))?.technicalDetails ?? "")
     }
     public var temporaryAnisetteTrace: V3TemporaryAnisetteTrace? {
         signingContext[V3TemporaryAnisetteTrace.contextKey].flatMap(V3TemporaryAnisetteTrace.init(encoded:))
@@ -15286,7 +15298,8 @@ public struct CombinedFailure: Error, LocalizedError {
         if !signingContext.isEmpty { result["signingContext"] = signingContext }
         if let retryable { result["retryable"] = retryable }
         result = V3LoginDiagnosticSnapshot.boundingWire(result)
-        return V3TemporaryADIConsumption.boundingWire(result)
+        result = V3TemporaryADIConsumption.boundingWire(result)
+        return V3ConstructorFaultDiagnostic.boundingWire(result)
     }
     public var encodedString: String {
         guard let data = try? PropertyListSerialization.data(fromPropertyList: wire, format: .binary, options: 0), data.count <= 4096 else { return "LCFAILURE1:invalid" }
@@ -15812,6 +15825,79 @@ public struct V3LoginDiagnosticSnapshot {
     }
 }
 
+// V3_CONSTRUCTOR_FAULT_DIAGNOSTIC_V1: one finite optional tuple, independent
+// of temporary traces. No raw addresses, registers, filenames or free-form text.
+public struct V3ConstructorFaultDiagnostic: Equatable, Sendable {
+    public static let contextKey = "native_constructor_fault"
+    private static let marker = " [DEBUG_TEMPORARY_CONSTRUCTOR_FAULT:"
+    public let encoded: String
+
+    public init?(encoded: String) {
+        guard encoded.utf8.count < 256,
+              encoded.utf8.allSatisfy({ $0 < 128 }) else { return nil }
+        let parts = encoded.split(separator: ";", omittingEmptySubsequences: false)
+        guard parts.count == 10, parts[0] == "v1", parts[1] == "p0_fault_diag1" else { return nil }
+        let fields = Array(parts[2...7])
+        let numbers = fields.compactMap { Int64($0) }
+        guard numbers.count == 6,
+              zip(fields, numbers).allSatisfy({ String($0.1) == String($0.0) }),
+              (0...3).contains(numbers[0]),
+              numbers[1] == -1 || (1...256).contains(numbers[1]),
+              (0...7).contains(numbers[2]),
+              numbers[3] == -1 || (0...65535).contains(numbers[3]),
+              numbers[4] == -1 || (0...805306367).contains(numbers[4]),
+              (0...2).contains(numbers[5]),
+              (numbers[3] == -1) == (numbers[4] == -1),
+              numbers[0] != 0 || (numbers[1] == -1 && numbers[2] == 0),
+              numbers[1] != -1 || numbers[2] == 0 else { return nil }
+        for digest in parts[8...9] {
+            guard digest == "-" || (digest.utf8.count == 64 && digest.utf8.allSatisfy({
+                (48...57).contains($0) || (97...102).contains($0)
+            })) else { return nil }
+        }
+        self.encoded = encoded
+    }
+    static func acceptsEnvelope(_ description: String) -> Bool {
+        guard description.utf8.count <= 8192 else { return false }
+        guard let range = description.range(of: marker) else { return true }
+        guard description[range.upperBound...].range(of: marker) == nil else { return false }
+        // An older optional suffix must not swallow a malformed, duplicated or
+        // misordered fault suffix and accidentally recover a classification.
+        let base = V3TemporaryAnisetteTrace.nativeDescriptionWithoutTrace(description)
+        return splitDescription(base).diagnostic != nil
+    }
+    static func splitDescription(_ description: String) -> (base: String, diagnostic: Self?) {
+        // Remove only one fully valid terminal suffix after older suffixes have
+        // been checked. Malformed, duplicate and misordered suffixes fail closed.
+        guard description.utf8.count <= 768, description.hasSuffix("]"),
+              let range = description.range(of: marker),
+              description[range.upperBound...].range(of: marker) == nil,
+              let diagnostic = Self(encoded: String(description[range.upperBound...].dropLast())) else {
+            return (description, nil)
+        }
+        return (String(description[..<range.lowerBound]), diagnostic)
+    }
+    public var technicalDetails: String {
+        let values = encoded.split(separator: ";", omittingEmptySubsequences: false).dropFirst(2)
+        let keys = ["native_fault_access", "native_fault_width", "native_fault_region",
+            "native_fault_pc_library", "native_fault_pc_offset", "native_fault_guard",
+            "native_fault_sha0", "native_fault_sha1"]
+        return zip(keys, values).map { " \($0.0)=\($0.1)" }.joined()
+    }
+    public static func boundingWire(_ supplied: [String: Any]) -> [String: Any] {
+        guard var context = supplied["signingContext"] as? [String: String],
+              context[contextKey] != nil else { return supplied }
+        if let data = try? PropertyListSerialization.data(fromPropertyList: supplied, format: .binary, options: 0),
+           data.count <= 4096 { return supplied }
+        // Existing optional traces yield first; this tuple yields next. Never
+        // drop the primary constructor classification to fit optional metadata.
+        context.removeValue(forKey: contextKey)
+        var result = supplied
+        result["signingContext"] = context
+        return result
+    }
+}
+
 public struct V3TemporaryAnisetteTrace: Equatable, Sendable {
     public static let temporaryAnisetteTraceEnabled = true
     public static let contextKey = "debug_temporary_anisette_trace"
@@ -16070,6 +16156,7 @@ struct V3AnisetteNativeEvidence {
     let subcode: Int32?
     var consumption: V3TemporaryADIConsumption? = nil
     var constructorFailure: ConstructorFailure? = nil
+    var constructorFault: V3ConstructorFaultDiagnostic? = nil
 
     // V3_NATIVE_INITIALIZER_FAILURE_V1: finite native observations only. The
     // engine is a Unicorn uc_err, never an ADI subcode, PC, register or address.
@@ -16138,7 +16225,7 @@ struct V3AnisetteNativeEvidence {
         }
         static func validatesContext(_ fields: [String: String]) -> Bool {
             let present = contextKeys.intersection(fields.keys)
-            guard !present.isEmpty else { return true } // Legacy phase-only evidence.
+            guard !present.isEmpty else { return fields[V3ConstructorFaultDiagnostic.contextKey] == nil } // Legacy phase-only evidence.
             return present == contextKeys && fields["typed_error"] == "anisetteKitADIError" &&
                 fields["native_code"] == "-2" && fields["native_phase"] == Phase.setupConstructors.rawValue &&
                 fields["native_subcode"] == "unknown" && Self(context: fields) != nil
@@ -16151,6 +16238,9 @@ struct V3AnisetteNativeEvidence {
     }
 
     static func capture(code: Int32, description: String) -> Self {
+        guard V3ConstructorFaultDiagnostic.acceptsEnvelope(description) else {
+            return Self(code: code, phase: .unknown, subcode: nil)
+        }
         let observed = V3TemporaryADIConsumption.splitDescription(description)
         var evidence = captureBase(code: code, description: observed.base)
         if V3TemporaryAnisetteTrace.temporaryAnisetteTraceEnabled { evidence.consumption = observed.trace }
@@ -16160,8 +16250,15 @@ struct V3AnisetteNativeEvidence {
         let unknown = Self(code: code, phase: .unknown, subcode: nil)
         // Bound inspection before matching. Never scan arbitrary messages for
         // keywords, URLs, digits or error-like substrings.
-        let description = V3TemporaryAnisetteTrace.nativeDescriptionWithoutTrace(description)
+        let withoutTrace = V3TemporaryAnisetteTrace.nativeDescriptionWithoutTrace(description)
+        let fault = V3ConstructorFaultDiagnostic.splitDescription(withoutTrace)
+        let description = fault.base
         guard description.utf8.count <= 256 else { return unknown }
+        if let diagnostic = fault.diagnostic {
+            guard code == -2, let constructor = ConstructorFailure(description: description) else { return unknown }
+            return Self(code: code, phase: .setupConstructors, subcode: nil,
+                constructorFailure: constructor, constructorFault: diagnostic)
+        }
         // Exact fixed producers in the reviewed native staging patch. Numeric
         // equality alone never assigns a storage phase to arbitrary errors.
         if code == -6 && (description == "Checked OTP staging failed" || description == "Isolated OTP staging failed") {
@@ -16307,6 +16404,9 @@ struct V3AccountOperationError: Error, LocalizedError {
             signingContext["native_subcode"] = nativeEvidence.subcode.map(String.init) ?? "unknown"
             if let constructor = nativeEvidence.constructorFailure {
                 signingContext.merge(constructor.diagnosticFields) { _, observed in observed }
+                if let fault = nativeEvidence.constructorFault {
+                    signingContext[V3ConstructorFaultDiagnostic.contextKey] = fault.encoded
+                }
             }
         }
         if let anisetteAttempt {

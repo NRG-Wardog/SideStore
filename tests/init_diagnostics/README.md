@@ -12,7 +12,7 @@ Copied validation-runner tests also accept `SIDE_STORE_TEST_SOURCE` and
 `MAINTAINED_LIVE_CONTAINER_TEST_SOURCE` (or `LIVE_CONTAINER_TEST_SOURCE`) as
 checkout roots, plus `ANISETTE_KIT_TEST_SOURCE` for the native producer. Explicit
 `INIT_DIAGNOSTICS_PEER_ROOT` / `INIT_DIAGNOSTICS_PRODUCER_ROOT` take precedence.
-Keep all five files in this directory together when sealing a runner copy.
+Keep all seven files in this directory together when sealing a runner copy.
 
 The source checks enforce shared parser, validator, error projection and all three
 technical-detail renderers. A portable C++ fixture executes the actual native
@@ -51,16 +51,66 @@ Unicorn error scalar, never an ADI code, pointer, PC, W0 or register value.
 
 The native producer normalizes unavailable data; consumers reject noncanonical,
 partial, reordered, duplicate, extra, oversized, incoherent or out-of-range data.
-Existing exact trace and ADI suffix handling runs before matching. Legacy exact
+Existing exact trace and ADI suffix handling runs before matching. The new constructor-fault envelope is checked before older optional suffix stripping, so a misplaced or malformed fault cannot be swallowed by an ADI suffix and regain a classification. Legacy exact
 `Library constructor execution failed` gets setupConstructors with no fabricated
 fields. Exact VM initialization and previously-failed restart-required literals
 get setupVM and setupVMPreviouslyFailed. Unrecognized strings stay unknown.
 
-The complete primary + attempt + probe + temporary trace + ADI context has 18
-fields, below the unchanged 20-field limit and 4096-byte plist envelope. Tests
+The complete legacy primary + attempt + probe + temporary trace + ADI context has 18
+fields (16 with temporary traces disabled), below the unchanged 20-field limit and 4096-byte plist envelope. Tests
 exercise this complete tuple and both boundary counts. Trace-disabled builds keep
 the five constructor fields. No identity, authentication, recovery policy, VM
 execution policy or reset behavior is changed.
+
+## Bounded constructor-fault extension
+
+The exact optional producer suffix is:
+
+```text
+ [DEBUG_TEMPORARY_CONSTRUCTOR_FAULT:v1;p0_fault_diag1;access;width;region;pc_library;pc_offset;guard;sha0;sha1]
+```
+
+Only a single full canonical terminal suffix is removable, after the existing
+native trace and ADI suffixes. Malformed, duplicate, reordered, incoherent,
+non-ASCII, noncanonical, extra or oversized fault data leaves classification
+unknown. No substring of arbitrary text is accepted as a constructor error.
+Unchanged legacy input without the new suffix keeps its original classification.
+
+One context key, `native_constructor_fault`, stores the complete checked tuple.
+It requires the existing five constructor fields and the exact typed ADI -2 /
+setupConstructors / unknown-subcode provenance. It cannot be carried by a probe
+or an unrelated/legacy phase-only failure. Host wire decoding validates the same
+provenance and full tuple before rendering eight bounded `native_fault_*` values.
+Raw addresses, registers, filenames, memory, arbitrary text and credentials are
+never accepted. The PC fields are a loaded-library ordinal and a bounded relative
+offset, not an absolute address. Digests are exactly lowercase SHA-256 or `-`.
+
+Producer-identical ranges and cross-field checks are enforced by comparing the
+actual Swift checks in both sources. The current source contract is explicitly
+`docs/debug-adi-consumption/contract-v3.json`; v1 and v2 remain immutable historical
+contracts. The transitive source closure includes `bounded_fault_diagnostics.h`.
+
+The normal complete context has 19 fields (17 with temporary traces disabled).
+The fault is independent of the temporary-trace flag. At 20 keys everything is
+retained. Above 20, optional ADI telemetry yields first, then the optional fault
+tuple; the five required constructor fields never yield. Malformed provenance
+and malformed fault bytes reject before fault capacity trimming. If required
+context still exceeds 20, validation rejects it. The existing optional wire
+trimming runs first; a fault tuple yields only if the binary plist still exceeds
+4096 bytes. The unchanged final 4096-byte envelope guard rejects any remaining
+oversize result.
+
+`fault_native_fixture.cpp` uses the genuine bounded encoder on 12 synthetic
+observations, including normalization and all upper bounds. Its output feeds the
+actual AK Swift suffix validator, both actual consumer parsers and classifier,
+service binary-plist encode/decode, and a separately compiled importing host.
+`fault_pipeline_harness.swift` covers valid/invalid/duplicate/misordered data,
+legacy and trace-disabled behavior, full 20-key context and overflow priorities,
+provenance tampering, probe isolation, finite render/copy, and wire-size fallback.
+The original 21-row constructor fixture is unchanged. The producer's separate
+`FaultAggregateCompatibilityTests.test_warning_clean_legacy_and_explicit_aggregates`
+is also a required independent native source check; do not replace either fixture
+with the other or claim unavailable Swift/device tests passed.
 
 ## Limits
 

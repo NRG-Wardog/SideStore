@@ -31,22 +31,101 @@ class ConsumerContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app=owner(ROOT).read_text()
-        cls.schema=json.loads((ROOT/'docs/debug-adi-consumption/contract-v2.json').read_text())
+        cls.schema=json.loads((ROOT/'docs/debug-adi-consumption/contract-v3.json').read_text())
 
     def test_shared_parser_and_schema_are_exact_across_owners(self):
         if PEER is None: self.skipTest('Provide the independently owned peer source root')
         peer=owner(PEER).read_text()
-        for signature in ['public struct V3TemporaryADIConsumption {','public struct V3TemporaryAnisetteTrace:', 'struct V3AnisetteNativeEvidence {']:
+        for signature in ['public struct V3TemporaryADIConsumption {', 'public struct V3ConstructorFaultDiagnostic:', 'public struct V3TemporaryAnisetteTrace:', 'struct V3AnisetteNativeEvidence {']:
             self.assertEqual(declaration(self.app,signature),declaration(peer,signature))
-        self.assertEqual(self.schema,json.loads((PEER/'docs/debug-adi-consumption/contract-v2.json').read_text()))
+        self.assertEqual(self.schema,json.loads((PEER/'docs/debug-adi-consumption/contract-v3.json').read_text()))
         view=(lc_root()/'LiveContainerSwiftUI/Views/V3UnifiedShell.swift').read_text()
         self.assertIn('import SideStoreSupport',view)
         self.assertIn('V3TemporaryADIConsumption.init(encoded:)',declaration(view,'enum V3AuthFailureDiagnosticsPolicy {'))
 
+    def test_successor_contract_preserves_historical_owners_and_bounds(self):
+        self.assertEqual(self.schema['contract'], 'debug-temporary-adi-consumption-v3')
+        self.assertEqual(self.schema['previous_contract'], 'contract-v2.json')
+        self.assertEqual(set(self.schema['maintained_owners']), {'SideStore', 'LiveContainer'})
+        for filename, expected in self.schema['historical_contract_sha256'].items():
+            self.assertEqual(hashlib.sha256((ROOT/'docs/debug-adi-consumption'/filename).read_bytes()).hexdigest(), expected)
+        prior = json.loads((ROOT/'docs/debug-adi-consumption/contract-v2.json').read_text())
+        for key in ['maximum_events', 'maximum_encoded_bytes', 'maximum_failure_plist_bytes',
+                    'fields', 'ranges', 'target_untracked', 'context_key', 'suffix', 'retention',
+                    'accepted_encodings', 'v2_prefix', 'comparison', 'input_covered', 'comparison_budget_bytes']:
+            self.assertEqual(self.schema[key], prior[key])
+        self.assertEqual(self.schema['producer_header_sha256'], prior['producer_header_sha256'])
+        self.assertNotEqual(self.schema['producer_swift_sha256'], prior['producer_swift_sha256'])
+        self.assertIsNotNone(PEER, 'Provide the independently owned peer source root')
+        for root in [ROOT, PEER]:
+            name = 'SideStore' if (root/'AltStore').exists() else 'LiveContainer'
+            maintained = self.schema['maintained_owners'][name]
+            self.assertEqual(root/maintained['consumer'], owner(root))
+            self.assertEqual((root/maintained['test']).read_bytes(), Path(__file__).read_bytes())
+            self.assertEqual(json.loads((root/maintained['contract']).read_text()), self.schema)
+            if 'importing_renderer' in maintained:
+                self.assertIn('import SideStoreSupport', (root/maintained['importing_renderer']).read_text())
+            for filename, expected in self.schema['historical_contract_sha256'].items():
+                self.assertEqual(hashlib.sha256((root/'docs/debug-adi-consumption'/filename).read_bytes()).hexdigest(), expected)
+
+    def pinned_producer(self):
+        self.assertIsNotNone(PRODUCER, 'Provide maintained Anisette observer source root')
+        expected_inputs = {
+            'Sources/AnisetteDataProvider.swift', 'Native/Loader/adi_consumption_debug.h',
+            'Native/Loader/vm_initialization_diagnostics.h', 'Native/Loader/bounded_fault_diagnostics.h'}
+        self.assertEqual(set(self.schema['producer_input_sha256']), expected_inputs)
+        for filename, expected in self.schema['producer_input_sha256'].items():
+            self.assertEqual(hashlib.sha256((PRODUCER/filename).read_bytes()).hexdigest(), expected, filename)
+        self.assertEqual(self.schema['producer_swift_sha256'], self.schema['producer_input_sha256']['Sources/AnisetteDataProvider.swift'])
+        self.assertEqual(self.schema['producer_header_sha256'], self.schema['producer_input_sha256']['Native/Loader/adi_consumption_debug.h'])
+        self.assertIn('#include "bounded_fault_diagnostics.h"', (PRODUCER/'Native/Loader/vm_initialization_diagnostics.h').read_text())
+        return (PRODUCER/'Sources/AnisetteDataProvider.swift').read_text()
+
+    def test_current_producer_suffix_order_and_transitive_inputs(self):
+        sdk = self.pinned_producer()
+        self.assertEqual(set(self.schema['producer_suffix_order']),
+                         {'parseHeadersResponse', 'parseStartProvisionResponse', 'parseEndProvisionResponse'})
+        for method, suffixes in self.schema['producer_suffix_order'].items():
+            body = declaration(sdk, '    func '+method+'(')
+            expected = 'throw AnisetteError.adiError(code: code, description: err + '+' + '.join(suffixes)+')'
+            self.assertIn(expected, body)
+            fault_remove = 'dict.removeValue(forKey: "v3_constructor_fault")'
+            self.assertEqual(body.count(fault_remove), 1)
+            self.assertLess(body.index(fault_remove), body.index('if let err = dict["error"]'))
+            for suffix in suffixes:
+                self.assertEqual(body.count(suffix), 1)
+        fault = self.schema['constructor_fault_wire']
+        self.assertEqual(fault['fields'], ['version', 'variant', 'access', 'width', 'region',
+                         'pc_library', 'pc_offset', 'guard', 'asset_0_sha256', 'asset_1_sha256'])
+        helper = declaration(sdk, 'private enum TemporaryConstructorFaultTrace {')
+        for fragment in ['value.utf8.count < '+str(fault['maximum_encoded_bytes']+1),
+                         'parts.count == '+str(fault['field_count']),
+                         'parts[0] == "'+fault['version']+'"', 'parts[1] == "'+fault['variant']+'"',
+                         'zip(fields, numbers).allSatisfy({ String($0.1) == String($0.0) })',
+                         '(numbers[3] == -1) == (numbers[4] == -1)',
+                         'numbers[0] != 0 || (numbers[1] == -1 && numbers[2] == 0)',
+                         'numbers[1] != -1 || numbers[2] == 0',
+                         'digest.utf8.count == 64', '(48...57).contains($0) || (97...102).contains($0)',
+                         'return "'+fault['suffix']]:
+            self.assertIn(fragment, helper)
+        for index, field in enumerate(fault['fields'][2:8]):
+            low, high = fault['numeric_ranges'][field]
+            self.assertIn('('+str(low)+'...'+str(high)+').contains(numbers['+str(index)+'])', helper)
+            if field in fault['unavailable_numeric']:
+                self.assertIn('numbers['+str(index)+'] == -1 ||', helper)
+        header = (PRODUCER/'Native/Loader/bounded_fault_diagnostics.h').read_text()
+        self.assertIn('constexpr size_t wire_capacity = '+str(fault['maximum_encoded_bytes']+1), header)
+        self.assertIn('"'+fault['version']+';'+fault['variant']+';%d;%d;%d;%d;%lld;%d;%s;%s"', header)
+        self.assertIn('if (!value.available) return false;', header)
+
     def test_wire_and_render_use_real_finite_contract(self):
         text=self.app
         self.assertEqual(text.count('public struct V3TemporaryADIConsumption {'),1)
-        self.assertIn('return V3TemporaryADIConsumption.boundingWire(result)',declaration(text,'    public var wire:'))
+        wire=declaration(text,'    public var wire:')
+        self.assertIn('result = V3TemporaryADIConsumption.boundingWire(result)',wire)
+        self.assertIn('return V3ConstructorFaultDiagnostic.boundingWire(result)',wire)
+        self.assertLess(wire.index('V3TemporaryADIConsumption.boundingWire(result)'),
+                        wire.index('V3ConstructorFaultDiagnostic.boundingWire(result)'))
         validate=declaration(text,'    public static func validatedSigningContext(')
         self.assertIn('V3TemporaryADIConsumption.sanitizingContext(value)',validate)
         native=declaration(text,'struct V3AnisetteNativeEvidence {')
@@ -66,7 +145,7 @@ class ConsumerContractTests(unittest.TestCase):
         header=PRODUCER/'Native/Loader/adi_consumption_debug.h'
         self.assertEqual(hashlib.sha256(header.read_bytes()).hexdigest(),self.schema['producer_header_sha256'])
         self.assertEqual(hashlib.sha256((PRODUCER/'Sources/AnisetteDataProvider.swift').read_bytes()).hexdigest(),self.schema['producer_swift_sha256'])
-        sdk=(PRODUCER/'Sources/AnisetteDataProvider.swift').read_text()
+        sdk=self.pinned_producer()
         for text in [declaration(self.app,'public struct V3TemporaryADIConsumption {'),
                      declaration(sdk,'private enum TemporaryADIConsumptionTrace {')]:
             ranges={int(index):[int(low),int(high.replace('_',''))] for low,high,index in
