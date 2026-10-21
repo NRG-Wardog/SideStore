@@ -152,6 +152,9 @@ private extension MaintenanceManager {
         // A dedicated context avoids rolling back or saving unrelated UI edits.
         let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         return await context.perform {
+            // A concurrent install may assign a newer payload after our fetch.
+            // Fail that save and retry; never inherit an object-trump merge here.
+            context.mergePolicy = NSErrorMergePolicy
             var outcomes = Outcomes()
             do {
                 let installedApps = try context.fetch(InstalledApp.fetchRequest())
@@ -164,6 +167,9 @@ private extension MaintenanceManager {
                 let appsDir = InstalledApp.appsDirectoryURL
                 let directories = try FileManager.default.contentsOfDirectory(at: appsDir,
                     includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+                // Resolve every legacy candidate before choosing a payload. Both
+                // original and resigned IDs may refer to the same InstalledApp.
+                var sourcesByAppID: [NSManagedObjectID: [URL]] = [:]
                 for directory in directories where directory.lastPathComponent != "Payloads" {
                     let source = directory.appendingPathComponent("App.app")
                     guard FileManager.default.fileExists(atPath: source.path) else { continue }
@@ -173,28 +179,53 @@ private extension MaintenanceManager {
                         outcomes.pending += 1
                         continue
                     }
+                    sourcesByAppID[app.objectID, default: []].append(source)
+                }
+                for app in installedApps {
+                    guard let sources = sourcesByAppID[app.objectID]?.sorted(by: { $0.path < $1.path }),
+                          let source = sources.first else { continue }
                     // A retained old source must never revert a newer installed
                     // payload on a later launch. Only populate an unset reference.
                     guard app.appBundleFingerprint == nil else {
                         outcomes.retainedExistingReference += 1
                         continue
                     }
-                    guard let signature = AppBundleFingerprint.compute(for: source) else {
-                        outcomes.pending += 1
-                        continue
-                    }
                     do {
+                        // Snapshot all candidates. Never guess which original-ID
+                        // or resigned-ID folder is newer when their bytes differ.
+                        var snapshots: [(source: URL, digest: Data, signature: String)] = []
+                        for candidate in sources {
+                            try self.requireContained(candidate, within: appsDir)
+                            let digest = try self.exactDigest(of: candidate)
+                            guard let signature = AppBundleFingerprint.compute(for: candidate),
+                                  try self.exactDigest(of: candidate) == digest else {
+                                throw PreservationError.verificationFailed
+                            }
+                            snapshots.append((candidate, digest, signature))
+                        }
+                        guard let snapshot = snapshots.first,
+                              snapshots.allSatisfy({ $0.digest == snapshot.digest && $0.signature == snapshot.signature }) else {
+                            outcomes.conflict += 1
+                            continue
+                        }
+                        let signature = snapshot.signature
                         let destination = InstalledApp.payloadURL(forSignature: signature)
-                        let outcome = try self.copyPreservingOriginal(source, to: destination, within: appsDir)
-                        outcomes.record(outcome)
+                        let outcome = try self.copyPreservingOriginal(source, to: destination, within: appsDir,
+                            expectedDigest: snapshot.digest, expectedFingerprint: signature)
                         switch outcome {
                         case .copied, .identical:
+                            // Recheck every original and the actual published key
+                            // before assigning a DB reference. A changed candidate
+                            // stays retryable; any verified copy is merely retained.
+                            guard try snapshots.allSatisfy({ try self.exactDigest(of: $0.source) == $0.digest }),
+                                  AppBundleFingerprint.compute(for: destination) == signature else {
+                                throw PreservationError.verificationFailed
+                            }
                             app.appBundleFingerprint = signature
                         case .conflict:
-                            // The upstream fingerprint hashes sizes, not contents.
-                            // A collision must keep the app on its legacy payload.
                             break
                         }
+                        outcomes.record(outcome)
                     } catch {
                         outcomes.pending += 1
                     }
@@ -285,14 +316,22 @@ private extension MaintenanceManager {
         }
     }
 
-    func copyPreservingOriginal(_ source: URL, to destination: URL, within root: URL, expectedDigest: Data? = nil) throws -> CopyOutcome {
+    func copyPreservingOriginal(_ source: URL, to destination: URL, within root: URL,
+                                expectedDigest: Data? = nil, expectedFingerprint: String? = nil) throws -> CopyOutcome {
         let fm = FileManager.default
         try requireContained(source, within: root)
         try requireContained(destination, within: root)
         let before = try exactDigest(of: source)
         if let expectedDigest, before != expectedDigest { throw PreservationError.verificationFailed }
+        if let expectedFingerprint, AppBundleFingerprint.compute(for: source) != expectedFingerprint {
+            throw PreservationError.verificationFailed
+        }
         if fm.fileExists(atPath: destination.path) {
-            return try exactDigest(of: destination) == before ? .identical : .conflict
+            guard try exactDigest(of: destination) == before else { return .conflict }
+            if let expectedFingerprint, AppBundleFingerprint.compute(for: destination) != expectedFingerprint {
+                throw PreservationError.verificationFailed
+            }
+            return .identical
         }
         let parent = destination.deletingLastPathComponent()
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -302,16 +341,31 @@ private extension MaintenanceManager {
         guard try exactDigest(of: staging) == before, try exactDigest(of: source) == before else {
             throw PreservationError.verificationFailed
         }
+        // The key must describe the copied snapshot BEFORE it is published, not
+        // just the source observed earlier when the destination was selected.
+        if let expectedFingerprint {
+            guard AppBundleFingerprint.compute(for: staging) == expectedFingerprint,
+                  AppBundleFingerprint.compute(for: source) == expectedFingerprint else {
+                throw PreservationError.verificationFailed
+            }
+        }
         // moveItem fails rather than replacing an independently created target.
         do {
             try fm.moveItem(at: staging, to: destination)
         } catch {
             if fm.fileExists(atPath: destination.path) {
-                return try exactDigest(of: destination) == before ? .identical : .conflict
+                guard try exactDigest(of: destination) == before else { return .conflict }
+                if let expectedFingerprint, AppBundleFingerprint.compute(for: destination) != expectedFingerprint {
+                    throw PreservationError.verificationFailed
+                }
+                return .identical
             }
             throw error
         }
         guard try exactDigest(of: destination) == before else {
+            throw PreservationError.verificationFailed
+        }
+        if let expectedFingerprint, AppBundleFingerprint.compute(for: destination) != expectedFingerprint {
             throw PreservationError.verificationFailed
         }
         return .copied

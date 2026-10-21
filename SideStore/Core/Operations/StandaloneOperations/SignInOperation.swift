@@ -902,7 +902,7 @@ private extension SignInOperation {
         self.debugLog("[SignInOperation] Device registration step.")
         
         let devices = try await DeveloperPortalProxy.shared.fetchDevices(for: team, types: .all)
-        if let device = devices.first(where: { $0.identifier == udid }) {
+        if let device = devices.first(where: { $0.identifier.caseInsensitiveCompare(udid) == .orderedSame }) {
             self.debugLog("[SignInOperation] Device registration step.")
             return device
         } else {

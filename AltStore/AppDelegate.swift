@@ -105,6 +105,19 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         UserDefaults.registerDefaults()
         syncMinimuxerBackendFromUserDefaults()
 
+        // V3_NATIVE_DIAGNOSTICS_STARTUP_V1: sample only at launch, before any VM use.
+        // The live verbose switch remains separate; Unicorn caches need a restart.
+        let nativeDiagnosticMode = UserDefaults.standard.isAltSignVerboseLoggingEnabled ? "errors" : "off"
+        if setenv("ANISETTEKIT_UNICORN_DIAGNOSTICS", nativeDiagnosticMode, 1) == 0 {
+            if nativeDiagnosticMode == "errors" {
+                debugLog("[Native Diagnostics] Error/exception mode requested for first VM use (mask 0xC10, basename:line). Restart required to change; live verbose logging does not disable Unicorn.")
+            } else {
+                debugLog("[Native Diagnostics] Off requested for first VM use. Restart required to change Unicorn diagnostics.")
+            }
+        } else {
+            debugLog("[Native Diagnostics] Startup environment configuration failed; mode was not selected.")
+        }
+
         SideStoreLogging.setLogging(UserDefaults.standard.isSideStoreVerboseLoggingEnabled)
         AltSign.setLogging(UserDefaults.standard.isAltSignVerboseLoggingEnabled)
         minimuxerSetLogging(UserDefaults.standard.isMinimuxerVerboseLoggingEnabled)
@@ -13886,7 +13899,7 @@ enum V3BackendCommands {
               (try? PairingFileParser.parse(content: contents)) != nil else {
             throw OperationError.invalidPairingFile(reason: "the pairing file is missing required device-pairing fields")
         }
-        try PairingFileManager.shared.savePairingFile(contents: contents)
+        try PairingFileManager.shared.importPairingFile(contents: contents)
     }
 
     static func pairingFileStatus() -> String {

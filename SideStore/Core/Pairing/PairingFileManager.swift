@@ -214,10 +214,27 @@ final class PairingFileManager: NSObject {
         return (content, parsed)
     }
 
+    func importPairingFile(contents: String, preferred: PairingProtocol? = nil) throws {
+        // Explicit imports select their verified protocol, unlike maintenance or
+        // ordinary saves. An intentional preferred protocol still takes priority.
+        let selectedProtocol = preferred ?? preferredProtocol
+        let inspected = try parse(content: contents, preferred: selectedProtocol)
+        if let selectedProtocol, inspected.mode != selectedProtocol {
+            // Some parser versions may fall back to another supported protocol.
+            // Reject that mismatch before saving or changing active selection.
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let parsed = try savePairingFile(contents: contents, preferred: selectedProtocol)
+        guard parsed.mode == inspected.mode,
+              fetchPairingFile(for: parsed.mode) == contents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        persistedActiveProtocol = parsed.mode
+    }
+
     func importPairingFile(from url: URL, preferred: PairingProtocol? = nil) throws {
         let (content, _) = try inspectPairingFile(from: url)
-        let parsed = try savePairingFile(contents: content, preferred: preferred)
-        persistedActiveProtocol = parsed.mode
+        try importPairingFile(contents: content, preferred: preferred)
     }
 
     func deletePairingFile(for mode: PairingProtocol) {

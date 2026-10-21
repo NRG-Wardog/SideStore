@@ -191,9 +191,35 @@ public class DeveloperPortalProxy {
         let certificate = try await ALTAppleAPI.shared.addCertificate(request: request, machineIdentifier: dispatched.machineIdentifier, type: type, to: team, session: context.session)
         guard let der = certificate.data, V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: dispatched.privateKey) else { throw V3PendingCertificateCreationError.invalidProof }
         // Retain the original owner's result before rejecting a stale/cancelled caller.
-        _ = try Keychain.shared.advancePendingCertificateCreation(dispatched, certificateDER: der)
+        let created = try Keychain.shared.advancePendingCertificateCreation(dispatched, certificateDER: der)
         try verifyCurrent(context)
-        return certificate
+        guard purpose == .provisioning else { return certificate }
+
+        // V3_JOURNALED_CERTIFICATE_METADATA_ENRICHMENT_V1
+        // Read full portal metadata under the original identity, not a newly acquired session.
+        // Any read/proof failure leaves the created journal intact for explicit reconciliation;
+        // it must never turn a completed server mutation into another create attempt.
+        let metadataTeam = try await getBoundTeam(team, context: context)
+        guard metadataTeam.identifier == created.teamID, context.session.dsid == created.ownerDSID else {
+            throw V3PendingCertificateCreationError.ownerChanged
+        }
+        let certificates = try await awaitBound(context) {
+            try await ALTAppleAPI.shared.fetchCertificates(for: metadataTeam, session: context.session)
+        }
+        let matches = certificates.filter {
+            $0.serialNumber.caseInsensitiveCompare(certificate.serialNumber) == .orderedSame
+        }
+        guard matches.count == 1 else { throw V3PendingCertificateCreationError.ambiguousResult }
+        let fullX509 = matches[0]
+        guard fullX509.data == der,
+              V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: certificate.privateKey) else {
+            throw V3PendingCertificateCreationError.invalidProof
+        }
+        guard try Keychain.shared.pendingCertificateCreation() == created else {
+            throw V3PendingCertificateCreationError.storageUnverified
+        }
+        try verifyCurrent(context)
+        return ALTCertificate(x509: fullX509, privateKey: certificate.privateKey)
     }
 
     @discardableResult
