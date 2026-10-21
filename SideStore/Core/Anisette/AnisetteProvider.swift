@@ -12,6 +12,10 @@ import AnisetteKit
 
 enum AnisetteProvider {
     static func fetch(handler: AnisetteServerHandler? = nil) async throws -> ALTAnisetteData {
+        // PR1835 remote permission is scoped to this explicit operation, never a global mode.
+        if let attempt = WindowsAnisetteAuthentication.current {
+            return try await v3LoginStage(.primaryProvider) { try await attempt.fetch() }
+        }
         if UserDefaults.standard.useOnDeviceAnisette {
             debugLog("[AnisetteProvider] Fetching anisette via On-Device Anisette (ODA)...")
             return try await OnDeviceAnisetteManager.shared.fetchAnisetteData()
@@ -74,5 +78,64 @@ enum AnisetteProvider {
         LoginDiagnosticTrace.current?.skip(.recovery, reason: .notRequired)
 
         return anisetteData
+    }
+}
+
+
+// Separate provider-scoped state; never reads or migrates identifier/adiPb.
+private actor WindowsAnisetteOperation {
+    private let client: WindowsRemoteAnisetteClient
+    private var profile: WindowsAnisetteProfile?
+    private var state: WindowsAnisetteState?
+    private var fetching = false
+
+    init(endpoint: WindowsAnisetteEndpoint) { client = WindowsRemoteAnisetteClient(endpoint: endpoint) }
+    nonisolated func invalidate() { client.invalidate() }
+
+    func fetch(sim: String?) async throws -> ALTAnisetteData {
+        // Actor reentrancy must not provision two identities or interleave resync.
+        guard !fetching else { throw WindowsAnisetteError.stateChanged }
+        fetching = true
+        defer { fetching = false }
+        try Task.checkCancellation()
+        let selected: WindowsAnisetteProfile
+        if let profile { selected = profile }
+        else {
+            selected = try await client.fetchProfile()
+            profile = selected
+        }
+        let original = try Keychain.shared.windowsAnisetteRecord(key: selected.storageKey)
+        let candidate: WindowsAnisetteState
+        if let state {
+            guard let original, try JSONDecoder().decode(WindowsAnisetteState.self, from: original) == state else {
+                throw WindowsAnisetteError.stateChanged
+            }
+            candidate = state
+        } else if let original {
+            do { candidate = try JSONDecoder().decode(WindowsAnisetteState.self, from: original) }
+            catch { throw WindowsAnisetteError.invalidState }
+        } else {
+            guard sim == nil else { throw WindowsAnisetteError.resyncUnavailable }
+            candidate = WindowsAnisetteState(profile: selected)
+        }
+        try candidate.validated(for: selected)
+        if original != nil && candidate.adiPB == nil { throw WindowsAnisetteError.invalidState }
+        let (data, updated) = try await client.fetch(state: candidate, sim: sim)
+        try Task.checkCancellation()
+        let encoded = try JSONEncoder().encode(updated)
+        try Keychain.shared.commitWindowsAnisetteRecord(encoded, key: selected.storageKey, replacing: original)
+        state = updated
+        return data
+    }
+}
+
+func makeWindowsAnisetteContext(endpoint: String?, consentAttemptID: UUID?) throws -> WindowsAnisetteAuthenticationContext? {
+    if endpoint == nil && consentAttemptID == nil { return nil }
+    guard consentAttemptID != nil, let endpoint, let selected = WindowsAnisetteEndpoint(rawValue: endpoint) else {
+        throw WindowsAnisetteError.consentRequired
+    }
+    let operation = WindowsAnisetteOperation(endpoint: selected)
+    return WindowsAnisetteAuthenticationContext(endpoint: selected, canceller: { operation.invalidate() }) { sim in
+        try await operation.fetch(sim: sim)
     }
 }

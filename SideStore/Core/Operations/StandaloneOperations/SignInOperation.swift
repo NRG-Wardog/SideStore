@@ -24,6 +24,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     // Own the trace across queued execution; unstructured operation tasks do not inherit callers.
     let loginDiagnosticTrace = LoginDiagnosticTrace.current ?? LoginDiagnosticTrace()
 
+    private let windowsAnisetteContext: WindowsAnisetteAuthenticationContext?
     private var appleIDEmailAddress: String?
     private var requiresPostAuthFlow = false
     private var portalCertificates: [ALTX509Certificate]?
@@ -58,11 +59,15 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         v3FinishPendingCertificateActivation: Bool = false,
         v3RequireInteractiveCredentials: Bool = false,
         v3ReauthenticateAppleID: String? = nil,
-        v3ReauthenticationIdentityStamp: String? = nil
+        v3ReauthenticationIdentityStamp: String? = nil,
+        windowsAnisetteEndpoint: String? = nil,
+        windowsAnisetteConsentAttemptID: UUID? = nil
     ) throws {
         guard !v3FinishPendingCertificateActivation || v3RequireFullProvisioning else {
             throw V3PendingCertificateCreationError.pending
         }
+        self.windowsAnisetteContext = try makeWindowsAnisetteContext(
+            endpoint: windowsAnisetteEndpoint, consentAttemptID: windowsAnisetteConsentAttemptID)
         self.signInHandler = signInHandler
         self.anisetteServerHandler = anisetteServerHandler
         self.skipDeviceRegistration = skipDeviceRegistration
@@ -93,12 +98,32 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         }
     }
     
+    override func cancel() {
+        windowsAnisetteContext?.invalidate()
+        super.cancel()
+    }
+
     // Main Pipeline Execution
     override func execute(parentProgress: Progress?) async throws -> SignInResult {
-        try await LoginDiagnosticTrace.$current.withValue(loginDiagnosticTrace) {
-            try await v3LoginStage(.login) {
-                try await self.executeLoginPipeline(parentProgress: parentProgress)
+        defer { windowsAnisetteContext?.invalidate() }
+        return try await withTaskCancellationHandler {
+            try await WindowsAnisetteAuthentication.$current.withValue(windowsAnisetteContext) {
+                do {
+                    return try await LoginDiagnosticTrace.$current.withValue(loginDiagnosticTrace) {
+                        try await v3LoginStage(.login) {
+                            try await self.executeLoginPipeline(parentProgress: parentProgress)
+                        }
+                    }
+                } catch {
+                    // Capture only finite provider metadata before the permission scope exits.
+                    if !v3IsAuthCancellation(error), v3AccountUnderlyingError(error) is WindowsAnisetteError {
+                        throw v3AccountOperationFailure(error, step: .authenticate)
+                    }
+                    throw error
+                }
             }
+        } onCancel: {
+            self.windowsAnisetteContext?.invalidate()
         }
     }
 
@@ -452,6 +477,9 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 }
                 self.debugLog("[V3_AUTH] attempt_failed")
                 await handler.handleSignInResult(.failure(error))
+                // A failed experimental attempt needs a new on-device consent session.
+                // Keep the existing local credential/2FA retry loop unchanged.
+                if self.windowsAnisetteContext != nil { throw error }
                 // A local commit failure must reconcile, never replay Apple login.
                 if let local = error as? V3AccountOperationError, local.credentialCommit { throw local }
                 if v3ClassifyAuthError(error)?.rawValue == "anisetteIdentityStateInvalid" { throw error }

@@ -66,6 +66,14 @@ public class Keychain
     }
 
     
+    // PR1835 uses one atomic, provider-specific Keychain record. No legacy fallback.
+    func windowsAnisetteRecord(key: String) throws -> Data? {
+        try LCEmbeddedSharedKeychain.windowsAnisetteRecord(key: key, client: self.keychain)
+    }
+    func commitWindowsAnisetteRecord(_ data: Data, key: String, replacing previous: Data?) throws {
+        try LCEmbeddedSharedKeychain.commitWindowsAnisetteRecord(data, key: key, replacing: previous, client: self.keychain)
+    }
+
     fileprivate let keychain = LCEmbeddedSharedKeychain.makeClient()
     
     @KeychainItem(key: "appleIDEmailAddress")
@@ -875,6 +883,27 @@ fileprivate enum LCEmbeddedSharedKeychain {
     // The resolver and both providers consume this one locked epoch, never
     // separate getters around an await. Only a genuinely absent pair may get
     // its first identity; malformed or orphaned stored bytes fail unchanged.
+    private static func validWindowsAnisetteKey(_ key: String) -> Bool {
+        let prefix = "windowsAnisettePR1835_"
+        let suffix = key.dropFirst(prefix.count)
+        return key.hasPrefix(prefix) && suffix.count == 64 && suffix.allSatisfy { "0123456789abcdef".contains($0) }
+    }
+
+    static func windowsAnisetteRecord(key: String, client: KeychainAccess.Keychain) throws -> Data? {
+        guard installedGroup != nil, validWindowsAnisetteKey(key) else { throw WindowsAnisetteError.invalidState }
+        return try withSharedTransaction { try client.getData(key) }
+    }
+
+    static func commitWindowsAnisetteRecord(_ data: Data, key: String, replacing previous: Data?, client: KeychainAccess.Keychain) throws {
+        guard installedGroup != nil, validWindowsAnisetteKey(key) else { throw WindowsAnisetteError.invalidState }
+        try withSharedTransaction {
+            guard try client.getData(key) == previous else { throw WindowsAnisetteError.stateChanged }
+            // One encoded record binds endpoint, client-info/UA, identity and opaque blob.
+            if data != previous { try writeOne(key, data: data, client: client) }
+            guard try client.getData(key) == data else { throw WindowsAnisetteError.stateChanged }
+        }
+    }
+
     static func resolveAnisetteSnapshot(_ client: KeychainAccess.Keychain) throws -> LCEmbeddedAnisetteSnapshot {
         guard installedGroup != nil else { throw NSError(domain: "com.SideStore.Keychain", code: -34018) }
         return try withSharedTransaction {

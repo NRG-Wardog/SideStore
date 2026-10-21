@@ -615,13 +615,14 @@ enum V3WireContract {
             let baseKeys: Set<String> = ["session", "sessionDeadline"]
             // A control flag, not an authentication secret. Keep its name out
             // of the raw-secret vocabulary; do not exempt it from that sweep.
-            let allowedKeys = operation == "authBegin" ? baseKeys.union(["provisioningLogin", "finishPendingCertificateActivation"]) : baseKeys
+            let allowedKeys = operation == "authBegin" ? baseKeys.union(["provisioningLogin", "finishPendingCertificateActivation", "windowsAnisetteEndpoint", "windowsAnisetteConsentAttemptID"]) : baseKeys
             guard baseKeys.isSubset(of: Set(payload.keys)), Set(payload.keys).isSubset(of: allowedKeys),
                   payload["provisioningLogin"] == nil || strictBool(payload["provisioningLogin"]) != nil,
                   payload["finishPendingCertificateActivation"] == nil || strictBool(payload["finishPendingCertificateActivation"]) != nil,
                   strictBool(payload["finishPendingCertificateActivation"]) != true || strictBool(payload["provisioningLogin"]) == true,
                   let session = payload["session"] as? String,
                   canonicalSecretToken(session), session == target,
+                  acceptsWindowsAnisetteConsent(payload, sessionID: session),
                   let sessionDeadline = payload["sessionDeadline"] as? Date,
                   sessionDeadline > now,
                   sessionDeadline.timeIntervalSince(now) <= authSessionLifetime + 10 else { return false }
@@ -706,6 +707,23 @@ enum V3WireContract {
     private static func canonicalSecretToken(_ value: Any?) -> Bool {
         guard let token = value as? String, let uuid = UUID(uuidString: token) else { return false }
         return uuid.uuidString == token
+    }
+
+    // PR1835_WINDOWS_CONSENT_WIRE_V1: only a deliberately selected origin and
+    // this exact new authBegin session may carry the experimental route. Neither
+    // field is a secret or an enduring credential; never exempt either from the
+    // normal secret sweep or allow them on authRetryProvisioning/background work.
+    static func acceptsWindowsAnisetteConsent(_ payload: [String: Any], sessionID: String) -> Bool {
+        if payload["windowsAnisetteEndpoint"] == nil && payload["windowsAnisetteConsentAttemptID"] == nil {
+            return true
+        }
+        guard let endpoint = payload["windowsAnisetteEndpoint"] as? String,
+              ["https://ani.jkcoxson.com", "https://ani2.stikstore.app"].contains(endpoint),
+              let consent = payload["windowsAnisetteConsentAttemptID"] as? String,
+              canonicalSecretToken(consent), consent == sessionID,
+              strictBool(payload["provisioningLogin"]) != true,
+              strictBool(payload["finishPendingCertificateActivation"]) != true else { return false }
+        return true
     }
 
     private static func canonicalLowercaseFileToken(_ token: String) -> Bool {
@@ -6256,6 +6274,8 @@ enum V3AuthFailureDiagnosticsPolicy {
         let accountDetails = " source_step=\(step) typed_error=\(fields["typed_error"] ?? "unknown") server_code=\(fields["server_code"] ?? "unknown") http_status=\(fields["http_status"] ?? "unavailable")"
         let authResponseDetails = (fields["auth_response_shape"].map { " auth_response_shape=\($0)" } ?? "") +
             (fields["auth_response_mime"].map { " auth_response_mime=\($0)" } ?? "")
+        let windowsDetails = (fields["windows_provider"].map { " windows_provider=\($0)" } ?? "") +
+            (fields["windows_reason"].map { " windows_reason=\($0)" } ?? "")
         let nativeDetails = fields["typed_error"] == "anisetteKitADIError"
             ? " native_code=\(fields["native_code"] ?? "unknown") native_phase=\(fields["native_phase"] ?? "unknown") native_subcode=\(fields["native_subcode"] ?? "unknown")" : ""
         let initializerDetails = ["native_init_kind", "native_init_reason", "native_init_engine",
@@ -6268,7 +6288,7 @@ enum V3AuthFailureDiagnosticsPolicy {
         let probeDetails = fields["probe_native_code"].map {
             " probe_native_code=\($0) probe_native_phase=\(fields["probe_native_phase"] ?? "unknown") probe_native_subcode=\(fields["probe_native_subcode"] ?? "unknown")"
         } ?? ""
-        return "diagnostic_code=\(diagnosticCode(for: failure)) builder_commit=\(V3DiagnosticBuild.commit) kind=\(kind) stage=\(stage) code=\(code) correlation=\(correlation) underlying=\(underlyingDomain)/\(codeText) retryable=\(retryableText)" + accountDetails + authResponseDetails + nativeDetails + initializerDetails + attemptDetails + probeDetails +
+        return "diagnostic_code=\(diagnosticCode(for: failure)) builder_commit=\(V3DiagnosticBuild.commit) kind=\(kind) stage=\(stage) code=\(code) correlation=\(correlation) underlying=\(underlyingDomain)/\(codeText) retryable=\(retryableText)" + accountDetails + authResponseDetails + windowsDetails + nativeDetails + initializerDetails + attemptDetails + probeDetails +
             (fields[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3TemporaryAnisetteTrace.contextKey].flatMap(V3TemporaryAnisetteTrace.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") +
@@ -10123,6 +10143,11 @@ final class V3SideStoreService: NSObject {
                   let session = payload["session"] as? String, session == target else {
                 throw ServiceError.invalidRequest
             }
+            guard V3WireContract.acceptsWindowsAnisetteConsent(payload, sessionID: session) else {
+                throw ServiceError.invalidRequest
+            }
+            let windowsEndpoint = payload["windowsAnisetteEndpoint"] as? String
+            let windowsConsent = (payload["windowsAnisetteConsentAttemptID"] as? String).flatMap(UUID.init(uuidString:))
             guard !V3HeadlessRuntime.shared.auth.hasActiveSession else { throw ServiceError.busy }
             let reauthenticate = V3WireContract.strictBool(payload["provisioningLogin"]) == true
             let finishPending = V3WireContract.strictBool(payload["finishPendingCertificateActivation"]) == true
@@ -10133,7 +10158,9 @@ final class V3SideStoreService: NSObject {
             return await V3HeadlessRuntime.shared.auth.begin(deadline: deadline,
                 mode: reauthenticate ? .reauthenticateProvisioning : .interactive,
                 requestDeadline: request["deadline"] as? Date, sessionID: session,
-                finishPendingCertificateActivation: finishPending)
+                finishPendingCertificateActivation: finishPending,
+                windowsAnisetteEndpoint: windowsEndpoint,
+                windowsAnisetteConsentAttemptID: windowsConsent)
         case "authRetryProvisioning":
             guard !V3HeadlessRuntime.shared.auth.provisioningRecoveryRequiresReconciliation else {
                 throw ServiceError.busy
@@ -11194,6 +11221,8 @@ func v3AccountOperationFailure(_ error: Error, step: CombinedFailure.SourceStep)
     var acquisitionFailure: V3AccountOperationError.AcquisitionFailure?
     var authResponseShape: V3AccountOperationError.AuthResponseShape?
     var authResponseMIME: V3AccountOperationError.AuthResponseMIME?
+    var windowsAnisetteProvider: String?
+    var windowsAnisetteReason: String?
     if error is LCAnisettePairError { kind = .anisetteIdentityStateInvalid }
     else if error is V3AccountDatabaseOutcomeUnknownError { kind = .persistenceOutcomeUnknown }
     else if let server = error as? ServerError {
@@ -11210,6 +11239,18 @@ func v3AccountOperationFailure(_ error: Error, step: CombinedFailure.SourceStep)
         case .missingKey: kind = .sideSignMissingKey
         }
     } else if error is DeveloperPortalError { kind = .sideSignDeveloperPortalError }
+    else if let windows = error as? WindowsAnisetteError {
+        kind = .anisetteFailure
+        windowsAnisetteReason = windows.reasonCode
+        if let status = windows.httpStatusCode, (100...599).contains(status) { httpStatus = status }
+        // Called inside the operation's TaskLocal scope. The owned failure
+        // carries these labels after that scope exits; no later lookup is used.
+        switch WindowsAnisetteAuthentication.current?.endpoint {
+        case .some(.jkcoxson): windowsAnisetteProvider = "jkcoxson"
+        case .some(.stikstore): windowsAnisetteProvider = "stikstore"
+        case .none: windowsAnisetteProvider = "unselected"
+        }
+    }
     else if let anisette = error as? SideSign.AnisetteError {
         kind = .anisetteFailure
         switch anisette {
@@ -11279,7 +11320,7 @@ func v3AccountOperationFailure(_ error: Error, step: CombinedFailure.SourceStep)
         }
     }
     return V3AccountOperationError(step: kind == .anisetteIdentityStateInvalid ? .anisetteFetch : step,
-        kind: kind, underlying: error, serverCode: serverCode, httpStatus: httpStatus, nativeEvidence: nativeEvidence, anisetteAttempt: anisetteAttempt, acquisitionFailure: acquisitionFailure, authResponseShape: authResponseShape, authResponseMIME: authResponseMIME)
+        kind: kind, underlying: error, serverCode: serverCode, httpStatus: httpStatus, nativeEvidence: nativeEvidence, anisetteAttempt: anisetteAttempt, acquisitionFailure: acquisitionFailure, authResponseShape: authResponseShape, authResponseMIME: authResponseMIME, windowsAnisetteProvider: windowsAnisetteProvider, windowsAnisetteReason: windowsAnisetteReason)
 }
 
 // Both terminal routes (including cached/provisioning-resume paths that never
@@ -11329,7 +11370,7 @@ func v3ClassifyAuthError(_ error: Error) -> V3AuthFailureKind? {
     // DeveloperPortalError exists (for example, when no servers are configured
     // or every provider fails). Preserve that typed infrastructure category and
     // never forward its associated response/path text.
-    if error is SideSign.AnisetteError || error is AnisetteKit.AnisetteError { return .anisette }
+    if error is SideSign.AnisetteError || error is AnisetteKit.AnisetteError || error is WindowsAnisetteError { return .anisette }
     if let server = error as? ServerError {
         switch server {
         // These response-shape cases have unsafe associated text/payload and
@@ -11626,6 +11667,8 @@ final class V3AuthCenter {
         var reauthenticationAppleID: String?
         var reauthenticationIdentityStamp: String?
         var finishPendingCertificateActivation = false
+        var windowsAnisetteEndpoint: String?
+        var windowsAnisetteConsentAttemptID: UUID?
     }
 
     // Privacy-safe record of a finished-but-incomplete provisioning attempt, so
@@ -11718,6 +11761,9 @@ final class V3AuthCenter {
     var sessions: [String: Session] = [:]
     private var activeID: String?
     private var cancelledBeforeBegin = V3AuthStartCancellationRegistry()
+    // Process-local consumed IDs, not a persisted permission. Do not evict and
+    // accidentally re-enable a finished/cancelled consent in this service run.
+    private var consumedWindowsAnisetteConsentIDs: Set<UUID> = []
 
     var hasActiveSession: Bool {
         guard let activeID, let session = sessions[activeID] else { return false }
@@ -11737,12 +11783,25 @@ final class V3AuthCenter {
     func begin(deadline: Date, mode: BeginMode = .interactive,
                requestDeadline: Date? = nil,
                sessionID requestedID: String? = nil,
-               finishPendingCertificateActivation: Bool = false) async -> [String: Any] {
+               finishPendingCertificateActivation: Bool = false,
+               windowsAnisetteEndpoint: String? = nil,
+               windowsAnisetteConsentAttemptID: UUID? = nil) async -> [String: Any] {
         cleanupSessions()
         let id = requestedID ?? UUID().uuidString
         guard let parsedID = UUID(uuidString: id), parsedID.uuidString == id else {
             return ["session": id, "state": "failed", "authenticated": false,
                     "message": "The sign-in attempt identifier is invalid."]
+        }
+        if windowsAnisetteEndpoint != nil || windowsAnisetteConsentAttemptID != nil {
+            guard mode == .interactive,
+                  let endpoint = windowsAnisetteEndpoint,
+                  ["https://ani.jkcoxson.com", "https://ani2.stikstore.app"].contains(endpoint),
+                  let consent = windowsAnisetteConsentAttemptID, consent == parsedID,
+                  sessions[id] == nil, consumedWindowsAnisetteConsentIDs.count < 1024,
+                  consumedWindowsAnisetteConsentIDs.insert(consent).inserted else {
+                return ["session": id, "state": "failed", "authenticated": false,
+                        "message": "Remote anisette permission is invalid or was already used. Start a new sign-in and confirm the provider again."]
+            }
         }
         if cancelledBeforeBegin.consume(id) {
             var session = Session(deadline: deadline)
@@ -11787,6 +11846,8 @@ final class V3AuthCenter {
         let previousID = activeID
         var newSession = Session(deadline: deadline)
         newSession.mode = mode
+        newSession.windowsAnisetteEndpoint = windowsAnisetteEndpoint
+        newSession.windowsAnisetteConsentAttemptID = windowsAnisetteConsentAttemptID
         newSession.finishPendingCertificateActivation = mode == .reauthenticateProvisioning && finishPendingCertificateActivation
         if let activeAppleID = DatabaseManager.shared.activeAccount()?.appleID {
             newSession.accountAppleIDAtStart = activeAppleID
@@ -11842,6 +11903,8 @@ final class V3AuthCenter {
 
     private func runLoginPipeline(id: String) async {
         defer {
+            sessions[id]?.windowsAnisetteEndpoint = nil
+            sessions[id]?.windowsAnisetteConsentAttemptID = nil
             sessions[id]?.task = nil
             sessions[id]?.watchdog?.cancel()
             sessions[id]?.watchdog = nil
@@ -11850,6 +11913,10 @@ final class V3AuthCenter {
         }
         var finalization: LoginDiagnosticSpan?
         do {
+            try Task.checkCancellation()
+            guard ownsActiveSession(id), sessions[id]?.cancellationRequested == false else {
+                throw CancellationError()
+            }
             let background = DatabaseManager.shared.persistentContainer.newBackgroundContext()
             let context = StandaloneOperationContext(steps: .signIn, dbBackgroundContext: background)
             let handler = V3HeadlessAuthHandler(sessionID: id)
@@ -11860,7 +11927,9 @@ final class V3AuthCenter {
                 v3FinishPendingCertificateActivation: sessions[id]?.finishPendingCertificateActivation == true,
                 v3RequireInteractiveCredentials: sessions[id]?.mode == .interactive,
                 v3ReauthenticateAppleID: sessions[id]?.reauthenticationAppleID,
-                v3ReauthenticationIdentityStamp: sessions[id]?.reauthenticationIdentityStamp)
+                v3ReauthenticationIdentityStamp: sessions[id]?.reauthenticationIdentityStamp,
+                windowsAnisetteEndpoint: sessions[id]?.windowsAnisetteEndpoint,
+                windowsAnisetteConsentAttemptID: sessions[id]?.windowsAnisetteConsentAttemptID)
             let result = try await operation.execute()
             finalization = LoginDiagnosticTrace.current?.begin(.accountFinalize)
             let account = result.team.account ?? ALTAccount(appleID: "", identifier: result.team.identifier)
@@ -12083,6 +12152,8 @@ final class V3AuthCenter {
         let resumable = authenticated && tokenBackedRoute && session.rejectedPortalSessionFailure == nil &&
             authenticatedAppleID.map { resumableProvisioning?.appleID == $0 } == true
         session.cancellationRequested = true
+        session.windowsAnisetteEndpoint = nil
+        session.windowsAnisetteConsentAttemptID = nil
         session.task?.cancel()
         session.watchdog?.cancel()
         session.prompt = nil
@@ -12115,6 +12186,8 @@ final class V3AuthCenter {
         guard var session = sessions[id] else { return false }
         if !session.terminal.isEmpty { return true }
         session.cancellationRequested = true
+        session.windowsAnisetteEndpoint = nil
+        session.windowsAnisetteConsentAttemptID = nil
         session.task?.cancel()
         session.watchdog?.cancel()
         session.prompt = nil
@@ -12156,6 +12229,8 @@ final class V3AuthCenter {
             }
         }
         guard session.terminal.setIfEmpty(response) else { return false }
+        session.windowsAnisetteEndpoint = nil
+        session.windowsAnisetteConsentAttemptID = nil
         session.revision += 1
         session.terminalAt = Date()
         sessions[id] = session
@@ -14780,6 +14855,15 @@ public struct CombinedFailure: Error, LocalizedError {
             case "auth_response_shape":
                 guard fields["typed_error"] == "sideSignInvalidResponse",
                       V3AccountOperationError.AuthResponseShape(rawValue: text) != nil else { return nil }
+            case "windows_provider":
+                guard fields["typed_error"] == "anisetteFailure",
+                      fields["windows_reason"] != nil,
+                      ["jkcoxson", "stikstore", "unselected"].contains(text) else { return nil }
+            case "windows_reason":
+                guard fields["typed_error"] == "anisetteFailure",
+                      fields["windows_provider"] != nil,
+                      ["consentRequired", "invalidProvider", "invalidState", "stateChanged",
+                       "invalidResponse", "resyncUnavailable", "httpStatus"].contains(text) else { return nil }
             case "http_status":
                 guard text == "unavailable" || Int(text).map({ (100...599).contains($0) && String($0) == text }) == true else { return nil }
             case "provider_code":
@@ -16441,6 +16525,10 @@ struct V3AccountOperationError: Error, LocalizedError {
     var acquisitionFailure: AcquisitionFailure? = nil
     var authResponseShape: AuthResponseShape? = nil
     var authResponseMIME: AuthResponseMIME? = nil
+    // Captured while the explicitly approved Windows attempt is still in scope.
+    // Finite enum labels only: never a URL, provider body, identity or profile.
+    var windowsAnisetteProvider: String? = nil
+    var windowsAnisetteReason: String? = nil
 
     var errorDescription: String? { "An account operation failed; review the safe diagnostics." }
     var credentialCommit: Bool { step == .credentialCommit && kind != .anisetteIdentityStateInvalid }
@@ -16473,6 +16561,10 @@ struct V3AccountOperationError: Error, LocalizedError {
         // HTTP status remains unavailable unless a typed producer observes it.
         var signingContext = ["typed_error": acquisitionFailure?.rawValue ?? kind.rawValue,
             "server_code": serverCode.map(String.init) ?? "unknown", "http_status": httpStatus.map(String.init) ?? "unavailable"]
+        if kind == .anisetteFailure, let windowsAnisetteProvider, let windowsAnisetteReason {
+            signingContext["windows_provider"] = windowsAnisetteProvider
+            signingContext["windows_reason"] = windowsAnisetteReason
+        }
         if kind == .sideSignInvalidResponse, let authResponseMIME {
             signingContext["auth_response_mime"] = authResponseMIME.rawValue
         }
