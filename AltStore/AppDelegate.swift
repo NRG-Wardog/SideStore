@@ -10489,7 +10489,7 @@ final class V3SideStoreService: NSObject {
                   let password = answer["password"], !password.isEmpty else { throw ServiceError.invalidRequest }
             AuthManager.shared.v3BeginIdentityTransition()
             defer { AuthManager.shared.v3CompleteIdentityTransition() }
-            return try V3BackendCommands.accountImport(token: target, password: password)
+            return try await V3BackendCommands.accountImport(token: target, password: password)
         default: throw ServiceError.invalidRequest
         }
     }
@@ -13943,11 +13943,10 @@ enum V3BackendCommands {
     static func settingsGet() -> [String: Any] {
         var bools: [String: Bool] = [:]
         for key in boolSettings { bools[key] = UserDefaults.standard.bool(forKey: key) }
-        // These upstream preferences have computed defaults (including the
-        // active team's extension policy), not registered raw bool defaults.
-        // Project their effective values rather than showing false for an
-        // unset key while the install pipeline observes true.
-        bools["customizeAppExtensions"] = UserDefaults.standard.customizeAppExtensions
+        // The host toggle means "ask about extensions", not an upstream enum raw value.
+        // Reads preserve all existing automatic policies and never rewrite preferences.
+        // Other computed defaults are projected rather than raw unset Bool values.
+        bools["customizeAppExtensions"] = UserDefaults.standard.customizeAppExtensions == .promptUser
         bools["autoFixAppGroupIDs"] = UserDefaults.standard.autoFixAppGroupIDs
         bools["widgetVerboseLogging"] = WidgetDataManager.shared.isVerboseLoggingEnabled
         var strings: [String: String] = [:]
@@ -13961,7 +13960,12 @@ enum V3BackendCommands {
         guard let key = payload["key"] as? String else { throw V3SideStoreServiceError.invalidRequest }
         if boolSettings.contains(key) {
             guard let value = V3WireContract.strictBool(payload["bool"]) else { throw V3SideStoreServiceError.invalidRequest }
-            UserDefaults.standard.set(value, forKey: key)
+            if key == "customizeAppExtensions" {
+                // Explicit host choice only: do not recreate the old automatic excess-removal policy.
+                UserDefaults.standard.customizeAppExtensions = value ? .promptUser : .keepAll
+            } else {
+                UserDefaults.standard.set(value, forKey: key)
+            }
         } else if key == "widgetVerboseLogging" {
             guard let value = V3WireContract.strictBool(payload["bool"]) else { throw V3SideStoreServiceError.invalidRequest }
             WidgetDataManager.shared.isVerboseLoggingEnabled = value
@@ -14143,9 +14147,9 @@ enum V3BackendCommands {
         return data.base64EncodedString()
     }
 
-    static func accountImport(token: String, password: String) throws -> [String: Any] {
+    static func accountImport(token: String, password: String) async throws -> [String: Any] {
         let data = try consumeSharedFile(token: token, purpose: "accountImport")
-        let account = try ImportExport.importAccount(data, filePassword: password)
+        let account = try await ImportExport.importAccount(data, filePassword: password)
         return ["email": account.email]
     }
 }

@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import CoreFoundation
 import Minimuxer
 import MinimuxerCommon
 
@@ -231,8 +232,16 @@ public extension UserDefaults
     
     var customizeAppExtensions: AppExtensionCustomization {
         get {
-            let option = _customizeAppExtensions.flatMap { AppExtensionCustomization(rawValue: $0) } ?? .promptUser
-            return option
+            if let option = _customizeAppExtensions.flatMap({ AppExtensionCustomization(rawValue: $0) }) {
+                return option
+            }
+            // V3_LEGACY_EXTENSION_PREFERENCE_READ_V1: preserve old toggle intent without rewriting storage.
+            // The latest enum has no "remove excess" option; legacy off safely means keep all.
+            if let legacy = self.object(forKey: "customizeAppExtensions") as? NSNumber,
+               CFGetTypeID(legacy) == CFBooleanGetTypeID() {
+                return legacy.boolValue ? .promptUser : .keepAll
+            }
+            return .promptUser
         }
         set {
             _customizeAppExtensions = newValue.rawValue

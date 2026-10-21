@@ -49,7 +49,20 @@ final class PipelineRunner: Sendable
                                 dbContext: NSManagedObjectContext,
                                 completionHandler: @escaping (Result<InstalledApp, Error>) -> Void) -> RefreshGroup
     {
-        let group = RefreshGroup(dbContext: dbContext)
+        // Retain the upstream database-only entry point and its fresh context.
+        let context = StandaloneOperationContext(steps: [], dbBackgroundContext: dbContext)
+        return self.performSingleOperation(operation, handler: handler, context: context,
+                                           completionHandler: completionHandler)
+    }
+
+    // V3_PIPELINE_CONTEXT_BRIDGE_V1: host operations retain their shared progress/error context.
+    @discardableResult
+    func performSingleOperation(_ operation: AppOperation,
+                                handler: PipelineExecutionHandler,
+                                context: StandaloneOperationContext,
+                                completionHandler: @escaping (Result<InstalledApp, Error>) -> Void) -> RefreshGroup
+    {
+        let group = RefreshGroup(context: context)
         group.completionHandler = { (results) in
             do
             {
