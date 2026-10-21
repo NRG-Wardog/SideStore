@@ -6243,6 +6243,8 @@ enum V3AuthFailureDiagnosticsPolicy {
         let step = (failure["sourceStep"] as? String).flatMap(CombinedFailure.SourceStep.init(rawValue:))?.rawValue ?? "unknown"
         let fields = (failure["signingContext"] as? [String: String]).flatMap(CombinedFailure.validatedSigningContext) ?? [:]
         let accountDetails = " source_step=\(step) typed_error=\(fields["typed_error"] ?? "unknown") server_code=\(fields["server_code"] ?? "unknown") http_status=\(fields["http_status"] ?? "unavailable")"
+        let authResponseDetails = (fields["auth_response_shape"].map { " auth_response_shape=\($0)" } ?? "") +
+            (fields["auth_response_mime"].map { " auth_response_mime=\($0)" } ?? "")
         let nativeDetails = fields["typed_error"] == "anisetteKitADIError"
             ? " native_code=\(fields["native_code"] ?? "unknown") native_phase=\(fields["native_phase"] ?? "unknown") native_subcode=\(fields["native_subcode"] ?? "unknown")" : ""
         let initializerDetails = ["native_init_kind", "native_init_reason", "native_init_engine",
@@ -6255,7 +6257,7 @@ enum V3AuthFailureDiagnosticsPolicy {
         let probeDetails = fields["probe_native_code"].map {
             " probe_native_code=\($0) probe_native_phase=\(fields["probe_native_phase"] ?? "unknown") probe_native_subcode=\(fields["probe_native_subcode"] ?? "unknown")"
         } ?? ""
-        return "diagnostic_code=\(diagnosticCode(for: failure)) builder_commit=\(V3DiagnosticBuild.commit) kind=\(kind) stage=\(stage) code=\(code) correlation=\(correlation) underlying=\(underlyingDomain)/\(codeText) retryable=\(retryableText)" + accountDetails + nativeDetails + initializerDetails + attemptDetails + probeDetails +
+        return "diagnostic_code=\(diagnosticCode(for: failure)) builder_commit=\(V3DiagnosticBuild.commit) kind=\(kind) stage=\(stage) code=\(code) correlation=\(correlation) underlying=\(underlyingDomain)/\(codeText) retryable=\(retryableText)" + accountDetails + authResponseDetails + nativeDetails + initializerDetails + attemptDetails + probeDetails +
             (fields[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3TemporaryAnisetteTrace.contextKey].flatMap(V3TemporaryAnisetteTrace.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") +
@@ -11179,13 +11181,21 @@ func v3AccountOperationFailure(_ error: Error, step: CombinedFailure.SourceStep)
     var serverCode: Int?
     var nativeEvidence: V3AnisetteNativeEvidence?
     var acquisitionFailure: V3AccountOperationError.AcquisitionFailure?
+    var authResponseShape: V3AccountOperationError.AuthResponseShape?
+    var authResponseMIME: V3AccountOperationError.AuthResponseMIME?
     if error is LCAnisettePairError { kind = .anisetteIdentityStateInvalid }
     else if error is V3AccountDatabaseOutcomeUnknownError { kind = .persistenceOutcomeUnknown }
     else if let server = error as? ServerError {
         switch server {
         case .underlyingError(let code, _): kind = .sideSignServerReportedError; serverCode = code
         case .badServerResponse: kind = .sideSignBadResponse
-        case .invalidResponseFormat: kind = .sideSignInvalidResponse
+        case .invalidResponseFormat(_, let context):
+            kind = .sideSignInvalidResponse
+            if let context {
+                if let observedStatus = context.httpStatus { httpStatus = observedStatus }
+                authResponseShape = V3AccountOperationError.AuthResponseShape(rawValue: context.shape.rawValue)
+                authResponseMIME = V3AccountOperationError.AuthResponseMIME(rawValue: context.mime.rawValue)
+            }
         case .missingKey: kind = .sideSignMissingKey
         }
     } else if error is DeveloperPortalError { kind = .sideSignDeveloperPortalError }
@@ -11258,7 +11268,7 @@ func v3AccountOperationFailure(_ error: Error, step: CombinedFailure.SourceStep)
         }
     }
     return V3AccountOperationError(step: kind == .anisetteIdentityStateInvalid ? .anisetteFetch : step,
-        kind: kind, underlying: error, serverCode: serverCode, httpStatus: httpStatus, nativeEvidence: nativeEvidence, anisetteAttempt: anisetteAttempt, acquisitionFailure: acquisitionFailure)
+        kind: kind, underlying: error, serverCode: serverCode, httpStatus: httpStatus, nativeEvidence: nativeEvidence, anisetteAttempt: anisetteAttempt, acquisitionFailure: acquisitionFailure, authResponseShape: authResponseShape, authResponseMIME: authResponseMIME)
 }
 
 // Both terminal routes (including cached/provisioning-resume paths that never
@@ -14749,6 +14759,12 @@ public struct CombinedFailure: Error, LocalizedError {
                 break // Validate the entire tuple and its native provenance below.
             case "native_phase", "probe_native_phase":
                 guard V3AnisetteNativeEvidence.Phase(rawValue: text) != nil else { return nil }
+            case "auth_response_mime":
+                guard fields["typed_error"] == "sideSignInvalidResponse",
+                      V3AccountOperationError.AuthResponseMIME(rawValue: text) != nil else { return nil }
+            case "auth_response_shape":
+                guard fields["typed_error"] == "sideSignInvalidResponse",
+                      V3AccountOperationError.AuthResponseShape(rawValue: text) != nil else { return nil }
             case "http_status":
                 guard text == "unavailable" || Int(text).map({ (100...599).contains($0) && String($0) == text }) == true else { return nil }
             case "provider_code":
@@ -16384,6 +16400,12 @@ struct V3AccountOperationError: Error, LocalizedError {
         case providerNotReady = "anisetteAcquisitionProviderNotReady"
         case downloadFailed = "anisetteAcquisitionDownloadFailed"
     }
+    enum AuthResponseMIME: String { case html, xmlOrPlist, json, other, unavailable }
+    enum AuthResponseShape: String {
+        case plistDictionary, plistArray, plistScalar
+        case jsonDictionary, jsonArray, jsonScalar
+        case unrecognized
+    }
     enum Kind: String {
         case keychainWrite, keychainValidationFailed, keychainOutcomeUnknown
         case legacyMigrationConflict, persistenceFailure, persistenceOutcomeUnknown, transportFailure
@@ -16402,6 +16424,8 @@ struct V3AccountOperationError: Error, LocalizedError {
     var nativeEvidence: V3AnisetteNativeEvidence? = nil
     var anisetteAttempt: V3AnisetteAttemptContext? = nil
     var acquisitionFailure: AcquisitionFailure? = nil
+    var authResponseShape: AuthResponseShape? = nil
+    var authResponseMIME: AuthResponseMIME? = nil
 
     var errorDescription: String? { "An account operation failed; review the safe diagnostics." }
     var credentialCommit: Bool { step == .credentialCommit && kind != .anisetteIdentityStateInvalid }
@@ -16434,6 +16458,12 @@ struct V3AccountOperationError: Error, LocalizedError {
         // HTTP status remains unavailable unless a typed producer observes it.
         var signingContext = ["typed_error": acquisitionFailure?.rawValue ?? kind.rawValue,
             "server_code": serverCode.map(String.init) ?? "unknown", "http_status": httpStatus.map(String.init) ?? "unavailable"]
+        if kind == .sideSignInvalidResponse, let authResponseMIME {
+            signingContext["auth_response_mime"] = authResponseMIME.rawValue
+        }
+        if kind == .sideSignInvalidResponse, let authResponseShape {
+            signingContext["auth_response_shape"] = authResponseShape.rawValue
+        }
         if kind == .anisetteKitADIError, let nativeEvidence {
             signingContext["native_code"] = String(nativeEvidence.code)
             signingContext["native_phase"] = nativeEvidence.phase.rawValue
