@@ -128,8 +128,8 @@ public actor AnisetteConfigManager {
         }
     }
     
-    // Android ADI requires an Android client profile. Never migrate persisted overrides.
-    // Keep remote-provider defaults and all other headers unchanged.
+    // Experimental on-device default based on compatibility reports, not a required ADI/profile match.
+    // Never migrate persisted overrides; keep remote-provider defaults and all other headers unchanged.
     public nonisolated static func defaultClientInfo(forOnDeviceAndroid: Bool) -> String {
         forOnDeviceAndroid
             ? "<Pixel 7> <Android;14;UQ1A.240205.002> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
