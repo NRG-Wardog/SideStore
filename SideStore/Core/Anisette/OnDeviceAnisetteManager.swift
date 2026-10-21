@@ -71,7 +71,12 @@ public actor OnDeviceAnisetteManager {
         let sourceURL = URL(string: sourceURLString) ?? AppConstants.Anisette.defaultODAMetadataURL
         let fallbackURL = AppConstants.Anisette.defaultODAMetadataURL
 
-        let mode = AnisetteMode.remoteODA(sourceURL: sourceURL, fallbackURL: fallbackURL)
+        // Use the verified vendor source only for the built-in default. An
+        // explicit custom source keeps its original metadata/checksum policy.
+        let usesBuiltInSource = UserDefaults.standard.menuAnisetteList.isEmpty ||
+            UserDefaults.standard.menuAnisetteList == AnisetteServersManager.defaultSource
+        let mode: AnisetteMode = usesBuiltInSource ? .verifiedAppleMusic :
+            .remoteODA(sourceURL: sourceURL, fallbackURL: fallbackURL)
 
         debugStep = .primaryProvider
         debugTrace.record(step: debugStep, outcome: .started)
