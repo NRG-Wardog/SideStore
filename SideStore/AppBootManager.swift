@@ -26,13 +26,13 @@ public final class AppBootManager {
             try await startEMProxy()
         }
 
-        try await minimuxerStart(pairingFile, mountPath: FileManager.default.documentsDirectory.absoluteString)
+        try await minimuxerStart(pairingFile, preferred: PairingFileManager.shared.preferredProtocol)
         
         // Validate the pairing by trying to fetch the UDID
         do {
             debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection starting...")
-            let deviceUDID = try await fetchUDID()
-            debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection test SUCCEEDED. UDID: \(deviceUDID ?? "nil")")
+            _ = try await fetchUDID(forceLive: true)
+            debugLog("[AppBootManager] Live device identity check succeeded; identifier omitted.")
         } catch {
             if case MinimuxerError.invalidPairing = error {
                 debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection test FAILED. \(error)")

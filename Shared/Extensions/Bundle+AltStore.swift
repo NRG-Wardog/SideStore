@@ -7,6 +7,10 @@
 //
 
 import Foundation
+import CodeSignKit
+
+private let appGroupsLock = NSLock()
+private nonisolated(unsafe) var appGroupsCache: [URL: (modDate: Date?, groups: [String])] = [:]
 
 // @livecontainer
 private extension Bundle {
@@ -31,13 +35,8 @@ public extension Bundle
         public static let storeAppBundleIdentifier = Bundle.storeAppBundleIdentifier
         public static let appbundleIdentifier = Bundle.appbundleIdentifier
  
-        public static let deviceID = "ALTDeviceID"
-        public static let serverID = "ALTServerID"
         public static let certificateID = "ALTCertificateID"
-        public static let appGroups = "ALTAppGroups"
-        public static let altBundleID = "ALTBundleIdentifier"
      
-        public static let devicePairingString = "ALTPairingFile"
         public static let urlTypes = "CFBundleURLTypes"
         public static let exportedUTIs = "UTExportedTypeDeclarations"
         public static let backgroundModes = "UIBackgroundModes"
@@ -73,7 +72,28 @@ public extension Bundle
     @objc dynamic static let baseAltStoreAppGroupID = "group." + Bundle.Info.appbundleIdentifier
 
     var appGroups: [String] {
-        return self.infoDictionary?[Bundle.Info.appGroups] as? [String] ?? []
+        guard let execURL = self.executableURL else { return [] }
+
+        let modDate = (try? execURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+
+        return appGroupsLock.withLock {
+            if let entry = appGroupsCache[execURL], entry.modDate == modDate {
+                return entry.groups
+            }
+
+            let groups: [String] = {
+                guard let rawEntitlements = try? MachOParser.entitlements(at: execURL),
+                      let data = rawEntitlements.data(using: .utf8),
+                      let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+                      let appGroups = plist["com.apple.security.application-groups"] as? [String] else {
+                    return []
+                }
+                return appGroups
+            }()
+
+            appGroupsCache[execURL] = (modDate: modDate, groups: groups)
+            return groups
+        }
     }
     
     // @livecontainer
@@ -82,10 +102,6 @@ public extension Bundle
         return appGroup
     }
     
-    var completeInfoDictionary: [String : Any]? {
-        let infoPlistURL = self.infoPlistURL
-        return NSDictionary(contentsOf: infoPlistURL) as? [String : Any]
-    }
 }
 
 public extension String {

@@ -23,7 +23,21 @@ final class UpdateAppCertificateOperation: BasePipelineOperation<InstallAppOpera
         }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         
-        if let installedApp = self.context.installedApp, let serialNumber = installedApp.certificateSerialNumber {
+        let targetBundleID = self.context.installedApp?.bundleIdentifier ?? self.context.targetBundleIdentifier
+        let profileToUse = self.context.overrideProvisioningProfile ?? ProfileManager.shared.getAssignedProfile(for: targetBundleID)
+
+        if let assignedProfile = profileToUse {
+            debugLog("[UpdateAppCertificateOperation] Certificate identity details omitted.")
+            self.context.overrideProvisioningProfile = assignedProfile
+
+            if let matchingCert = ProfileManager.shared.getMatchingCertificate(for: assignedProfile) {
+                debugLog("[UpdateAppCertificateOperation] Certificate identity details omitted.")
+                self.context.overrideSigningCertificate = matchingCert
+            } else if let serialNumber = self.context.installedApp?.certificateSerialNumber,
+                      let customCert = CertificateManager.shared.getSignableCertificate(for: serialNumber) {
+                self.context.overrideSigningCertificate = customCert
+            }
+        } else if let installedApp = self.context.installedApp, let serialNumber = installedApp.certificateSerialNumber {
             debugLog("[UpdateAppCertificateOperation] Certificate identity details omitted.")
             if let customCert = CertificateManager.shared.getSignableCertificate(for: serialNumber) {
                 debugLog("[UpdateAppCertificateOperation] Certificate identity details omitted.")

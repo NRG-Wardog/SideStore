@@ -283,6 +283,7 @@ struct AnisetteDataView: View {
     @State private var showingFileImporter = false
     @State private var showingServerHeaders = false
     @State private var isCopiedServer = false
+    @State private var exportURL: URL? = nil
     
     var body: some View {
         ScrollView {
@@ -622,24 +623,7 @@ struct AnisetteDataView: View {
                         SwiftUI.Button {
                             Task {
                                 if let url = await viewModel.exportJSON() {
-                                    #if !os(tvOS)
-                                    guard let topVC = UIApplication.shared.topViewController() else { return }
-                                    let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-                                    if let popover = activityVC.popoverPresentationController {
-                                        popover.sourceView = topVC.view
-                                        popover.sourceRect = CGRect(x: topVC.view.bounds.midX, y: topVC.view.bounds.midY, width: 0, height: 0)
-                                        popover.permittedArrowDirections = []
-                                    }
-                                    topVC.present(activityVC, animated: true)
-                                    #else
-                                    if let topVC = UIApplication.shared.topViewController() {
-                                        TVWebFileTransferManager.shared.startExport(
-                                            fileURL: url,
-                                            title: "Export Anisette Client Config JSON",
-                                            presentingVC: topVC
-                                        )
-                                    }
-                                    #endif
+                                    exportURL = url
                                 }
                             }
                         } label: {
@@ -722,6 +706,14 @@ struct AnisetteDataView: View {
             }
         }
         #endif
+        .sheet(isPresented: Binding<Bool>(
+            get: { exportURL != nil },
+            set: { if !$0 { exportURL = nil } }
+        )) {
+            if let url = exportURL {
+                ActivityViewController(activityItems: [url])
+            }
+        }
     }
     
     private func sectionHeader(_ title: String) -> some View {

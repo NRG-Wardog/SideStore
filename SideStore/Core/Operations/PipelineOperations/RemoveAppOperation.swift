@@ -27,6 +27,7 @@ final class RemoveAppOperation: BasePipelineOperation<InstallAppOperationContext
         
         await backgroundContext.perform {
             let installedAppInContext = backgroundContext.object(with: installedApp.objectID) as! InstalledApp
+            CacheResignedMetadataOperation.clearCustomizations(for: installedAppInContext)
             backgroundContext.delete(installedAppInContext)
         }
         

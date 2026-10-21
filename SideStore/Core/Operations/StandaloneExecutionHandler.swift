@@ -16,6 +16,8 @@ protocol AnisetteServerHandler: AnyObject {
 enum ProvisioningErrorDecision {
     case retry
     case cancel
+    // Preserve the upstream choice without treating partial headless provisioning as success.
+    case skip
 }
 
 enum RevokeDecision {

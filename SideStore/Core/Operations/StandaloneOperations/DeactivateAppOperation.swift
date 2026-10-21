@@ -60,13 +60,20 @@ final class DeactivateAppOperation: BasePipelineOperation<PipelineOperationConte
         let endProgress: Int64 = 90
         let range = endProgress - startProgress
         
-        for (index, identifier) in allIdentifiers.enumerated() {
-            try await removeProvisioningProfile(identifier)
-            if range > 0 {
-                let percent = startProgress + Int64(Double(index + 1) / Double(count) * Double(range))
-                self.setProgress(percent)
+        do {
+            await CellularRefreshManager.shared.turnOffDataIfNeeded()
+            for (index, identifier) in allIdentifiers.enumerated() {
+                try await removeProvisioningProfile(identifier)
+                if range > 0 {
+                    let percent = startProgress + Int64(Double(index + 1) / Double(count) * Double(range))
+                    self.setProgress(percent)
+                }
+                removedAny = true
             }
-            removedAny = true
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+        } catch {
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            throw error
         }
         guard removedAny else {
             throw OperationError.invalidParameters("DeactivateAppOperation: no profiles found to remove")

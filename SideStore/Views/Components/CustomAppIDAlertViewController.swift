@@ -8,29 +8,102 @@
 
 @preconcurrency import UIKit
 import Foundation
+import SideSign
 
-class AppendTeamIDCheckboxView: UIView {
+class AppendTeamIDCheckboxView: UIView, UITextFieldDelegate {
     let checkboxButton = UIButton(type: .system)
     let label = UILabel()
+    weak var textField: UITextField?
+    var teamID: String = ""
+    
+    var suffix: String {
+        teamID.isEmpty ? "" : ".\(teamID)"
+    }
     
     var isChecked: Bool = true {
         didSet {
             updateButtonImage()
+            updateTextFieldSuffix()
             onToggle?(isChecked)
         }
     }
     
     var onToggle: ((Bool) -> Void)?
     
-    init(isChecked: Bool = true) {
+    init(isChecked: Bool = true, teamID: String = "", textField: UITextField? = nil) {
         self.isChecked = isChecked
+        self.teamID = teamID
+        self.textField = textField
         super.init(frame: .zero)
         setup()
+        if let tf = textField {
+            attach(to: tf, teamID: teamID)
+        }
     }
     
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setup()
+    }
+    
+    func attach(to textField: UITextField, teamID: String) {
+        verboseLog("[AppendTeamIDCheckboxView] attach: teamID='\(teamID)', initial textField.text='\(textField.text ?? "")'")
+        self.textField = textField
+        self.teamID = teamID
+        textField.delegate = self
+        updateTextFieldSuffix()
+        verboseLog("[AppendTeamIDCheckboxView] attach finished: textField.text='\(textField.text ?? "")', suffix='\(suffix)'")
+    }
+
+    private func updateTextFieldSuffix() {
+        guard let tf = textField, !suffix.isEmpty else {
+            verboseLog("[AppendTeamIDCheckboxView] updateTextFieldSuffix skipped: hasTextField=\(textField != nil), suffix='\(suffix)'")
+            return
+        }
+        let current = tf.text ?? ""
+        verboseLog("[AppendTeamIDCheckboxView] updateTextFieldSuffix: isChecked=\(isChecked), current='\(current)', suffix='\(suffix)'")
+        if isChecked {
+            let base = current.hasSuffix(suffix) ? String(current.dropLast(suffix.count)) : current
+            let clean = InfoPlistParser.sanitizeBundleID(base)
+            tf.text = clean + suffix
+        } else {
+            if current.hasSuffix(suffix) {
+                tf.text = String(current.dropLast(suffix.count))
+            }
+        }
+        verboseLog("[AppendTeamIDCheckboxView] updateTextFieldSuffix result: tf.text='\(tf.text ?? "")'")
+    }
+    
+    func cleanBaseID() -> String {
+        guard let text = textField?.text?.trimmingCharacters(in: .whitespacesAndNewlines) else { return "" }
+        let rawBase: String
+        if isChecked && !suffix.isEmpty && text.hasSuffix(suffix) {
+            rawBase = String(text.dropLast(suffix.count))
+        } else {
+            rawBase = text
+        }
+        let clean = InfoPlistParser.sanitizeBundleID(rawBase)
+        verboseLog("[AppendTeamIDCheckboxView] cleanBaseID: text='\(text)', rawBase='\(rawBase)', clean='\(clean)'")
+        return clean
+    }
+
+    func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
+        verboseLog("[AppendTeamIDCheckboxView] shouldChange: range=\(range), string='\(string)', current='\(textField.text ?? "")'")
+        let allowed = SuffixEnforcedTextField.shouldChangeBundleID(
+            in: textField,
+            range: range,
+            replacementString: string,
+            suffix: suffix,
+            isSuffixEnforced: isChecked
+        )
+        verboseLog("[AppendTeamIDCheckboxView] shouldChange allowed=\(allowed), resultingText='\(textField.text ?? "")'")
+        return allowed
+    }
+    
+    func textFieldShouldClear(_ textField: UITextField) -> Bool {
+        guard isChecked && !suffix.isEmpty else { return true }
+        textField.text = suffix
+        return false
     }
     
     private func updateButtonImage() {

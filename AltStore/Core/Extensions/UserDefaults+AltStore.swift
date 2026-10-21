@@ -8,6 +8,7 @@
 
 import Foundation
 import Minimuxer
+import MinimuxerCommon
 
 public extension UserDefaults
 {
@@ -19,12 +20,12 @@ public extension UserDefaults
         get { self.object(forKey: #function) as? Date }
         set { self.set(newValue, forKey: #function) }
     }
-    @objc var acctFileChecksum: String? {
-        get { self.string(forKey: #function) }
+    @objc var hasCompletedOnboarding: Bool {
+        get { self.bool(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
     }
-    @objc var requiresAppGroupMigration: Bool {
-        get { self.bool(forKey: #function) }
+    @objc var acctFileChecksum: String? {
+        get { self.string(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
     }
     @objc var textServer: Bool {
@@ -57,10 +58,6 @@ public extension UserDefaults
     }
     @objc var menuAnisetteServersList: [String] {
         get { self.stringArray(forKey: #function) ?? [] }
-        set { self.set(newValue, forKey: #function) }
-    }
-    @objc var preferredServerID: String? {
-        get { self.string(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
     }
     @objc var customAnisetteClientInfo: String? {
@@ -104,6 +101,23 @@ public extension UserDefaults
         get { self.bool(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
     }
+    @objc var isBackgroundServiceEnabled: Bool {
+        get { self.bool(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    var backgroundServiceMode: BackgroundServiceMode {
+        get {
+            let mode = _backgroundServiceMode.flatMap { BackgroundServiceMode(rawValue: $0) } ?? .audio
+            return mode
+        }
+        set {
+            _backgroundServiceMode = newValue.rawValue
+        }
+    }
+    @objc(backgroundServiceMode) private var _backgroundServiceMode: String? {
+        get { self.string(forKey: "backgroundServiceMode") }
+        set { self.set(newValue, forKey: "backgroundServiceMode") }
+    }
     @objc var enableEMPforWireguard: Bool {
         get { self.bool(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
@@ -114,6 +128,32 @@ public extension UserDefaults
     }
     @objc var remotePairingPortOverride: Int {
         get { self.integer(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var lastDiscoveredRemotePairingPort: Int {
+        get { self.integer(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var isAutoRetryRemotePairingPortEnabled: Bool {
+        get { self.bool(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var isInstallConfirmationEnabled: Bool {
+        get {
+            guard self.object(forKey: #function) != nil else { return true }
+            return self.bool(forKey: #function)
+        }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var isClearCustomizationsOnUninstallEnabled: Bool {
+        get {
+            guard self.object(forKey: #function) != nil else { return true }
+            return self.bool(forKey: #function)
+        }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var isAutoLaunchAppAfterInstallEnabled: Bool {
+        get { self.bool(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
     }
     @objc var deviceProbeTimeoutOverride: Int {
@@ -152,25 +192,66 @@ public extension UserDefaults
         get { self.bool(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
     }
+    @objc var customizeInfoPlist: Bool {
+        get { self.bool(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var preferSheetForInfoPlistCustomization: Bool {
+        get { self.bool(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var customizeEntitlements: Bool {
+        get { self.bool(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var preferSheetForEntitlementsCustomization: Bool {
+        get { self.bool(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
     @objc var customizeAppId: Bool {
         get { self.bool(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
     }
-    var customizeAppExtensions: Bool {
-        get {
-            if self.object(forKey: "customizeAppExtensions") != nil {
-                return self._customizeAppExtensions
-            }
-            if let activeTeam = DatabaseManager.shared.activeTeam(), activeTeam.type != .free {
-                return false
-            }
-            return true
-        }
-        set { self._customizeAppExtensions = newValue }
+    @objc var customizeAppIcon: Bool {
+        get { self.bool(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
     }
-    @objc(customizeAppExtensions) private var _customizeAppExtensions: Bool {
-        get { self.bool(forKey: "customizeAppExtensions") }
+    @objc var customizeProvisioningProfile: Bool {
+        get { self.bool(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var turnOffDataShortcutName: String {
+        get { self.string(forKey: #function) ?? "TurnOffData" }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var turnOnDataShortcutName: String {
+        get { self.string(forKey: #function) ?? "TurnOnData" }
+        set { self.set(newValue, forKey: #function) }
+    }
+    
+    var customizeAppExtensions: AppExtensionCustomization {
+        get {
+            let option = _customizeAppExtensions.flatMap { AppExtensionCustomization(rawValue: $0) } ?? .promptUser
+            return option
+        }
+        set {
+            _customizeAppExtensions = newValue.rawValue
+        }
+    }
+    @objc(customizeAppExtensions) private var _customizeAppExtensions: String? {
+        get { self.string(forKey: "customizeAppExtensions") }
         set { self.set(newValue, forKey: "customizeAppExtensions") }
+    }
+    var appImportSourceMode: AppImportSourceMode {
+        get { _appImportSourceMode.flatMap { AppImportSourceMode(rawValue: $0) } ?? .prompt
+        }
+        set {
+            _appImportSourceMode = newValue.rawValue
+        }
+    }
+    @objc(appImportSourceMode) private var _appImportSourceMode: String? {
+        get { self.string(forKey: "appImportSourceMode") }
+        set { self.set(newValue, forKey: "appImportSourceMode") }
     }
     var autoFixAppGroupIDs: Bool {
         get {
@@ -209,11 +290,49 @@ public extension UserDefaults
         get { self.bool(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
     }
+    @objc var isMinimuxerBackendHotswapEnabled: Bool {
+        get { self.bool(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var pairingFileEditSuppressedSHAs: [String: Bool] {
+        get { (self.dictionary(forKey: #function) as? [String: Bool]) ?? [:] }
+        set { self.set(newValue, forKey: #function) }
+    }
+    func isPairingFileEditSuppressed(forHash sha: String) -> Bool {
+        pairingFileEditSuppressedSHAs[sha] ?? false
+    }
+    func setPairingFileEditSuppressed(_ suppressed: Bool, forHash sha: String) {
+        var map = pairingFileEditSuppressedSHAs
+        map[sha] = suppressed
+        pairingFileEditSuppressedSHAs = map
+    }
+
+    var activePairingProtocol: PairingProtocol? {
+        get { _activePairingProtocol.flatMap { PairingProtocol(rawValue: $0) } }
+        set { _activePairingProtocol = newValue?.rawValue }
+    }
+    @objc(activePairingProtocol) private var _activePairingProtocol: String? {
+        get { self.string(forKey: "activePairingProtocol") }
+        set { self.set(newValue, forKey: "activePairingProtocol") }
+    }
+
+    var preferredPairingProtocol: PairingProtocol? {
+        get { _preferredPairingProtocol.flatMap { PairingProtocol(rawValue: $0) } }
+        set { _preferredPairingProtocol = newValue?.rawValue }
+    }
+    @objc(preferredPairingProtocol) private var _preferredPairingProtocol: String? {
+        get { self.string(forKey: "preferredPairingProtocol") }
+        set { self.set(newValue, forKey: "preferredPairingProtocol") }
+    }
     @objc var keepSigningCertsAfterLogout: Bool {
         get { self.bool(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
     }
     @objc var keepAnisetteDataAfterLogout: Bool {
+        get { self.bool(forKey: #function) }
+        set { self.set(newValue, forKey: #function) }
+    }
+    @objc var isDeviceRegistered: Bool {
         get { self.bool(forKey: #function) }
         set { self.set(newValue, forKey: #function) }
     }
@@ -407,7 +526,6 @@ public extension UserDefaults
             #keyPath(UserDefaults.activeAppLimitIncludesExtensions): activeAppLimitIncludesExtensions,
             
             // still used on ios 15+
-            #keyPath(UserDefaults.requiresAppGroupMigration): true,
             #keyPath(UserDefaults.isAppLimitDisabled): false,
             #keyPath(UserDefaults.isCowExploitSupported): isMacDirtyCowSupported,
             #keyPath(UserDefaults._preferredAppSorting): preferredAppSorting.rawValue,
@@ -419,6 +537,7 @@ public extension UserDefaults
             #keyPath(UserDefaults.keepAnisetteHeadersAfterLogout): true,
             #keyPath(UserDefaults.keepSideSignHeadersAfterLogout): true,
             #keyPath(UserDefaults.isBackgroundRefreshEnabled): true,
+            #keyPath(UserDefaults.isBackgroundServiceEnabled): true,
             #keyPath(UserDefaults.isBetaUpdatesEnabled): false,
             #keyPath(UserDefaults.permissionCheckingDisabled): true,
             #keyPath(UserDefaults.isBundleIDVerificationEnabled): true,
@@ -436,22 +555,39 @@ public extension UserDefaults
             #keyPath(UserDefaults.useOnDeviceAnisette): true,
             #keyPath(UserDefaults.useLocalVPN): true,
             #keyPath(UserDefaults.acceptIPv6ConnectionConfig): false,
+            #keyPath(UserDefaults.isAutoRetryRemotePairingPortEnabled): true,
             #keyPath(UserDefaults.enableEMPforWireguard): false,
             #keyPath(UserDefaults.skipNonCopyableBackupFiles): true,
             
             #keyPath(UserDefaults.responseCachingDisabled): false,
+            #keyPath(UserDefaults.customizeInfoPlist): false,
+            #keyPath(UserDefaults.preferSheetForInfoPlistCustomization): true,
+            #keyPath(UserDefaults.customizeEntitlements): false,
+            #keyPath(UserDefaults.preferSheetForEntitlementsCustomization): true,
             #keyPath(UserDefaults.customizeAppId): false,
+            #keyPath(UserDefaults.customizeAppIcon): false,
+            #keyPath(UserDefaults.customizeProvisioningProfile): false,
+            #keyPath(UserDefaults._customizeAppExtensions): AppExtensionCustomization.promptUser.rawValue,
+            #keyPath(UserDefaults._appImportSourceMode): AppImportSourceMode.prompt.rawValue,
+            #keyPath(UserDefaults.isInstallConfirmationEnabled): true,
+            #keyPath(UserDefaults.isClearCustomizationsOnUninstallEnabled): true,
+            #keyPath(UserDefaults.isAutoLaunchAppAfterInstallEnabled): false,
             #keyPath(UserDefaults.preferResignedIPA): true,
             #keyPath(UserDefaults.isExportResignedAppEnabled): false,
             #keyPath(UserDefaults.isVerboseOperationsLoggingEnabled): false,
             #keyPath(UserDefaults.isSideStoreVerboseLoggingEnabled): false,
             #keyPath(UserDefaults.isAltSignVerboseLoggingEnabled): false,
             #keyPath(UserDefaults.isMinimuxerVerboseLoggingEnabled): false,
+            #keyPath(UserDefaults.isMinimuxerBackendHotswapEnabled): false,
+            #keyPath(UserDefaults.pairingFileEditSuppressedSHAs): [String: Bool](),
             #keyPath(UserDefaults.isRotateLogsOnStartupEnabled): true,
             #keyPath(UserDefaults.recreateDatabaseOnNextStart): false,
             #keyPath(UserDefaults.isCellularRefreshEnabled): false,
+            #keyPath(UserDefaults.turnOffDataShortcutName): "TurnOffData",
+            #keyPath(UserDefaults.turnOnDataShortcutName): "TurnOnData",
             #keyPath(UserDefaults.isPairingReset): true,
             #keyPath(UserDefaults.isDebugModeEnabled): false,
+            #keyPath(UserDefaults.isDeviceRegistered): false,
 
         ] as [String: Any]
 

@@ -14,7 +14,7 @@ private extension Color {
 }
 
 struct ExperimentalFeaturesView: View {
-    @State private var isCellularRefreshEnabled: Bool = UserDefaults.standard.isCellularRefreshEnabled
+    @State private var isMinimuxerBackendHotswapEnabled: Bool = UserDefaults.standard.isMinimuxerBackendHotswapEnabled
 
     var body: some View {
         ScrollView {
@@ -58,40 +58,24 @@ struct ExperimentalFeaturesView: View {
                             .padding(.horizontal, 16)
                             .frame(height: 50)
                         }
-
-                        divider
-
-                        NavigationLink(destination: BonjourDiscoveryView()) {
-                            HStack {
-                                Text("Network Discovery")
-                                    .font(.system(size: 17, weight: .bold))
-                                    .foregroundColor(.white)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(Color.white.opacity(0.4))
-                            }
-                            .padding(.horizontal, 16)
-                            .frame(height: 50)
-                        }
                     }
                     .background(Color.settingsRowBackground)
                     .cornerRadius(14)
                 }
-                
-                // Section 2: FEATURE FLAGS
+
+                // Section 2: MINIMUXER
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("FEATURE FLAGS")
+                    Text("MINIMUXER")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(Color.white.opacity(0.6))
                         .padding(.horizontal, 16)
                     
                     VStack(spacing: 0) {
-                        toggleRow(title: "Cellular Refresh", isOn: Binding(
-                            get: { isCellularRefreshEnabled },
+                        toggleRow(title: "Enable Minimuxer Backend Hotswap", isOn: Binding(
+                            get: { isMinimuxerBackendHotswapEnabled },
                             set: { newValue in
-                                isCellularRefreshEnabled = newValue
-                                CellularRefreshManager.shared.setEnabled(newValue)
+                                isMinimuxerBackendHotswapEnabled = newValue
+                                UserDefaults.standard.isMinimuxerBackendHotswapEnabled = newValue
                             }
                         ))
                     }
@@ -110,13 +94,6 @@ struct ExperimentalFeaturesView: View {
         #endif
     }
 
-    private var divider: some View {
-        Rectangle()
-            .fill(Color.settingsDivider)
-            .frame(height: 1)
-            .padding(.leading, 16)
-    }
-
     private func toggleRow(title: String, isOn: Binding<Bool>) -> some View {
         HStack {
             Text(title)
@@ -131,5 +108,12 @@ struct ExperimentalFeaturesView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .frame(minHeight: 50)
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.settingsDivider)
+            .frame(height: 1)
+            .padding(.leading, 16)
     }
 }

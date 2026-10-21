@@ -128,12 +128,11 @@ public actor AnisetteConfigManager {
         }
     }
     
-    // Experimental on-device default based on compatibility reports, not a required ADI/profile match.
-    // Never migrate persisted overrides; keep remote-provider defaults and all other headers unchanged.
+    // Use the current upstream akd client-info default for both providers.
+    // The Android ADI libraries do not establish a required client-info profile.
+    // Preserve the compatibility argument and every explicit persisted override.
     public nonisolated static func defaultClientInfo(forOnDeviceAndroid: Bool) -> String {
-        forOnDeviceAndroid
-            ? "<Pixel 7> <Android;14;UQ1A.240205.002> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
-            : AppConstants.Anisette.defaultClientInfo
+        AppConstants.Anisette.defaultClientInfo
     }
 
     public func loadConfig(forOnDeviceAndroid: Bool? = nil) -> AnisetteConfig {

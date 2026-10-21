@@ -387,6 +387,15 @@ private extension SourceDetailContentViewController
     @MainActor
     func downloadApp(_ storeApp: StoreApp, sender: PillButton) async
     {
+        let confirmed = await withCheckedContinuation { continuation in
+            InstallAppDialog.present(storeApp: storeApp, from: self) {
+                continuation.resume(returning: true)
+            } onCancel: {
+                continuation.resume(returning: false)
+            }
+        }
+        guard confirmed else { return }
+        
         do
         {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

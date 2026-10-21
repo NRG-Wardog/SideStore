@@ -22,7 +22,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate
         
         if let context = connectionOptions.urlContexts.first
         {
-            self.open(context)
+            URLHandler.shared.handle(context.url)
         }
     }
 

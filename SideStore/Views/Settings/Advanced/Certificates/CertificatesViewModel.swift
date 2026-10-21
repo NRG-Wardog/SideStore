@@ -40,6 +40,7 @@ class CertificatesViewModel: ObservableObject {
     @Published var showAlert = false
     @Published var remoteSerials: Set<String> = []
     @Published var hasFetchedRemote: Bool = false
+    @Published var shareURL: URL? = nil
     
     @Published var currentSort: SortOption   = .creationDate
     @Published var isAscending: Bool         = false
@@ -450,8 +451,9 @@ class CertificatesViewModel: ObservableObject {
         return CertificateManager.shared.isCertificateLocallyCached(serialNumber: certificate.serialNumber)
     }
 
-    func getSigningCertificate(at url: URL) -> ALTX509Certificate? {
-        CertificateManager.shared.getSigningCertificate(at: url)
+
+    func getSigningCertificate(for installedApp: InstalledAppProtocol) -> ALTX509Certificate? {
+        CertificateManager.shared.getSigningCertificate(for: installedApp)
     }
     
     func getLocalX509Certificate(serialNumber: String) -> ALTX509Certificate? {

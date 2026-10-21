@@ -8,6 +8,7 @@
 import Foundation
 import Network
 import Minimuxer
+import MinimuxerCommon
 import Combine
 
 public var selectedGatewayBackendCache: GatewayBackend = .idevice
@@ -22,7 +23,12 @@ public func syncMinimuxerBackendFromUserDefaults() {
     if overridePort > 0 && overridePort <= 65535 {
         remotePairingPortCache = UInt16(overridePort)
     } else {
-        remotePairingPortCache = AppConstants.Minimuxer.remotePairingPort
+        let lastDiscovered = UserDefaults.standard.lastDiscoveredRemotePairingPort
+        if lastDiscovered > 0 && lastDiscovered <= 65535 {
+            remotePairingPortCache = UInt16(lastDiscovered)
+        } else {
+            remotePairingPortCache = AppConstants.Minimuxer.remotePairingPort
+        }
     }
 
     let overrideTimeout = UserDefaults.standard.deviceProbeTimeoutOverride
@@ -31,26 +37,43 @@ public func syncMinimuxerBackendFromUserDefaults() {
     } else {
         deviceProbeTimeoutCache = AppConstants.Minimuxer.defaultTCPProbeTimeoutMs
     }
-}
 
-var minimuxer: any MinimuxerFacade {
-    Minimuxer.shared(
+    minimuxer.set(MinimuxerParams(
         backend: selectedGatewayBackendCache,
         remotePairingPort: remotePairingPortCache,
         deviceProbeTimeout: deviceProbeTimeoutCache
-    )
+    ))
+}
+
+var minimuxer: any MinimuxerFacade {
+    Minimuxer.shared
+}
+
+func minimuxerPairingProtocol() -> PairingProtocol {
+    minimuxer.core.pairingFileType
+}
+
+var ddiMountPath: String {
+    FileManager.default.documentsDirectory.absoluteString
 }
 
 private func resolveDiscoveredRemotePairingPort() async -> UInt16? {
+    guard UserDefaults.standard.isAutoRetryRemotePairingPortEnabled else {
+        return nil
+    }
     let overridePort = UserDefaults.standard.remotePairingPortOverride
     if overridePort > 0 && overridePort <= 65535 {
         return UInt16(overridePort)
     }
     if let resolved = await BonjourDiscoveryManager.resolveFirstService(
         ofType: AppConstants.Minimuxer.remotePairingDaemonServiceType,
-        timeout: AppConstants.Bonjour.defaultDiscoveryTimeout
+        timeout: AppConstants.Bonjour.defaultDiscoveryTimeout,
+        isPreferredCandidate: { res in
+            res.interfaces.contains { $0.name == "lo0" || $0.name.hasPrefix("lo") }
+        }
     ) {
         debugLog("[SideStore] Discovered RemotePairing port via Bonjour: \(resolved.port)")
+        UserDefaults.standard.lastDiscoveredRemotePairingPort = Int(resolved.port)
         return resolved.port
     }
     return nil
@@ -85,16 +108,41 @@ private func resolveDiscoveredRemotePairingPortThrottled() async -> UInt16? {
     return await task.value
 }
 
+private func isRetriableRemotePairingError(_ error: Error) -> Bool {
+    if let minErr = error as? MinimuxerError {
+        switch minErr {
+        case .noDevice, .notReachable:
+            return true
+        default:
+            return false
+        }
+    }
+    if let opErr = error as? OperationError {
+        switch opErr {
+        case .noDevice, .notReachable, .unknownUDID:
+            return true
+        default:
+            return false
+        }
+    }
+    return true
+}
+
 private func withRemotePairingRetry<T>(_ operation: () async throws -> T) async throws -> T {
     do {
         return try await operation()
     } catch {
-        guard minimuxer.gateway.pairingFileType == .rppairing else { throw error }
+        guard UserDefaults.standard.isAutoRetryRemotePairingPortEnabled,
+              minimuxer.gateway.pairingFileType == .rppairing,
+              isRetriableRemotePairingError(error) else 
+        {
+            throw error
+        }
 
         if let newPort = await resolveDiscoveredRemotePairingPortThrottled(), newPort != remotePairingPortCache {
-            debugLog("[SideStore] Operation failed, updating RemotePairing port from \(remotePairingPortCache) -> \(newPort) and retrying...")
+            debugLog("[SideStore] Retriable transport failure; updating discovered service port and retrying. Details omitted.")
             remotePairingPortCache = newPort
-            _ = Minimuxer.shared(backend: selectedGatewayBackendCache, remotePairingPort: newPort)
+            minimuxer.set(MinimuxerParams(remotePairingPort: newPort))
             return try await operation()
         }
         throw error
@@ -124,7 +172,25 @@ func bindConnectionConfig() async {
         setRemoteReachable: { value in Task { @MainActor in config.remoteReachable = value } },
         getOverrideTunnelPeerIp: { config.overrideTunnelPeerIp },
         setOverrideTunnelPeerReachable: { value in Task { @MainActor in config.overrideTunnelPeerReachable = value } },
-        getConnectionMode: { config.connectionMode }
+        getConnectionMode: { config.connectionMode },
+        resolveServicePort: { failed in
+            guard UserDefaults.standard.isAutoRetryRemotePairingPortEnabled else {
+                return failed
+            }
+            switch failed.protocolType {
+                case .rppairing:
+                    if let discovered = await resolveDiscoveredRemotePairingPort() {
+                        remotePairingPortCache = discovered
+                        minimuxer.set(MinimuxerParams(remotePairingPort: discovered))
+                        return ServicePort(protocolType: .rppairing, port: discovered)
+                    }
+                    return failed
+                case .lockdown:
+                    return ServicePort(protocolType: .lockdown, port: AppConstants.Minimuxer.lockdowndPort)
+                case .unknown:
+                    return failed
+            }
+        }
     )
     await minimuxer.core.bindConnectionConfig(configBinding)
 }
@@ -138,6 +204,21 @@ public func isMinimuxerReady() async -> Result<Bool, MinimuxerError> {
     return await minimuxer.core.isReady(withNetworkCheck: !isEnabled)
 }
 
+public func ensureMinimuxerReady() async throws {
+    if CellularRefreshManager.shared.isEnabled && UserDefaults.standard.enableEMPforWireguard {
+        throw OperationError.invalidVPN(
+            reason: "WireGuard VPN is not supported with Cellular Refresh because iOS pauses the WireGuard tunnel when cellular data is toggled off."
+        )
+    }
+    if !CellularRefreshManager.shared.isEnabled {
+        try await withRemotePairingRetry {
+            if case .failure(let error) = await isMinimuxerReady() {
+                throw error.asOperationError
+            }
+        }
+    }
+}
+
 extension MinimuxerError {
     var asOperationError: OperationError {
         switch self {
@@ -149,44 +230,17 @@ extension MinimuxerError {
         case .invalidPairing(_, let reason):    return .invalidPairingFile(reason: reason)
         case .notStarted(let reason):           return .minimuxerNotStarted(reason: reason)
         case .pairingNotLoaded(let reason):     return .pairingNotComplete(reason: reason)
+        case .connectionModeNotConfigured(let reason): return .invalidParameters(reason)
         case .createCoreDevice(let reason),
              .createLockdown(let reason),
              .getLockdownValue(let reason),
              .connect(let reason),
              .noService(let reason):
             return .noDevice(reason: reason)
-        default:                                return .unknown(failureReason: self.localizedDescription)
+        default: return .unknown(failureReason: self.localizedDescription)
         }
     }
 }
-
-func reinitializePairingData(_ pairingFile: String) async throws {
-    defer { debugLog("[SideStore] reinitializePairingData(pairingFile) completed") }
-    #if targetEnvironment(simulator)
-    debugLog("[SideStore] reinitializePairingData(pairingFile) is no-op on simulator")
-    #else
-    debugLog("[SideStore] reinitializePairingData(pairingFile) invoked")
-    try await withRemotePairingRetry {
-        try await minimuxer.core.reinitializePairingData(pairingFile: pairingFile)
-    }
-    #endif
-}
-
-func minimuxerStart(_ pairingFile: String, mountPath: String) async throws {
-    defer { debugLog("[SideStore] minimuxerStart(pairingFile) completed") }
-    #if targetEnvironment(simulator)
-    debugLog("[SideStore] minimuxerStart(pairingFile) is no-op on simulator")
-    await bindConnectionConfig()
-    await minimuxer.network.start()
-    #else
-    await bindConnectionConfig()
-    debugLog("[SideStore] minimuxerStart(pairingFile) invoked")
-    try await withRemotePairingRetry {
-        try await minimuxer.core.start(pairingFile: pairingFile, mountPath: mountPath)
-    }
-    #endif
-}
-
 
 func reinitializePairingData(pairingFile: String) async throws {
     defer { debugLog("[SideStore] reinitializePairingData(pairingFile) completed") }
@@ -197,6 +251,31 @@ func reinitializePairingData(pairingFile: String) async throws {
     try await withRemotePairingRetry {
         try await minimuxer.core.reinitializePairingData(pairingFile: pairingFile)
     }
+    #endif
+}
+
+func minimuxerStart(_ pairingFile: String, preferred: PairingProtocol? = nil) async throws {
+    defer { debugLog("[SideStore] minimuxerStart(pairingFile) completed") }
+    #if targetEnvironment(simulator)
+    debugLog("[SideStore] minimuxerStart(pairingFile) is no-op on simulator")
+    await bindConnectionConfig()
+    await minimuxer.network.start()
+    #else
+    await bindConnectionConfig()
+    debugLog("[SideStore] minimuxerStart(pairingFile) invoked")
+    try await withRemotePairingRetry {
+        try await minimuxer.core.start(pairingFile: pairingFile, mountPath: ddiMountPath, preferred: preferred)
+    }
+    #endif
+}
+
+func minimuxerStop() async throws {
+    defer { debugLog("[SideStore] minimuxerStop() completed") }
+    #if targetEnvironment(simulator)
+    debugLog("[SideStore] minimuxerStop() is no-op on simulator")
+    #else
+    debugLog("[SideStore] minimuxerStop() invoked")
+    try await minimuxer.core.stop()
     #endif
 }
 
@@ -285,24 +364,44 @@ func installAppBundle(_ bundleId: String, appName: String) async throws {
 }
 
 @discardableResult
-func fetchUDID(useStatic: Bool = false) async throws -> String? {
+func fetchUDID(forceLive: Bool = true) async throws -> String {
     defer { debugLog("[SideStore] fetchUDID() completed") }
     #if targetEnvironment(simulator)
     debugLog("[SideStore] fetchUDID() is no-op on simulator")
-    return "XXXXX-XXXX-XXXXX-XXXX"
+    return "00008030-001234567890ABCD"
+    
     #else
-    debugLog("[SideStore] fetchUDID() invoked")
-    let result = try? await withRemotePairingRetry {
-        try await minimuxer.core.fetchUDID()
+    if !forceLive, let cachedUDID = Keychain.shared.deviceUDID, !cachedUDID.isEmpty {
+        debugLog("[SideStore] fetchUDID() returning explicitly requested cached identity; value omitted.")
+        return cachedUDID
     }
-    if let udid = result ?? nil, !udid.isEmpty, udid != "XXXXX-XXXX-XXXXX-XXXX" {
+    debugLog("[SideStore] fetchUDID() invoked (forceLive: \(forceLive))")
+    return try await withRemotePairingRetry {
+        let udid = try await minimuxer.core.fetchUDID()
+        guard !udid.isEmpty else {
+            throw OperationError.unknownUDID(reason: "Minimuxer returned empty UDID.")
+        }
+        Keychain.shared.deviceUDID = udid
         return udid
     }
-    if useStatic {
-        return PairingFileManager.shared.pairingUDID
-    }
-    return nil
     #endif
+}
+
+@discardableResult
+func safeFetchUDID(forceLive: Bool = true) async throws -> String {
+    try await ensureMinimuxerReady()
+    return try await fetchUDID(forceLive: forceLive)
+}
+
+// Preserve the host-owned sign-in API: use live identity first, and only
+// permit the explicit legacy pairing fallback requested by this caller.
+@discardableResult
+func fetchUDID(useStatic: Bool) async throws -> String? {
+    if let live = try? await fetchUDID(forceLive: true), !live.isEmpty,
+       live != "XXXXX-XXXX-XXXXX-XXXX" {
+        return live
+    }
+    return useStatic ? PairingFileManager.shared.pairingUDID : nil
 }
 
 func debugApp(_ appId: String) async throws {
@@ -317,6 +416,11 @@ func debugApp(_ appId: String) async throws {
     #endif
 }
 
+func safeDebugApp(_ appId: String) async throws {
+    try await ensureMinimuxerReady()
+    try await debugApp(appId)
+}
+
 func attachDebugger(_ pid: UInt32) async throws {
     defer { debugLog("[SideStore] attachDebugger(pid) completed") }
     #if targetEnvironment(simulator)
@@ -329,8 +433,12 @@ func attachDebugger(_ pid: UInt32) async throws {
     #endif
 }
 
+func safeAttachDebugger(_ pid: UInt32) async throws {
+    try await ensureMinimuxerReady()
+    try await attachDebugger(pid)
+}
 
-func dumpProfiles(_ docsPath: String) async throws -> String {
+func dumpProfiles(_ docsPath: String, mode: ProfileDumpMode = .zip) async throws -> String {
     defer { debugLog("[SideStore] dumpProfiles(docsPath) completed") }
     #if targetEnvironment(simulator)
     debugLog("[SideStore] dumpProfiles(docsPath) is no-op on simulator")
@@ -338,9 +446,14 @@ func dumpProfiles(_ docsPath: String) async throws -> String {
     #else
     debugLog("[SideStore] dumpProfiles(docsPath) invoked")
     return try await withRemotePairingRetry {
-        try await minimuxer.core.dumpProfiles(docsPath: docsPath)
+        try await minimuxer.core.dumpProfiles(docsPath: docsPath, mode: mode)
     }
     #endif
+}
+
+func safeDumpProfiles(_ docsPath: String, mode: ProfileDumpMode = .zip) async throws -> String {
+    try await ensureMinimuxerReady()
+    return try await dumpProfiles(docsPath, mode: mode)
 }
 
 func minimuxerSetLogging(_ enabled: Bool) {
@@ -365,7 +478,7 @@ public func minimuxerSetDeviceProbeTimeout(_ timeoutMs: Int) {
     deviceProbeTimeoutCache = timeoutMs
     UserDefaults.standard.deviceProbeTimeoutOverride = (timeoutMs == AppConstants.Minimuxer.defaultTCPProbeTimeoutMs) ? 0 : timeoutMs
     #if !targetEnvironment(simulator)
-    minimuxer.core.setDeviceProbeTimeout(timeoutMs)
+    minimuxer.set(MinimuxerParams(deviceProbeTimeout: timeoutMs))
     #endif
 }
 
@@ -376,11 +489,18 @@ extension Result {
     }
 }
 
-
-func minimuxerRestart() async throws {
+func minimuxerSwitchPairingProtocol(to proto: PairingProtocol) async throws {
+    defer { debugLog("[SideStore] minimuxerSwitchPairingProtocol(.\(proto)) completed") }
+    debugLog("[SideStore] minimuxerSwitchPairingProtocol(.\(proto)) invoked")
+    PairingFileManager.shared.persistedActiveProtocol = proto
     #if !targetEnvironment(simulator)
     try await withRemotePairingRetry {
-        try await minimuxer.core.restart()
+        debugLog("[SideStore] switchPairingProtocol(to: \(proto.rawValue)) entered")
+        guard let pf = PairingFileManager.shared.fetchPairingFile(for: proto) else {
+            throw MinimuxerError.pairingNotLoaded("Missing pairing file for \(proto.rawValue)")
+        }
+        try await minimuxerStop()
+        try await AppBootManager.shared.startMinimuxer(pairingFile: pf)
     }
     #endif
 }
@@ -449,11 +569,12 @@ public final class WirelessPairWrapper {
     
     public func start(
         outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)? = nil,
         completion: @escaping (Result<MinimuxerPairedDevice, Error>) -> Void
     ) {
         debugLog("[WirelessPairWrapper] start(outPath: '\(outPath)')")
         #if !targetEnvironment(simulator)
-        minimuxer.wirelessPair.start(outPath: outPath) { result in
+        minimuxer.wirelessPair.start(outPath: outPath, resolveFileName: resolveFileName) { result in
             debugLog("[WirelessPairWrapper] start callback received: result=\(result)")
             switch result {
             case .success(let device):
@@ -467,7 +588,7 @@ public final class WirelessPairWrapper {
             }
         }
         #else
-        completion(.failure(OperationError.invalidPairingFile()))
+        completion(.failure(OperationError.invalidParameters("Wireless pairing is not supported on simulator.")))
         #endif
     }
 
@@ -477,6 +598,7 @@ public final class WirelessPairWrapper {
         hostName: String = AppConstants.Minimuxer.defaultHostName,
         hostModel: String = AppConstants.Minimuxer.defaultHostModel,
         outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)? = nil,
         completion: @escaping (Result<MinimuxerPairedDevice, Error>) -> Void
     ) {
         debugLog("[WirelessPairWrapper] trigger(targetIp: '\(targetIp)', targetPort: \(targetPort), hostName: '\(hostName)', hostModel: '\(hostModel)', outPath: '\(outPath)')")
@@ -486,7 +608,8 @@ public final class WirelessPairWrapper {
             targetPort: targetPort,
             hostName: hostName,
             hostModel: hostModel,
-            outPath: outPath
+            outPath: outPath,
+            resolveFileName: resolveFileName
         ) { result in
             debugLog("[WirelessPairWrapper] trigger callback received: result=\(result)")
             switch result {
@@ -501,7 +624,7 @@ public final class WirelessPairWrapper {
             }
         }
         #else
-        completion(.failure(OperationError.invalidPairingFile()))
+        completion(.failure(OperationError.invalidParameters("Wireless pairing is not supported on simulator.")))
         #endif
     }
     

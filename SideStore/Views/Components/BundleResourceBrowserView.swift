@@ -100,7 +100,7 @@ struct BundleResourceBrowserView: View {
         }
         #if !os(tvOS)
         .sheet(isPresented: $showingShareSheet) {
-            ActivityView(items: Array(selectedURLs))
+            ActivityViewController(items: Array(selectedURLs))
         }
         #endif
         .onAppear {
@@ -370,7 +370,7 @@ struct IPAContentsView: View {
                 VStack(spacing: 16) {
                     ProgressView()
                         .scaleEffect(1.5)
-                    Text("Extracting \(ipaURL.lastPathComponent)\u{2026}")
+                    Text("Extracting \(ipaURL.lastPathComponent)...")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
@@ -410,8 +410,12 @@ struct FullAppBundleView: View {
     let bundleURL: URL
     @StateObject private var certificatesViewModel = CertificatesViewModel()
 
-    private var infoPlist: [String: Any]? {
-        NSDictionary(contentsOf: bundleURL.appendingPathComponent("Info.plist")) as? [String: Any]
+    private var infoPlistParser: InfoPlistParser? {
+        try? InfoPlistParser(bundleURL: bundleURL)
+    }
+
+    private var infoPlist: [String: any Sendable]? {
+        infoPlistParser?.rawDictionary
     }
 
     private var provisioningProfile: ALTProvisioningProfile? {
@@ -428,8 +432,8 @@ struct FullAppBundleView: View {
     }
 
     private var displayName: String {
-        infoPlist?["CFBundleDisplayName"] as? String
-            ?? infoPlist?["CFBundleName"] as? String
+        infoPlistParser?.displayName
+            ?? infoPlistParser?.bundleName
             ?? bundleURL.deletingPathExtension().lastPathComponent
     }
 
@@ -517,11 +521,11 @@ struct FullAppBundleView: View {
             if !appExtensions.isEmpty {
                 Section(header: Text("App Extensions (\(appExtensions.count))")) {
                     ForEach(appExtensions, id: \.path) { extURL in
-                        let extPlist = NSDictionary(contentsOf: extURL.appendingPathComponent("Info.plist")) as? [String: Any]
-                        let extName = extPlist?["CFBundleDisplayName"] as? String
-                            ?? extPlist?["CFBundleName"] as? String
+                        let extParser = try? InfoPlistParser(bundleURL: extURL)
+                        let extName = extParser?.displayName
+                            ?? extParser?.bundleName
                             ?? extURL.deletingPathExtension().lastPathComponent
-                        let extBundleID = extPlist?["CFBundleIdentifier"] as? String ?? "Unknown"
+                        let extBundleID = extParser?.bundleIdentifier ?? "Unknown"
                         NavigationLink(destination: BundleInspectorView(bundleURL: extURL, certificatesViewModel: certificatesViewModel)) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(extName)
@@ -561,12 +565,11 @@ struct FullAppBundleView: View {
     }
 }
 
-// MARK: - Plist Resource Viewer (auto-routes to InfoPlistContainerView or raw text)
-
+// MARK: - Plist Resource Viewer 
 struct PlistResourceViewer: View {
     let url: URL
 
-    @State private var plistDict: [String: Any]? = nil
+    @State private var plistDict: [String: any Sendable]? = nil
     @State private var rawText: String = ""
     @State private var isLoaded = false
 
@@ -576,7 +579,7 @@ struct PlistResourceViewer: View {
                 InfoPlistContainerView(plist: dict, title: url.lastPathComponent)
             } else {
                 ScrollView {
-                    Text(rawText.isEmpty ? "Loading\u{2026}" : rawText)
+                    Text(rawText.isEmpty ? "Loading..." : rawText)
                         .font(.system(size: 12, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()
@@ -591,8 +594,8 @@ struct PlistResourceViewer: View {
             guard !isLoaded else { return }
             isLoaded = true
             // Try as structured dict first (XML or binary plist)
-            if let dict = NSDictionary(contentsOf: url) as? [String: Any] {
-                plistDict = dict
+            if let parser = try? InfoPlistParser(plistURL: url) {
+                plistDict = parser.rawDictionary
             } else {
                 rawText = (try? String(contentsOf: url, encoding: .utf8))
                     ?? (try? String(contentsOf: url, encoding: .isoLatin1))
@@ -648,7 +651,7 @@ struct ResourceTextViewer: View {
 
     var body: some View {
         ScrollView {
-            Text(content.isEmpty ? "Loading\u{2026}" : content)
+            Text(content.isEmpty ? "Loading..." : content)
                 .font(.system(size: 12, design: .monospaced))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
@@ -710,18 +713,6 @@ struct QLPreviewControllerView: UIViewControllerRepresentable {
             url as NSURL
         }
     }
-}
-
-// MARK: - Activity View (Share Sheet)
-
-struct ActivityView: UIViewControllerRepresentable {
-    let items: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 #endif
 

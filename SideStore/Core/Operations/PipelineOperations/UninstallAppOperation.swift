@@ -37,12 +37,20 @@ final class UninstallAppOperation: BasePipelineOperation<InstallAppOperationCont
         }
         
         // send uninstall payload to device
-        try await removeApp(resignedBundleIdentifier)
+        do {
+            await CellularRefreshManager.shared.turnOffDataIfNeeded()
+            try await removeApp(resignedBundleIdentifier)
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+        } catch {
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            throw error
+        }
+        
         // V3_DELETE_NATIVE_SUCCESS_EVIDENCE_V1: native uninstall succeeded; the service still verifies library absence.
         if let handler = self.context.handler as? V3HeadlessPipelineHandler {
             await handler.recordNativeUninstallSucceeded()
         }
-        
+
         self.setProgress(100)
         return installedApp
     }

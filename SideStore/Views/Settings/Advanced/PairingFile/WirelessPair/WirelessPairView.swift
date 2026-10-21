@@ -102,35 +102,6 @@ struct WirelessPairView: View {
                         .padding(.top, 4)
                 }
 
-                
-                // PIN Display
-                if let pin = viewModel.pinCode {
-                    VStack(spacing: 12) {
-                        Text("PAIRING CODE")
-                            .font(.caption2)
-                            .fontWeight(.bold)
-                            .foregroundColor(.secondary)
-                            .tracking(3)
-                        
-                        HStack(spacing: 14) {
-                            ForEach(Array(pin.enumerated()), id: \.offset) { _, char in
-                                Text(String(char))
-                                    .font(.system(size: 34, weight: .bold, design: .monospaced))
-                                    .frame(width: 52, height: 68)
-                                    #if !os(tvOS)
-                                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(.secondarySystemBackground)))
-                                    #else
-                                    .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.1)))
-                                    #endif
-                                    .shadow(color: Color.black.opacity(0.15), radius: 5, x: 0, y: 3)
-                                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(LinearGradient(gradient: Gradient(colors: [Color.accentColor.opacity(0.5), Color.clear]), startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.5))
-                            }
-                        }
-                    }
-                    .padding(.vertical, 16)
-                    .transition(.scale.combined(with: .opacity))
-                }
-                
                 // Error Display
                 if let error = viewModel.errorMessage {
                     Text(error)
@@ -197,6 +168,26 @@ struct WirelessPairView: View {
                 WirelessPairTargetDialog(viewModel: viewModel)
             }
         }
+        .sheet(isPresented: Binding(
+            get: { viewModel.pinCode != nil },
+            set: { if !$0 { viewModel.pinCode = nil } }
+        )) {
+            if let pin = viewModel.pinCode {
+                if #available(iOS 16.0, tvOS 16.0, *) {
+                    WirelessPairPinDialog(pin: pin) {
+                        viewModel.pinCode = nil
+                    }
+                    .presentationDetents([.fraction(0.45), .medium])
+                    .presentationDragIndicator(.hidden)
+                    .interactiveDismissDisabled(true)
+                } else {
+                    WirelessPairPinDialog(pin: pin) {
+                        viewModel.pinCode = nil
+                    }
+                    .interactiveDismissDisabled(true)
+                }
+            }
+        }
         .alert("Enter Pairing PIN", isPresented: $viewModel.isPinPromptPresented) {
             TextField("6-digit PIN", text: $viewModel.enteredPin)
                 .keyboardType(.numberPad)
@@ -224,6 +215,66 @@ struct WirelessPairView: View {
     }
 }
 
+struct WirelessPairPinDialog: View {
+    let pin: String
+    let onClose: () -> Void
+    
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            VStack(spacing: 16) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 44))
+                    .foregroundColor(.accentColor)
+                    .padding(.top, 24)
+                
+                VStack(spacing: 6) {
+                    Text("Pairing Code")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    
+                    Text("Enter this 6-digit code on the connecting device to complete pairing.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
+                
+                HStack(spacing: 8) {
+                    let chars = Array(pin)
+                    ForEach(0..<chars.count, id: \.self) { index in
+                        if index == 3 {
+                            Text("-")
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundColor(.secondary)
+                        }
+                        Text(String(chars[index]))
+                            .font(.system(size: 30, weight: .bold, design: .monospaced))
+                            .frame(width: 40, height: 54)
+                            #if !os(tvOS)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(Color(.secondarySystemBackground)))
+                            #else
+                            .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.1)))
+                            #endif
+                            .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accentColor.opacity(0.4), lineWidth: 1.5))
+                    }
+                }
+                .padding(.vertical, 8)
+                
+                Spacer()
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal)
+            
+            SwiftUI.Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundColor(Color.secondary.opacity(0.8))
+            }
+            .padding([.top, .trailing], 16)
+        }
+    }
+}
 
 struct ConnectionDetailsCard: View {
     let serviceID: String

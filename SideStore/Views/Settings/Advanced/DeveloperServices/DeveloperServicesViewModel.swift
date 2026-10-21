@@ -27,12 +27,10 @@ class DeveloperServicesViewModel: ObservableObject {
     @Published var toastMessage: String = ""
     @Published var showToast = false
 
-    var team: ALTTeam? {
-        AuthManager.shared.team
-    }
+    @Published var team: ALTTeam?
 
     var isPaidAccount: Bool {
-        guard let team = AuthManager.shared.team else { return false }
+        guard let team = self.team else { return false }
         return team.isPaid
     }
 
@@ -47,9 +45,7 @@ class DeveloperServicesViewModel: ObservableObject {
         defer { self.isLoading = false }
 
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
+            self.team = try await AuthManager.shared.getAuthenticatedTeam()
             async let fetchedAppIDs = DeveloperPortalProxy.shared.fetchAppIDs()
             async let fetchedProfiles = DeveloperPortalProxy.shared.listProvisioningProfiles()
             async let fetchedGroups = DeveloperPortalProxy.shared.fetchAppGroups()
@@ -74,9 +70,6 @@ class DeveloperServicesViewModel: ObservableObject {
         self.isLoading = true
         defer { self.isLoading = false }
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
             let certs = try await DeveloperPortalProxy.shared.fetchCertificates()
             self.certificates = certs.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         } catch {
@@ -106,9 +99,6 @@ class DeveloperServicesViewModel: ObservableObject {
         self.isLoading = true
         defer { self.isLoading = false }
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
             let ids = try await DeveloperPortalProxy.shared.fetchAppIDs()
             self.appIDs = ids.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         } catch {
@@ -167,9 +157,6 @@ class DeveloperServicesViewModel: ObservableObject {
         self.isLoading = true
         defer { self.isLoading = false }
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
             let profs = try await DeveloperPortalProxy.shared.listProvisioningProfiles()
             self.profiles = profs.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         } catch {
@@ -319,9 +306,6 @@ class DeveloperServicesViewModel: ObservableObject {
         self.isLoading = true
         defer { self.isLoading = false }
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
             let groups = try await DeveloperPortalProxy.shared.fetchAppGroups()
             self.appGroups = groups.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         } catch {
@@ -383,9 +367,6 @@ class DeveloperServicesViewModel: ObservableObject {
         self.isLoading = true
         defer { self.isLoading = false }
         do {
-            if isPullToRefresh {
-                AuthManager.shared.session = nil
-            }
             let devs = try await DeveloperPortalProxy.shared.fetchDevices(types: .all)
             self.devices = devs.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         } catch {

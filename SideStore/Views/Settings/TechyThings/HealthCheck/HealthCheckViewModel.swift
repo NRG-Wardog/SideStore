@@ -105,7 +105,7 @@ final class HealthCheckViewModel: ObservableObject {
         let remotePeerIp = ConnectionConfig.shared.remotePeerIp
         let remoteReachable = ConnectionConfig.shared.remoteReachable
         
-        let pairingType = minimuxer.core.getPairingFileType()
+        let pairingType = minimuxer.core.pairingFileType
         let protocolStr: String
         switch pairingType {
         case .rppairing:
@@ -120,7 +120,7 @@ final class HealthCheckViewModel: ObservableObject {
         let pingSuccess = !targetIp.isEmpty && minimuxer.core.testDeviceConnection(ifaddr: targetIp)
         
         let ddi = (try? await minimuxer.core.isDDIMounted()) ?? false
-        let pairingVerified = (try? await minimuxer.core.fetchUDID() != nil) ?? false
+        let pairingVerified = (try? await fetchUDID(forceLive: true)) != nil
         let isRpPairing = minimuxer.core.pairingFileType == .rppairing
         let isPairingLoaded = minimuxer.core.isPairingFileLoaded
         let readyResult = await minimuxer.core.isReady(withDDIMountCheck: true)

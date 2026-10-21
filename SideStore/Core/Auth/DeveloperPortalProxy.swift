@@ -481,12 +481,6 @@ class DeveloperPortalProxyWithAuth: DeveloperPortalProxy {
         )
         return (authSession.account, authSession.session)
     }
-    
-    func authenticateWithToken(adsid: String, xcodeToken: String, anisetteData: ALTAnisetteData, xcodeVersion: String) async throws -> (ALTAccount, ALTAppleAPISession) {
-        let session = ALTAppleAPISession(dsid: adsid, authToken: xcodeToken, anisetteData: anisetteData, xcodeVersion: xcodeVersion)
-        let account = try await fetchAccount(session: session)
-        return (account, session)
-    }
 }
 
 // V3_CERTIFICATE_MUTATION_ADMISSION_BEGIN

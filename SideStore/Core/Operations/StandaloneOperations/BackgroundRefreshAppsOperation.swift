@@ -333,10 +333,19 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
                 
                 content.title = NSLocalizedString("Refreshed Apps", comment: "")
                 content.body = NSLocalizedString("All apps have been refreshed.", comment: "")
-            } catch OperationError.noConnection, OperationError.noVPN, OperationError.noInstalledApps {
-                shouldPresentAlert = false
-            } catch OperationError.serverNotFound where self.ignoresServerNotFoundError {
-                shouldPresentAlert = false
+            } catch let opError as OperationError {
+                switch opError {
+                case .noConnection, .noVPN, .noInstalledApps:
+                    shouldPresentAlert = false
+                default:
+                    let runID = (try? automaticRefreshDefaults())?.string(forKey: "liveContainerAutoRefreshExpectedRunID") ?? refreshIdentifier
+                    let failure = CombinedFailure.capture(V3HeadlessPairingFailure.tagIfInvalidPairing(opError),
+                        operation: "refresh", stage: .refreshVerification, id: runID)
+                    self.debugLog("[AUTO_REFRESH] NOTIFICATION_FAILURE \(failure.technicalDetails)")
+                    content.title = NSLocalizedString("Failed to Refresh Apps", comment: "")
+                    content.body = failure.message
+                    shouldPresentAlert = true
+                }
             } catch {
                 let runID = (try? automaticRefreshDefaults())?.string(forKey: "liveContainerAutoRefreshExpectedRunID") ?? refreshIdentifier
                 let failure = CombinedFailure.capture(V3HeadlessPairingFailure.tagIfInvalidPairing(error),

@@ -72,6 +72,13 @@ public class InstalledExtension: BaseEntity, InstalledAppProtocol
         self.refreshedDate = provisioningProfile.creationDate
         self.expirationDate = provisioningProfile.expirationDate
     }
+    
+    public var directoryURL: URL {
+        if let parentApp = self.parentApp {
+            return parentApp.directoryURL
+        }
+        return InstalledApp.appsDirectoryURL.appendingPathComponent(self.resignedBundleIdentifier)
+    }
 }
 
 public extension InstalledExtension

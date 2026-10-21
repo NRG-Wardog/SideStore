@@ -28,6 +28,10 @@ final class StageAppOperation: BasePipelineOperation<InstallAppOperationContext,
             self.context.targetAppBundle = ALTApplication(fileURL: installedApp.fileURL)
         }
         
+        if self.context.targetAppBundle == nil, let installedApp = self.context.installedApp {
+            self.context.targetAppBundle = ALTApplication(fileURL: installedApp.fileURL)
+        }
+        
         guard let appBundle = self.context.targetAppBundle else {
             throw OperationError.invalidParameters("StageAppOperation: context.appBundle is nil")
         }
@@ -61,7 +65,7 @@ final class StageAppOperation: BasePipelineOperation<InstallAppOperationContext,
         debugLog("[StageAppOperation] Successfully copied app bundle to destination.")
         
         guard let stagedAppBundle = ALTApplication(fileURL: destinationURL) else {
-            throw OperationError.invalidApp
+            throw OperationError.missingAppBundle(reason: "Could not load staged app bundle at '\(destinationURL.lastPathComponent)'")
         }
         
         self.context.targetAppBundle = stagedAppBundle

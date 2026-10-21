@@ -12,6 +12,7 @@ import Security
 import SideSign
 import CryptoKit
 import CommonCrypto
+import UniformTypeIdentifiers
 
 enum BackupEncryptionError: Error, LocalizedError {
     case invalidPassword
@@ -102,7 +103,7 @@ class ImportExport {
         return finalData
     }
 
-    public static func importAccount(_ encryptedData: Data, filePassword: String) throws -> ImportedAccount {
+    public static func importAccount(_ encryptedData: Data, filePassword: String) async throws -> ImportedAccount {
         guard encryptedData.count > 16 else {
             throw BackupEncryptionError.invalidDataFormat
         }
@@ -117,7 +118,7 @@ class ImportExport {
             let decryptedData = try AES.GCM.open(sealedBox, using: key)
             let account = try Foundation.JSONDecoder().decode(ImportedAccount.self, from: decryptedData)
             
-            AuthManager.shared.signOut()
+            await AuthManager.shared.signOut()
             AuthManager.shared.currentAppleID = account.email
             if let pass = account.password, !pass.isEmpty {
                 AuthManager.shared.password = pass
@@ -156,14 +157,14 @@ extension ImportExport {
         }
     }
 
-    static func importAccountJSON(from file: URL) throws {
+    static func importAccountJSON(from file: URL) async throws {
         _ = file.startAccessingSecurityScopedResource()
         defer { file.stopAccessingSecurityScopedResource() }
         
         let accountData = try Data(contentsOf: file)
         let account = try Foundation.JSONDecoder().decode(ImportedAccount.self, from: accountData)
         
-        AuthManager.shared.signOut()
+        await AuthManager.shared.signOut()
         AuthManager.shared.currentAppleID = account.email
         AuthManager.shared.password = account.password
         AnisetteConfigManager.shared.anisetteAdiBlob = account.anisetteAdiBlob

@@ -212,4 +212,3 @@ private struct ProfileRow: View {
         .padding(.vertical, 2)
     }
 }
-

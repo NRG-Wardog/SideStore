@@ -124,12 +124,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
         // Recreate Database if requested
         // NOTE: Userdefaults are local to the SideStore.app sandbox and are not shared
-        if UserDefaults.standard.recreateDatabaseOnNextStart{
-            // reset the state
-            UserDefaults.standard.recreateDatabaseOnNextStart = false
-            
-            // re-create database
-            DatabaseManager.recreateDatabase()
+        if UserDefaults.standard.recreateDatabaseOnNextStart {
+            // V3_UPSTREAM_SYNC_PRESERVE_STATE_V1: retain the pending request, but
+            // this validation build never resets an existing database at boot.
+            debugLog("[Maintenance] Database reset deferred in preservation build.")
         }
         
         
@@ -149,6 +147,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         Task.detached(priority: .userInitiated) {
             do
             {
+                
                 debugLog("Starting DatabaseManager...")
                 try await DatabaseManager.shared.start()
                 debugLog("Started DatabaseManager.")
@@ -160,13 +159,14 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 
                 await WidgetDataManager.publishCurrentInstalledAppsIfNeeded(in: DatabaseManager.shared.viewContext)
                 
-                if isFirstLaunch
-                {
-                    AuthManager.shared.signOut()
+                // V3_UPSTREAM_SYNC_PRESERVE_STATE_V1: a missing firstLaunch
+                // preference is not authority to discard existing account data.
+                if isFirstLaunch {
+                    debugLog("[Maintenance] Existing account state preserved on first launch.")
                 }
 
                 // Perform one-time maintenance tasks after database is started
-                MaintenanceManager.shared.performMaintenanceIfNeeded()
+                await MaintenanceManager.shared.performMaintenanceIfNeeded()
             }
             catch
             {
@@ -177,8 +177,6 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // V3_HEADLESS_IMAGE_PIPELINE_REMOVED_V1: the headless service does not initialize legacy screen imagery.
 
         SecureValueTransformer.register()        
-        
-        UserDefaults.standard.preferredServerID = Bundle.main.object(forInfoDictionaryKey: Bundle.Info.serverID) as? String
         
         #if DEBUG && targetEnvironment(simulator)
         UserDefaults.standard.isDebugModeEnabled = true

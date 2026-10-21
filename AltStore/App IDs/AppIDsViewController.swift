@@ -17,6 +17,8 @@ extension AppIDsViewController {
 
 final class AppIDsViewController: UICollectionViewController
 {
+    var activeTeam: ALTTeam?
+    
     private lazy var dataSource = self.makeDataSource()
     
     private var didInitialFetch = false
@@ -55,6 +57,8 @@ final class AppIDsViewController: UICollectionViewController
     {
         super.viewWillAppear(animated)
         
+        self.updateActiveTeam()
+        
         if !self.didInitialFetch
         {
             self.fetchAppIDs()
@@ -72,9 +76,9 @@ private extension AppIDsViewController
                                         NSSortDescriptor(keyPath: \AppID.expirationDate, ascending: true)]
         fetchRequest.returnsObjectsAsFaults = false
         
-        if let team = DatabaseManager.shared.activeTeam()
+        if let team = self.activeTeam
         {
-            fetchRequest.predicate = NSPredicate(format: "%K == %@", #keyPath(AppID.team), team)
+            fetchRequest.predicate = NSPredicate(format: "%K == %@", #keyPath(AppID.team.identifier), team.identifier)
         }
         else
         {
@@ -225,6 +229,29 @@ private extension AppIDsViewController
     {
         self.footerView?.textLabel.text = self.footerText()
     }
+    
+    func updateActiveTeam()
+    {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            let team = try? await AuthManager.shared.getAuthenticatedTeam()
+            if self.activeTeam != team
+            {
+                self.activeTeam = team
+                if let team = self.activeTeam
+                {
+                    self.dataSource.fetchedResultsController.fetchRequest.predicate = NSPredicate(format: "%K == %@", #keyPath(AppID.team.identifier), team.identifier)
+                }
+                else
+                {
+                    self.dataSource.fetchedResultsController.fetchRequest.predicate = NSPredicate(value: false)
+                }
+                try? self.dataSource.fetchedResultsController.performFetch()
+                self.collectionView.reloadData()
+                self.refreshFooter()
+            }
+        }
+    }
 }
 
 extension AppIDsViewController: UICollectionViewDelegateFlowLayout
@@ -247,7 +274,7 @@ extension AppIDsViewController: UICollectionViewDelegateFlowLayout
         
         // NOTE: double dequeue of cell has been discontinued
         // TODO: Using harcoded value until this is fixed
-        if let activeTeam = DatabaseManager.shared.activeTeam(), activeTeam.type == .free
+        if let activeTeam = self.activeTeam, activeTeam.type == .free
         {
             return CGSize(width: collectionView.bounds.width, height: 220)
         }
@@ -271,7 +298,7 @@ extension AppIDsViewController: UICollectionViewDelegateFlowLayout
             headerView.layoutMargins.left = self.view.layoutMargins.left
             headerView.layoutMargins.right = self.view.layoutMargins.right
             
-            if let activeTeam = DatabaseManager.shared.activeTeam(), activeTeam.type == .free
+            if let activeTeam = self.activeTeam, activeTeam.type == .free
             {
                 let text = NSLocalizedString("""
                 Each app and app extension installed with SideStore must register an App ID with Apple. Apple limits non-developer Apple IDs to 10 App IDs at a time.

@@ -24,6 +24,7 @@ struct ProfilePortalDetailView: View {
     @State private var customDeviceInput: String = ""
 
     @State private var showDeleteAlert = false
+    @State private var exportProfileURL: URL? = nil
 
     private var isExpired: Bool {
         profile.dateExpire < Date()
@@ -114,6 +115,17 @@ struct ProfilePortalDetailView: View {
                                     Text("Serial: \(cert.serialNumber)")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
+                                    let hasKey = ProfileManager.shared.hasPrivateKey(for: cert)
+                                    HStack(spacing: 4) {
+                                        Text("Type: \(hasKey ? "public + private" : "public only")")
+                                            .font(.caption2)
+                                            .foregroundColor(hasKey ? .green : .secondary)
+                                        if hasKey {
+                                            Image(systemName: "key.fill")
+                                                .font(.system(size: 9))
+                                                .foregroundColor(.green)
+                                        }
+                                    }
                                 }
                                 Spacer()
                                 if selectedCertificateIDs.contains(certID) {
@@ -246,13 +258,7 @@ struct ProfilePortalDetailView: View {
                         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(safeName).mobileprovision")
                         do {
                             try downloaded.data.write(to: tempURL)
-                            #if !os(tvOS)
-                            let activityVC = UIActivityViewController(activityItems: [tempURL], applicationActivities: nil)
-                            if let popover = activityVC.popoverPresentationController {
-                                popover.sourceView = presentingViewController?.view
-                            }
-                            presentingViewController?.present(activityVC, animated: true)
-                            #endif
+                            exportProfileURL = tempURL
                         } catch {
                             debugLog("[ProfilePortalDetailView] Failed to write profile to temp: \(error)")
                         }
@@ -326,6 +332,14 @@ struct ProfilePortalDetailView: View {
             )
         }
         .developerServicesToast(viewModel: viewModel)
+        .sheet(isPresented: Binding<Bool>(
+            get: { exportProfileURL != nil },
+            set: { if !$0 { exportProfileURL = nil } }
+        )) {
+            if let url = exportProfileURL {
+                ActivityViewController(activityItems: [url])
+            }
+        }
     }
 
     private func formatDate(_ date: Date) -> String {

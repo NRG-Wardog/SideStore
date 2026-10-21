@@ -10,7 +10,7 @@
 import SwiftUI
 import SideSign
 
-typealias SUIButton = SwiftUI.Button
+private typealias SUIButton = SwiftUI.Button
 
 // MARK: - AnisetteServerData
 struct AnisetteServerData: Codable {

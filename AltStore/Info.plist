@@ -85,6 +85,7 @@
 	<array>
 		<string>sidestore-com.SideStore.SideStore</string>
 		<string>sidestore-com.SideStore.SideStore.Beta</string>
+		<string>localdevvpn</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
@@ -286,6 +287,7 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>mobiledevicepairing</string>
+					<string>mobiledevicepair</string>
 				</array>
 			</dict>
 		</dict>

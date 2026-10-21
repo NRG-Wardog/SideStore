@@ -162,7 +162,7 @@ final class BackupEngine: NSObject, Sendable {
     
     func performBackup(skipNonCopyable: Bool = false, progressHandler: (@Sendable (_ copiedBytes: Int64, _ totalBytes: Int64) -> Void)? = nil) async throws {
         let logger = try ConsoleLog.getConsoleLog()
-        guard let bundleIdentifier = Bundle.main.object(forInfoDictionaryKey: Bundle.Info.altBundleID) as? String else {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier else {
             throw BackupError(.invalidBundleID, context: .createBackup)
         }
         
@@ -203,7 +203,7 @@ final class BackupEngine: NSObject, Sendable {
     
     func restoreBackup(skipNonCopyable: Bool = false, progressHandler: (@Sendable (_ copiedBytes: Int64, _ totalBytes: Int64) -> Void)? = nil) async throws {
         let logger = try ConsoleLog.getConsoleLog()
-        guard let bundleIdentifier = Bundle.main.object(forInfoDictionaryKey: Bundle.Info.altBundleID) as? String else {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier else {
             throw BackupError(.invalidBundleID, context: .accessBackup)
         }
         

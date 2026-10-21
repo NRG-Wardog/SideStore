@@ -32,6 +32,8 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     let anisetteServerHandler: AnisetteServerHandler
     let skipDeviceRegistration: Bool
     let skipCertificateProvisioning: Bool
+    let skipResign: Bool
+    let skipHowTos: Bool
     // V3_PROVISIONING_RETRY_BYPASSES_CACHED_SIGNIN_V1
     let v3ForceProvisioningRetry: Bool
     // V3_PROVISIONING_REAUTHENTICATION_V1
@@ -49,6 +51,8 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         anisetteServerHandler: AnisetteServerHandler,
         skipDeviceRegistration: Bool = false,
         skipCertificateProvisioning: Bool = false,
+        skipResign: Bool = false,
+        skipHowTos: Bool = false,
         v3ForceProvisioningRetry: Bool = false,
         v3RequireFullProvisioning: Bool = false,
         v3FinishPendingCertificateActivation: Bool = false,
@@ -63,6 +67,8 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         self.anisetteServerHandler = anisetteServerHandler
         self.skipDeviceRegistration = skipDeviceRegistration
         self.skipCertificateProvisioning = skipCertificateProvisioning
+        self.skipResign = skipResign
+        self.skipHowTos = skipHowTos
         self.v3ForceProvisioningRetry = v3ForceProvisioningRetry
         self.v3RequireFullProvisioning = v3RequireFullProvisioning
         self.v3FinishPendingCertificateActivation = v3FinishPendingCertificateActivation
@@ -334,7 +340,8 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                     case .retry:
                         self.debugLog("[SignInOperation] User chose retry in provisioningLoop")
                         continue
-                    case .cancel:
+                    case .cancel, .skip:
+                        // A partial provision must not publish successful headless readiness.
                         self.debugLog("[SignInOperation] User cancelled in provisioningLoop")
                         if diagnosticError.requiresReconciliation || diagnosticError.portalSessionRejected { throw diagnosticError }
                         throw OperationError.cancelled
@@ -563,16 +570,16 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 }
                 self.verboseLog("[SignInOperation] finalizeAuthentication: Database updates completed.")
                 
-                if let signingCertificate = certificate, !self.skipCertificateProvisioning
+                var didResign = false
+                if !self.skipResign, let signingCertificate = certificate, !self.skipCertificateProvisioning
                 {
                     let signer = ALTSigner(team: team, certificate: signingCertificate)
-                    let didResign = try await self.validateCodeSign(signer: signer, session: session)
+                    didResign = try await self.validateCodeSign(signer: signer, session: session)
                     self.verboseLog("[SignInOperation] finalizeAuthentication: didResign = \(didResign)")
-                    
-                    if !didResign && self.requiresPostAuthFlow {
-                        await self.signInHandler.resolvePostAuth()
-                        self.verboseLog("[SignInOperation] finalizeAuthentication: post auth flow completed...")
-                    }
+                }
+                if !self.skipHowTos && !didResign && self.requiresPostAuthFlow {
+                    await self.signInHandler.resolvePostAuth()
+                    self.verboseLog("[SignInOperation] finalizeAuthentication: post auth flow completed...")
                 }
                 
                 await v3LoginStage(.cleanup) { await self.signInHandler.complete() }
@@ -890,7 +897,7 @@ private extension SignInOperation {
         guard let udid = deviceUDID, !udid.isEmpty, udid != "XXXXX-XXXX-XXXXX-XXXX" else {
             self.debugLog("[SignInOperation] Failed to fetch device UDID.")
             if let deviceQueryError { throw deviceQueryError }
-            throw OperationError.unknownUDID
+            throw OperationError.unknownUDID(reason: "No verified device identifier is available.")
         }
         self.debugLog("[SignInOperation] Device registration step.")
         

@@ -6,6 +6,7 @@
 //  Copyright © 2026 SideStore. All rights reserved.
 //
 
+@preconcurrency import UIKit
 import Foundation
 import SideSign
 import CoreData
@@ -201,6 +202,18 @@ public final class AuthManager: @unchecked Sendable {
     }
     
     // V3_HEADLESS_AUTH_ENTRYPOINT_V1: LiveContainer owns credentials and 2FA UI; the embedded service still executes SignInOperation through V3HeadlessAuthHandler.
+    @discardableResult
+    func signIn(
+        presentingViewController: UIViewController? = nil,
+        skipDeviceRegistration: Bool = false,
+        skipCertificateProvisioning: Bool = false,
+        skipResign: Bool = false,
+        skipHowTos: Bool = false
+    ) async throws -> SignInResult {
+        // The embedded service must authenticate through the host IPC handler.
+        throw OperationError.invalidParameters("Sign in through LiveContainer's Account and Signing screen.")
+    }
+
     // Developer Portal Operations
     public func signIn(appleID: String, 
                        password: String, 
@@ -226,12 +239,11 @@ public final class AuthManager: @unchecked Sendable {
                                       anisetteData: ALTAnisetteData,
                                       xcodeVersion: String) async throws -> (ALTAccount, ALTAppleAPISession)
     {
-        return try await self.portalProxy.authenticateWithToken(
-            adsid: adsid,
-            xcodeToken: xcodeToken,
-            anisetteData: anisetteData,
-            xcodeVersion: xcodeVersion
-        )
+        // Upstream removed the proxy convenience method, not token-backed account lookup.
+        let session = ALTAppleAPISession(dsid: adsid, authToken: xcodeToken,
+            anisetteData: anisetteData, xcodeVersion: xcodeVersion)
+        let account = try await self.portalProxy.fetchAccount(session: session)
+        return (account, session)
     }
 }
 
@@ -253,7 +265,7 @@ fileprivate extension DatabaseManager {
             do {
                 try bgContext.save()
             } catch {
-                debugLog("[AuthManager] Failed to save CoreData context when deactivating active account and team: \(error)")
+                debugLog("[AuthManager] Failed to save CoreData context when deactivating active account and team.")
             }
         }
         

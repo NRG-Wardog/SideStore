@@ -30,8 +30,8 @@ final class PreflightChecksOperation: BasePipelineOperation<StandaloneOperationC
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         self.setProgress(10)
 
-        let currentTeam = AuthManager.shared.team
-        let currentTeamID = currentTeam?.identifier
+        let currentTeam = try await AuthManager.shared.getAuthenticatedTeam()
+        let currentTeamID = currentTeam.identifier
 
         let startProgress = self.progress.completedUnitCount
         let endProgress: Int64 = 90
@@ -54,10 +54,10 @@ final class PreflightChecksOperation: BasePipelineOperation<StandaloneOperationC
 
             let incomingTargetID: String?
             switch operation {
-                case .install(let app, let customBundleIdentifier), .update(let app, let customBundleIdentifier):
+                case .install(let app, let customBundleIdentifier), .update(let app, let customBundleIdentifier), .reinstall(let app, let customBundleIdentifier):
                     if let customBundleIdentifier = customBundleIdentifier, !customBundleIdentifier.isEmpty {
                         incomingTargetID = customBundleIdentifier
-                    } else if let currentTeamID = currentTeamID {
+                    } else if !currentTeamID.isEmpty {
                         incomingTargetID = "\(StoreApp.altstoreAppID).\(currentTeamID)"
                     } else if let installedApp = app as? InstalledApp {
                         incomingTargetID = installedApp.customBundleIdentifier ?? installedApp.resignedBundleIdentifier
@@ -68,7 +68,7 @@ final class PreflightChecksOperation: BasePipelineOperation<StandaloneOperationC
                      .backup(let installedApp),     .restore(let installedApp),     .resign(let installedApp, _),
                      .removeApp(let installedApp),  .removeDeactivatedApp(let installedApp):
                     
-                    if let currentTeamID = currentTeamID, installedApp.bundleIdentifier == StoreApp.altstoreAppID {
+                    if !currentTeamID.isEmpty && installedApp.bundleIdentifier == StoreApp.altstoreAppID {
                         incomingTargetID = installedApp.customBundleIdentifier ?? "\(StoreApp.altstoreAppID).\(currentTeamID)"
                     } else {
                         incomingTargetID = installedApp.customBundleIdentifier ?? installedApp.resignedBundleIdentifier
@@ -80,7 +80,7 @@ final class PreflightChecksOperation: BasePipelineOperation<StandaloneOperationC
             debugLog("[PreflightChecksOperation] SideStore bundle ID mismatch detected: target='\(targetID)', active='\(activeEffectiveID)'")
 
             switch operation {
-                case .resign, .install:
+                case .resign, .install, .reinstall:
                     guard let handler = self.handler else {
                         throw OperationError.cancelled
                     }

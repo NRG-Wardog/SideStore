@@ -194,7 +194,7 @@ struct CertificatesView: View {
             SecureField("Password", text: $exportPasswordInput)
             SwiftUI.Button("Export") {
                 if let cert = certificateToExport, let signable = viewModel.getSignableCertificate(for: cert.serialNumber) {
-                    CertificateExporter.shareP12(signable, password: exportPasswordInput) { viewModel.errorMessage = $0 }
+                    CertificateExporter.shareP12(signable, password: exportPasswordInput, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 }
                 }
             }
             SwiftUI.Button("Cancel", role: .cancel) {}
@@ -253,6 +253,14 @@ struct CertificatesView: View {
                     privateKeyTextInput = ""
                 }
             )
+        }
+        .sheet(isPresented: Binding<Bool>(
+            get: { viewModel.shareURL != nil },
+            set: { if !$0 { viewModel.shareURL = nil } }
+        )) {
+            if let url = viewModel.shareURL {
+                ActivityViewController(activityItems: [url])
+            }
         }
     }
     

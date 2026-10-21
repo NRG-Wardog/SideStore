@@ -150,6 +150,17 @@ struct CreateManualProfileView: View {
                                             Text("Serial: \(cert.serialNumber)")
                                                 .font(.caption2)
                                                 .foregroundColor(.secondary)
+                                            let hasKey = ProfileManager.shared.hasPrivateKey(for: cert)
+                                            HStack(spacing: 4) {
+                                                Text("Type: \(hasKey ? "public + private" : "public only")")
+                                                    .font(.caption2)
+                                                    .foregroundColor(hasKey ? .green : .secondary)
+                                                if hasKey {
+                                                    Image(systemName: "key.fill")
+                                                        .font(.system(size: 9))
+                                                        .foregroundColor(.green)
+                                                }
+                                            }
                                         }
                                         Spacer()
                                         if selectedCertificateIDs.contains(certID) {

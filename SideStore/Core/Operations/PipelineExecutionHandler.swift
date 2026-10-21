@@ -59,8 +59,76 @@ enum AppGroupResolution: Sendable {
     case keepOriginal(String)
 }
 
-protocol UserCustomizationHandler: AnyObject, Sendable {
-    func resolveBundleIDOverride(initialBundleID: String) async throws -> (customID: String, appendTeamID: Bool)?
-    func resolveAppGroupMismatch(originalGroup: String, correctedGroup: String) async throws -> AppGroupResolution
+enum ProfileCustomizationChoice: Sendable {
+    case defaultProfile
+    case profile(ALTProvisioningProfile)
 }
 
+protocol UserCustomizationHandler: AnyObject, Sendable {
+    func resolveBundleIDOverride(initialBundleID: String) async throws -> (customID: String, appendTeamID: Bool)?
+    func resolveInfoPlistCustomization(
+        targets: [InfoPlistTarget],
+        initialBundleID: String,
+        appendTeamID: Bool,
+        installedAppIdentities: [String: String],
+        teamID: String
+    ) async throws -> (modifiedPlists: [String: [String: any Sendable]], appendTeamID: Bool)?
+    func resolveInfoPlistCustomization(
+        initialPlist: [String: any Sendable],
+        initialBundleID: String,
+        appendTeamID: Bool,
+        installedAppIdentities: [String: String],
+        teamID: String
+    ) async throws -> (modifiedPlist: [String: any Sendable], appendTeamID: Bool)?
+    func resolveEntitlementsCustomization(
+        targets: [EntitlementsTarget],
+        teamType: ALTTeamType
+    ) async throws -> [String: [String: any Sendable]]?
+    func resolveEntitlementsCustomization(
+        initialEntitlements: [String: any Sendable],
+        bundleID: String,
+        teamType: ALTTeamType
+    ) async throws -> [String: any Sendable]?
+    func resolveAppGroupMismatch(originalGroup: String, correctedGroup: String) async throws -> AppGroupResolution
+    func resolveAppIconCustomization(appName: String) async throws -> URL?
+    func resolveProvisioningProfileCustomization(appName: String, bundleID: String) async throws -> ProfileCustomizationChoice?
+}
+
+
+// The host has no reviewed IPC prompts for these new customization workflows yet.
+// Do not turn an absent presenter into implicit approval or a changed identity.
+extension UserCustomizationHandler {
+    func resolveInfoPlistCustomization(
+        targets: [InfoPlistTarget], initialBundleID: String, appendTeamID: Bool,
+        installedAppIdentities: [String: String], teamID: String
+    ) async throws -> (modifiedPlists: [String: [String: any Sendable]], appendTeamID: Bool)? {
+        throw OperationError.invalidParameters("Info.plist customization requires a supported host prompt.")
+    }
+
+    func resolveInfoPlistCustomization(
+        initialPlist: [String: any Sendable], initialBundleID: String, appendTeamID: Bool,
+        installedAppIdentities: [String: String], teamID: String
+    ) async throws -> (modifiedPlist: [String: any Sendable], appendTeamID: Bool)? {
+        throw OperationError.invalidParameters("Info.plist customization requires a supported host prompt.")
+    }
+
+    func resolveEntitlementsCustomization(
+        targets: [EntitlementsTarget], teamType: ALTTeamType
+    ) async throws -> [String: [String: any Sendable]]? {
+        throw OperationError.invalidParameters("Entitlement customization requires a supported host prompt.")
+    }
+
+    func resolveEntitlementsCustomization(
+        initialEntitlements: [String: any Sendable], bundleID: String, teamType: ALTTeamType
+    ) async throws -> [String: any Sendable]? {
+        throw OperationError.invalidParameters("Entitlement customization requires a supported host prompt.")
+    }
+
+    func resolveAppIconCustomization(appName: String) async throws -> URL? {
+        throw OperationError.invalidParameters("Icon customization requires a supported host prompt.")
+    }
+
+    func resolveProvisioningProfileCustomization(appName: String, bundleID: String) async throws -> ProfileCustomizationChoice? {
+        throw OperationError.invalidParameters("Provisioning profile customization requires a supported host prompt.")
+    }
+}

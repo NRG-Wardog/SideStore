@@ -16,6 +16,7 @@ class SignInFlowHandler: AnyObject, SignInHandler, AnisetteServerHandler {
     
     private var credentialsContinuation: CheckedContinuation<(String, String), Error>?
     private var activeAuthCompletionHandler: ((Result<(ALTAccount, ALTAppleAPISession), Error>) -> Void)?
+    var showsDoItLater: Bool = false
     
     private lazy var navigationController: UINavigationController = {
         let storyboard = UIStoryboard(name: "Authentication", bundle: nil)
@@ -42,7 +43,7 @@ class SignInFlowHandler: AnyObject, SignInHandler, AnisetteServerHandler {
     @MainActor
     func credentials() async throws -> (String, String) {
         guard let presentingViewController = self.presentingViewController else {
-            throw OperationError.invalidOperationContext("SignInFlowHandler: Cannot prompt for credentials because presentingViewController is nil")
+            throw OperationError.invalidParameters("SignInFlowHandler: Cannot prompt for credentials because presentingViewController is nil")
         }
         
         if let _ = self.presentedAuthVC {
@@ -108,7 +109,7 @@ class SignInFlowHandler: AnyObject, SignInHandler, AnisetteServerHandler {
     @MainActor
     func verificationCode(for request: TwoFactorRequest) async throws -> TwoFactorResponse {
         guard self.isPresenterAvailable else {
-            throw OperationError.invalidOperationContext("SignInFlowHandler: Cannot prompt for 2FA verification code because presenting view controller is unavailable")
+            throw OperationError.invalidParameters("SignInFlowHandler: Cannot prompt for 2FA verification code because presenting view controller is unavailable")
         }
 
         let errorMessage: String? = request.error
@@ -446,7 +447,7 @@ class SignInFlowHandler: AnyObject, SignInHandler, AnisetteServerHandler {
     @MainActor
     func resolveRevocation(certificates: [ALTX509Certificate], teamType: ALTTeamType) async throws -> RevokeDecision {
         guard self.isPresenterAvailable else {
-            throw OperationError.invalidOperationContext("SignInFlowHandler: Cannot resolve certificate revocation because presenting view controller is unavailable")
+            throw OperationError.invalidParameters("SignInFlowHandler: Cannot resolve certificate revocation because presenting view controller is unavailable")
         }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -516,7 +517,7 @@ class SignInFlowHandler: AnyObject, SignInHandler, AnisetteServerHandler {
     @MainActor
     func resolveTeam(_ teams: [ALTTeam]) async throws -> ALTTeam {
         guard self.isPresenterAvailable else {
-            throw OperationError.invalidOperationContext("SignInFlowHandler: Cannot resolve team selection because presenting view controller is unavailable")
+            throw OperationError.invalidParameters("SignInFlowHandler: Cannot resolve team selection because presenting view controller is unavailable")
         }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -550,6 +551,63 @@ class SignInFlowHandler: AnyObject, SignInHandler, AnisetteServerHandler {
     }
     
     @MainActor
+    func resolveDeviceRegistrationErrors(_ error: Error) async -> ProvisioningErrorDecision {
+        let title: String
+        if error is OperationError {
+            title = NSLocalizedString("Device Registration Error", comment: "")
+        } else {
+            title = NSLocalizedString("Developer Portal Error", comment: "")
+        }
+
+        return await withCheckedContinuation { continuation in
+            let alertController = UIAlertController(
+                title: title,
+                message: error.localizedDescription,
+                preferredStyle: .alert
+            )
+            
+            if self.showsDoItLater {
+                let retryAction = UIAlertAction(title: NSLocalizedString("Retry", comment: ""), style: .default) { _ in
+                    alertController.dismiss(animated: true) {
+                        continuation.resume(returning: .retry)
+                    }
+                }
+                let laterAction = UIAlertAction(title: NSLocalizedString("Do It Later", comment: ""), style: .cancel) { _ in
+                    alertController.dismiss(animated: true) {
+                        continuation.resume(returning: .cancel)
+                    }
+                }
+                alertController.addAction(retryAction)
+                alertController.addAction(laterAction)
+            } else {
+                let cancelAction = UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .cancel) { _ in
+                    alertController.dismiss(animated: true) {
+                        continuation.resume(returning: .cancel)
+                    }
+                }
+                
+                let skipAction = UIAlertAction(title: NSLocalizedString("Skip", comment: ""), style: .default) { _ in
+                    alertController.dismiss(animated: true) {
+                        continuation.resume(returning: .skip)
+                    }
+                }
+                
+                let retryAction = UIAlertAction(title: NSLocalizedString("Retry", comment: ""), style: .default) { _ in
+                    alertController.dismiss(animated: true) {
+                        continuation.resume(returning: .retry)
+                    }
+                }
+                
+                alertController.addAction(retryAction)
+                alertController.addAction(skipAction)
+                alertController.addAction(cancelAction)
+            }
+            
+            self.present(alertController)
+        }
+    }
+    
+    @MainActor
     func resolveProvisioningError(_ error: Error) async -> ProvisioningErrorDecision {
         return await withCheckedContinuation { continuation in
             let alertController = UIAlertController(
@@ -558,21 +616,77 @@ class SignInFlowHandler: AnyObject, SignInHandler, AnisetteServerHandler {
                 preferredStyle: .alert
             )
             
-            let cancelAction = UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .cancel) { _ in
-                alertController.dismiss(animated: true) {
-                    continuation.resume(returning: .cancel)
+            if self.showsDoItLater {
+                let retryAction = UIAlertAction(title: NSLocalizedString("Retry", comment: ""), style: .default) { _ in
+                    alertController.dismiss(animated: true) {
+                        continuation.resume(returning: .retry)
+                    }
                 }
+                let laterAction = UIAlertAction(title: NSLocalizedString("Do It Later", comment: ""), style: .cancel) { _ in
+                    alertController.dismiss(animated: true) {
+                        continuation.resume(returning: .cancel)
+                    }
+                }
+                alertController.addAction(retryAction)
+                alertController.addAction(laterAction)
+            } else {
+                let cancelAction = UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .cancel) { _ in
+                    alertController.dismiss(animated: true) {
+                        continuation.resume(returning: .cancel)
+                    }
+                }
+                
+                let skipAction = UIAlertAction(title: NSLocalizedString("Skip", comment: ""), style: .default) { _ in
+                    alertController.dismiss(animated: true) {
+                        continuation.resume(returning: .skip)
+                    }
+                }
+                
+                let retryAction = UIAlertAction(title: NSLocalizedString("Retry", comment: ""), style: .default) { _ in
+                    alertController.dismiss(animated: true) {
+                        continuation.resume(returning: .retry)
+                    }
+                }
+                
+                alertController.addAction(cancelAction)
+                alertController.addAction(skipAction)
+                alertController.addAction(retryAction)
             }
             
-            let retryAction = UIAlertAction(title: NSLocalizedString("Retry", comment: ""), style: .default) { _ in
+            self.present(alertController)
+        }
+    }
+    
+    @MainActor
+    func showCertificateSkipAcknowledgment() async {
+        await withCheckedContinuation { continuation in
+            let alertController = UIAlertController(
+                title: NSLocalizedString("Certificate Setup Skipped", comment: ""),
+                message: NSLocalizedString("Active signing certificate is not present and wasn't fetched/setup properly. You can complete the pending actions later or go into Settings -> Certificate Management and setup certificates manually.", comment: ""),
+                preferredStyle: .alert
+            )
+            alertController.addAction(UIAlertAction(title: NSLocalizedString("OK", comment: ""), style: .default) { _ in
                 alertController.dismiss(animated: true) {
-                    continuation.resume(returning: .retry)
+                    continuation.resume()
                 }
-            }
-            
-            alertController.addAction(cancelAction)
-            alertController.addAction(retryAction)
-            
+            })
+            self.present(alertController)
+        }
+    }
+
+    @MainActor
+    func showDeviceRegistrationSkipAcknowledgment() async {
+        await withCheckedContinuation { continuation in
+            let alertController = UIAlertController(
+                title: NSLocalizedString("Device Registration Skipped", comment: ""),
+                message: NSLocalizedString("Your device is not yet registered under this developer team. Apps cannot be installed or refreshed until registration is completed. You can complete this later in Settings.", comment: ""),
+                preferredStyle: .alert
+            )
+            alertController.addAction(UIAlertAction(title: NSLocalizedString("OK", comment: ""), style: .default) { _ in
+                alertController.dismiss(animated: true) {
+                    continuation.resume()
+                }
+            })
             self.present(alertController)
         }
     }
@@ -580,8 +694,10 @@ class SignInFlowHandler: AnyObject, SignInHandler, AnisetteServerHandler {
     @MainActor
     func resolveResign(mismatchReason: CodeSignValidationReason, context: StandaloneOperationContext) async throws -> Bool {
         guard self.isPresenterAvailable else {
-            throw OperationError.invalidOperationContext("SignInFlowHandler: Cannot resolve resign prompt because presenting view controller is unavailable")
+            throw OperationError.invalidParameters("SignInFlowHandler: Cannot resolve resign prompt because presenting view controller is unavailable")
         }
+
+        let isFreeTeam = try await AuthManager.shared.getAuthenticatedTeam().type == .free
 
         return try await withCheckedThrowingContinuation { continuation in
             var hasResumed = false
@@ -589,6 +705,7 @@ class SignInFlowHandler: AnyObject, SignInHandler, AnisetteServerHandler {
             let resignViewController = storyboard.instantiateViewController(withIdentifier: "resignAltStoreViewController") as! ResignAltStoreViewController
             resignViewController.context = context
             resignViewController.mismatchReason = mismatchReason
+            resignViewController.isFreeTeam = isFreeTeam ?? false
             resignViewController.completionHandler = { result in
                 guard !hasResumed else {
                     debugLog("[SignInFlowHandler] resolveResign completionHandler invoked more than once. Ignoring.")
@@ -637,7 +754,7 @@ class SignInFlowHandler: AnyObject, SignInHandler, AnisetteServerHandler {
     @MainActor
     func warnOutdatedAnisetteServer() async throws -> Bool {
         guard let presenter = self.activePresenter else {
-            throw OperationError.invalidOperationContext("SignInFlowHandler: Cannot show outdated anisette warning because presenting view controller is unavailable")
+            throw OperationError.invalidParameters("SignInFlowHandler: Cannot show outdated anisette warning because presenting view controller is unavailable")
         }
         
         return await withCheckedContinuation { continuation in

@@ -11,6 +11,8 @@
 		A87939D3303A89CA004D9227 /* Minimuxer in Frameworks */ = {isa = PBXBuildFile; productRef = A87939D2303A89CA004D9227 /* Minimuxer */; };
 		A8C3702C302DA80D0010213A /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = A8C3702B302DA80D0010213A /* KeychainAccess */; };
 		A8C37039302DA8D90010213A /* SemanticVersion in Frameworks */ = {isa = PBXBuildFile; productRef = A8C37038302DA8D90010213A /* SemanticVersion */; };
+		A8E8DEA63059BC8800F69B47 /* CodeSignKit in Frameworks */ = {isa = PBXBuildFile; productRef = A8E8DEA53059BC8800F69B47 /* CodeSignKit */; };
+		A8E8DEA93059BC9800F69B47 /* CodeSignKit in Frameworks */ = {isa = PBXBuildFile; productRef = A8E8DEA83059BC9800F69B47 /* CodeSignKit */; };
 		A8F5E9AF30422E3600DBD7E1 /* SideSign in Frameworks */ = {isa = PBXBuildFile; productRef = A8F5E9AE30422E3600DBD7E1 /* SideSign */; };
 		BF989177250AABF4002ACF50 /* AltWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = BF989167250AABF3002ACF50 /* AltWidgetExtension.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -283,6 +285,35 @@
 		A8EECF492F4B195000F2436D /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				"Core/Auth/Flows/CertificateProvisioningFlow.swift",
+				"Core/Auth/Flows/CodeSignValidationFlow.swift",
+				"Core/Auth/Flows/DeviceRegistrationFlow.swift",
+				"DeepLinks/ExportPairingFileHandler.swift",
+				"DeepLinks/FileImportHandler.swift",
+				"Views/Components/ActivityViewController.swift",
+				"Views/Components/EntitlementsCustomizationCoreView.swift",
+				"Views/Components/EntitlementsCustomizationSheetView.swift",
+				"Views/Components/EntitlementsCustomizationView.swift",
+				"Views/Components/EntitlementsCustomizationViewModel.swift",
+				"Views/Components/InfoPlistCustomizationCoreView.swift",
+				"Views/Components/InfoPlistCustomizationSheetView.swift",
+				"Views/Components/InfoPlistCustomizationView.swift",
+				"Views/Components/SuffixEnforcedTextField.swift",
+				"Views/Onboarding/OnboardingView.swift",
+				"Views/Settings/Advanced/PairingFile/PairingFileDetailView.swift",
+				"Views/Settings/Advanced/PairingFile/PairingFileEditAlertViewController.swift",
+				"Views/Settings/Advanced/PairingFile/PairingFileManagementView.swift",
+				"Views/Settings/Advanced/PairingFile/PairingFileManagementViewModel.swift",
+				"Views/Settings/Advanced/PairingFile/PairingViewController.swift",
+				"Views/Settings/Advanced/PairingFile/WirelessPair/WirelessPairTargetDialog.swift",
+				"Views/Settings/Advanced/PairingFile/WirelessPair/WirelessPairView.swift",
+				"Views/Settings/Advanced/PairingFile/WirelessPair/WirelessPairViewModel.swift",
+				"Views/Settings/Advanced/Profiles/ProfileManagementView.swift",
+				"Views/Settings/Advanced/Profiles/ProfileManagementViewModel.swift",
+				"Views/Settings/Advanced/Profiles/SelectProfileViewController.swift",
+				"Views/Settings/Advanced/Profiles/SetProfileAlertViewController.swift",
+				"Views/Settings/Advanced/UserCustomizations/SideSign/SideSignConfigurationView.swift",
+				"Views/Settings/Auth/AccountVerificationRow.swift",
 				Tests/UITests/UITests.swift,
 				Tests/UITests/UITestsLaunchTests.swift,
 				Tests/UnitTests/datastructures/DataStructuresTests.swift,
@@ -385,6 +416,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A8E8DEA63059BC8800F69B47 /* CodeSignKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -392,6 +424,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A8E8DEA93059BC9800F69B47 /* CodeSignKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -409,6 +442,13 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		A8E8DEA73059BC9800F69B47 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		BFD247612284B9A500981D42 = {
 			isa = PBXGroup;
 			children = (
@@ -427,6 +467,7 @@
 				A84596F32F7DC4C90000B8CD /* README.md */,
 				A84596F42F7DC4C90000B8CD /* trustedapps.json */,
 				A84596F52F7DC4C90000B8CD /* SideStore.conf */,
+				A8E8DEA73059BC9800F69B47 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -563,6 +604,7 @@
 				A8C3702A302DA80D0010213A /* XCRemoteSwiftPackageReference "KeychainAccess" */,
 				A8C37037302DA8D90010213A /* XCRemoteSwiftPackageReference "SemanticVersion" */,
 				A87939D1303A89C9004D9227 /* XCLocalSwiftPackageReference "Dependencies/minimuxer" */,
+				A8E8DEA43059BC8800F69B47 /* XCRemoteSwiftPackageReference "CodeSignKit" */,
 			);
 			productRefGroup = BFD2476B2284B9A500981D42 /* Products */;
 			projectDirPath = "";
@@ -1109,6 +1151,14 @@
 				minimumVersion = 0.4.0;
 			};
 		};
+		A8E8DEA43059BC8800F69B47 /* XCRemoteSwiftPackageReference "CodeSignKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mahee96/CodeSignKit.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1125,6 +1175,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A8C37037302DA8D90010213A /* XCRemoteSwiftPackageReference "SemanticVersion" */;
 			productName = SemanticVersion;
+		};
+		A8E8DEA53059BC8800F69B47 /* CodeSignKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A8E8DEA43059BC8800F69B47 /* XCRemoteSwiftPackageReference "CodeSignKit" */;
+			productName = CodeSignKit;
+		};
+		A8E8DEA83059BC9800F69B47 /* CodeSignKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A8E8DEA43059BC8800F69B47 /* XCRemoteSwiftPackageReference "CodeSignKit" */;
+			productName = CodeSignKit;
 		};
 		A8F5E9AE30422E3600DBD7E1 /* SideSign */ = {
 			isa = XCSwiftPackageProductDependency;

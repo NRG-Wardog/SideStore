@@ -696,7 +696,7 @@ final class BonjourDiscoveryManager: NSObject, ObservableObject, NetServiceDeleg
     
     static func localInterfaceAddresses(matchingInterfaces: [NWInterface]? = nil) -> [String] {
         let targetNames: Set<String>? = matchingInterfaces.map { Set($0.map { $0.name.lowercased() }) }
-        let interfaces = Minimuxer.shared().network.activeInterfaces
+        let interfaces = Minimuxer.shared.network.activeInterfaces
         
         var addresses: [String] = []
         for iface in interfaces {
@@ -762,7 +762,8 @@ final class BonjourDiscoveryManager: NSObject, ObservableObject, NetServiceDeleg
         ofType rawType: String,
         namePrefix: String = "",
         domain: String? = nil,
-        timeout: TimeInterval = AppConstants.Bonjour.defaultDiscoveryTimeout
+        timeout: TimeInterval = AppConstants.Bonjour.defaultDiscoveryTimeout,
+        isPreferredCandidate: ((NWBrowser.Result) -> Bool)? = nil
     ) async -> (host: String, port: UInt16)? {
         let typeWithoutDot = rawType.hasSuffix(".") ? String(rawType.dropLast()) : rawType
         let descriptor = NWBrowser.Descriptor.bonjour(type: typeWithoutDot, domain: domain)
@@ -788,21 +789,28 @@ final class BonjourDiscoveryManager: NSObject, ObservableObject, NetServiceDeleg
                     debugLog("[BonjourDiscovery] resolveFirstService: found endpoint '\(res.endpoint)' (interfaces: \(res.interfaces.map { $0.name }))")
                 }
                 
-                let exactMatch = results.first(where: {
+                let matched = results.filter { res in
+                    guard case .service(let name, _, _, _) = res.endpoint else { return false }
+                    return namePrefix.isEmpty || name.localizedCaseInsensitiveContains(namePrefix)
+                }
+                
+                let preferred = isPreferredCandidate.flatMap { predicate in
+                    matched.first(where: predicate)
+                }
+                
+                let exactMatch = matched.first(where: {
                     guard case .service(let name, _, _, _) = $0.endpoint else { return false }
                     return name.localizedCaseInsensitiveCompare(namePrefix) == .orderedSame
                 })
                 
-                guard let target = exactMatch ?? results.first(where: {
-                    guard case .service(let name, _, _, _) = $0.endpoint else { return false }
-                    return namePrefix.isEmpty || name.localizedCaseInsensitiveContains(namePrefix)
-                }), case .service(let name, _, _, _) = target.endpoint else {
-                    debugLog("[BonjourDiscovery] resolveFirstService: no result matched prefix '\(namePrefix)'")
+                guard let selectedTarget = preferred ?? exactMatch ?? matched.first,
+                      case .service(let name, _, _, _) = selectedTarget.endpoint else {
+                    debugLog("[BonjourDiscovery] resolveFirstService: no candidate matched.")
                     return
                 }
                 
                 debugLog("[BonjourDiscovery] resolveFirstService: matched service '\(name)', initiating NWConnection")
-                let conn = NWConnection(to: target.endpoint, using: parameters)
+                let conn = NWConnection(to: selectedTarget.endpoint, using: parameters)
                 resolver.setActiveConnection(conn)
                 
                 conn.pathUpdateHandler = { path in

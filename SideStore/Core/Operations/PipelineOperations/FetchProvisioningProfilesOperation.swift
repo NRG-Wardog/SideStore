@@ -21,60 +21,73 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         if let error = self.context.error {
-            self.debugLog("[FetchProvisioningProfiles] Context has pre-existing error: \(error.localizedDescription)")
+            self.debugLog("[FetchProvisioningProfiles] Context has a pre-existing error.")
             throw error
         }
-        
-        guard let team = AuthManager.shared.team else {
-            self.debugLog("[FetchProvisioningProfiles] Team not found in AuthManager.")
-            throw OperationError.notAuthenticated
-        }
-        
+
         guard let targetAppBundle = self.context.targetAppBundle else {
-            self.debugLog("[FetchProvisioningProfiles] App not found in context.")
-            throw OperationError.appNotFound(name: nil)
+            self.debugLog("[FetchProvisioningProfiles] Target app bundle missing in context.")
+            throw OperationError.invalidParameters("FetchProvisioningProfilesOperation: context.targetAppBundle is nil")
         }
-        
+
         let effectiveBundleId = self.context.targetBundleIdentifier
-        self.debugLog("[FetchProvisioningProfiles] Executing for app \(targetAppBundle.bundleIdentifier), targetBundleID: \(effectiveBundleId), team: \(team.identifier), useMainProfile: \(self.context.useMainProfile)")
+
+        let appExtensions = targetAppBundle.appExtensions
+
+        if let overrideProfile = self.context.overrideProvisioningProfile {
+            self.debugLog("[FetchProvisioningProfiles] Using override provisioning profile.")
+            var profiles = [effectiveBundleId: overrideProfile]
+            if !self.context.useMainProfile, !appExtensions.isEmpty {
+                for appExtension in appExtensions {
+                    let updatedExtensionBundleId = appExtension.bundleIdentifier.replacingOccurrences(of: targetAppBundle.bundleIdentifier, with: effectiveBundleId)
+                    profiles[updatedExtensionBundleId] = overrideProfile
+                }
+            }
+            self.setProgress(100)
+            self.debugLog("[FetchProvisioningProfiles] Total override profiles prepared: \(profiles.count)")
+            return profiles
+        }
+
+        let team = try await AuthManager.shared.getAuthenticatedTeam()
+        self.debugLog("[FetchProvisioningProfiles] Executing profile preparation; useMainProfile: \(self.context.useMainProfile)")
         
         self.setProgress(10)
 
-        self.debugLog("[FetchProvisioningProfiles] Preparing main provisioning profile for \(targetAppBundle.bundleIdentifier)...")
+        self.debugLog("[FetchProvisioningProfiles] Preparing main provisioning profile...")
         let profile = try await self.provisionAndFetchProfile(for: targetAppBundle, parentAppBundle: nil, team: team)
-        self.debugLog("[FetchProvisioningProfiles] Main profile prepared successfully for \(effectiveBundleId), expiration: \(String(describing: profile.expirationDate))")
+        self.debugLog("[FetchProvisioningProfiles] Main profile prepared successfully.")
         
         var profiles = [effectiveBundleId: profile]
         
-        guard !self.context.useMainProfile, !targetAppBundle.appExtensions.isEmpty else {
+        guard !self.context.useMainProfile, !appExtensions.isEmpty else {
             self.setProgress(100)
-            self.debugLog("[FetchProvisioningProfiles] Total profiles prepared: \(profiles.count) -> keys: \(Array(profiles.keys))")
+            self.debugLog("[FetchProvisioningProfiles] Total profiles prepared: \(profiles.count)")
             return profiles
         }
         
         self.setProgress(50)
-        self.debugLog("[FetchProvisioningProfiles] Preparing profiles for \(targetAppBundle.appExtensions.count) app extensions...")
+        self.debugLog("[FetchProvisioningProfiles] Preparing profiles for \(appExtensions.count) app extensions...")
         try await withThrowingTaskGroup(of: (String, ALTProvisioningProfile).self) { group in
-            for appExtension in targetAppBundle.appExtensions {
+            for appExtension in appExtensions {
                 group.addTask {
-                    self.verboseLog("[FetchProvisioningProfiles] Preparing extension profile for \(appExtension.bundleIdentifier)...")
+                    self.verboseLog("[FetchProvisioningProfiles] Preparing extension profile...")
                     let extProfile = try await self.provisionAndFetchProfile(for: appExtension, parentAppBundle: targetAppBundle, team: team)
                     // Use customized bundle ID if applicable
                     let updatedExtensionBundleId = appExtension.bundleIdentifier.replacingOccurrences(of: targetAppBundle.bundleIdentifier, with: effectiveBundleId)
-                    self.verboseLog("[FetchProvisioningProfiles] Extension profile prepared for \(updatedExtensionBundleId)")
+                    self.verboseLog("[FetchProvisioningProfiles] Extension profile prepared.")
                     return (updatedExtensionBundleId, extProfile)
                 }
             }
             
             var completedCount = 0
-            let totalExtensions = targetAppBundle.appExtensions.count
+            let totalExtensions = appExtensions.count
             let startProgress = self.progress.completedUnitCount
             let endProgress: Int64 = 100
             let range = endProgress - startProgress
             
             for try await (bundleId, extProfile) in group {
                 profiles[bundleId] = extProfile
-                self.debugLog("[FetchProvisioningProfiles] Added profile for extension bundle ID: \(bundleId)")
+                self.debugLog("[FetchProvisioningProfiles] Added extension profile.")
                 completedCount += 1
                 if range > 0 {
                     let percent = startProgress + Int64(Double(completedCount) / Double(totalExtensions) * Double(range))
@@ -83,7 +96,7 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
             }
         }
         
-        self.debugLog("[FetchProvisioningProfiles] Total profiles prepared: \(profiles.count) -> keys: \(Array(profiles.keys))")
+        self.debugLog("[FetchProvisioningProfiles] Total profiles prepared: \(profiles.count)")
         return profiles
     }
 
@@ -98,7 +111,7 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
                 #keyPath(InstalledApp.resignedBundleIdentifier), target
             )
             guard let installedApp = InstalledApp.first(satisfying: predicate, in: context) else {
-                self.verboseLog("[FetchProvisioningProfiles] No existing InstalledApp found for target: \(target)")
+                self.verboseLog("[FetchProvisioningProfiles] No existing InstalledApp found for target.")
                 return nil
             }
             
@@ -107,20 +120,20 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
             let teamsMatch = (installedApp.team?.identifier == team.identifier || installedApp.team == nil)
                              && installedApp.resignedBundleIdentifier.contains(team.identifier)
             
-            self.verboseLog("[FetchProvisioningProfiles] preferredBundleID check: app=\(targetAppBundle.bundleIdentifier), installedResignedID=\(installedApp.resignedBundleIdentifier), installedTeam=\(installedApp.team?.identifier ?? "nil"), targetTeam=\(team.identifier), teamsMatch=\(teamsMatch)")
+            self.verboseLog("[FetchProvisioningProfiles] Preferred bundle ID checked; teamsMatch=\(teamsMatch)")
 
             // TODO: @mahee96: Try to keep the debug build and release build operations similar, refactor later with proper reasoning
             //                 for now, restricted it to debug on simulator only
             #if DEBUG && targetEnvironment(simulator)
 
             let result = teamsMatch ? installedApp.resignedBundleIdentifier : nil
-            self.debugLog("[FetchProvisioningProfiles] preferredBundleID result (DEBUG simulator): \(result ?? "nil")")
+            self.debugLog("[FetchProvisioningProfiles] Preferred bundle ID resolved (DEBUG simulator): \(result != nil)")
             return result
 
             #else
             
             let result = teamsMatch ? installedApp.resignedBundleIdentifier : nil
-            self.debugLog("[FetchProvisioningProfiles] preferredBundleID result: \(result ?? "nil")")
+            self.debugLog("[FetchProvisioningProfiles] Preferred bundle ID resolved: \(result != nil)")
             return result
             
             #endif
@@ -165,20 +178,19 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
             preferredName = targetAppBundle.name
         }
         
-        self.debugLog("[FetchProvisioningProfiles] Registering App ID with name '\(preferredName)' and bundleID '\(bundleID)'...")
+        self.debugLog("[FetchProvisioningProfiles] Registering App ID...")
         let appID = try await self.registerAppID(for: targetAppBundle, name: preferredName, bundleIdentifier: bundleID, team: team)
-        self.debugLog("[FetchProvisioningProfiles] App ID registered successfully: \(appID.bundleIdentifier) (\(appID.identifier))")
+        self.debugLog("[FetchProvisioningProfiles] App ID registered successfully.")
         
-        self.debugLog("[FetchProvisioningProfiles] Updating features for App ID \(appID.bundleIdentifier)...")
+        self.debugLog("[FetchProvisioningProfiles] Updating App ID features...")
         let updatedAppID = try await self.updateFeatures(for: appID, targetAppBundle: targetAppBundle, team: team)
         
-        self.debugLog("[FetchProvisioningProfiles] Updating app groups for App ID \(updatedAppID.bundleIdentifier)...")
+        self.debugLog("[FetchProvisioningProfiles] Updating App ID groups...")
         let groupAppID = try await self.updateAppGroups(for: updatedAppID, targetAppBundle: targetAppBundle, team: team)
         
-        verboseLog(targetAppBundle.dumpMachOInfo())
-        self.debugLog("[FetchProvisioningProfiles] Fetching provisioning profile from Apple for App ID \(groupAppID.bundleIdentifier)...")
+        self.debugLog("[FetchProvisioningProfiles] Fetching provisioning profile from Apple...")
         let profile = try await DeveloperPortalProxy.shared.downloadProvisioningProfile(for: groupAppID, deviceType: DeveloperPortalProxy.currentDeviceType, team: team)
-        self.debugLog("[FetchProvisioningProfiles] Provisioning profile fetched for \(groupAppID.bundleIdentifier) (Name: \(profile.name), Expiration: \(String(describing: profile.expirationDate)))")
+        self.debugLog("[FetchProvisioningProfiles] Provisioning profile fetched.")
         return profile
         }
     }
@@ -191,43 +203,42 @@ private extension FetchProvisioningProfilesOperation{
                                name: String,
                                bundleIdentifier: String,
                                team: ALTTeam) async throws -> ALTAppID {
-        let appIDs: [ALTAppID]
-        if let cachedAppIDs = self.context.sharedContext?.appIDs {
-            self.debugLog("[FetchProvisioningProfiles] Using cached App IDs from shared context.")
-            appIDs = cachedAppIDs
-        } else {
-            self.debugLog("[FetchProvisioningProfiles] Fetching existing App IDs from Apple for team \(team.identifier)...")
-            let fetchedAppIDs = try await TaskChainCoalescer.shared.coalesce(key: "fetch_app_ids_\(team.identifier)") {
-                try await DeveloperPortalProxy.shared.fetchAppIDs(for: team)
+        let appIDs = try await TaskChainCoalescer.shared.coalesce(key: "fetch_app_ids_\(team.identifier)") {
+            if let cachedAppIDs = self.context.sharedContext.appIDs {
+                self.debugLog("[FetchProvisioningProfiles] Using cached App IDs from shared context.")
+                return cachedAppIDs
             }
-            self.context.sharedContext?.appIDs = fetchedAppIDs
-            appIDs = fetchedAppIDs
-            self.verboseLog("[FetchProvisioningProfiles] Found \(appIDs.count) existing App IDs on portal for team \(team.identifier): \(appIDs.map { $0.bundleIdentifier })")
+            self.debugLog("[FetchProvisioningProfiles] Fetching existing App IDs from Apple...")
+            let fetchedAppIDs = try await DeveloperPortalProxy.shared.fetchAppIDs(for: team)
+            self.context.sharedContext.appIDs = fetchedAppIDs
+            self.verboseLog("[FetchProvisioningProfiles] Found \(fetchedAppIDs.count) existing App IDs on portal.")
+            return fetchedAppIDs
         }
         
         if let appID = appIDs.first(where: { $0.bundleIdentifier.lowercased() == bundleIdentifier.lowercased() }) {
-            self.debugLog("[FetchProvisioningProfiles] Found existing App ID on portal: \(appID.bundleIdentifier)")
+            self.debugLog("[FetchProvisioningProfiles] Found existing App ID on portal.")
             return appID
         } else {
             let requiredAppIDs = 1 + targetAppBundle.appExtensions.count
             let availableAppIDs = max(0, Team.maximumFreeAppIDs - appIDs.count)
-            self.verboseLog("[FetchProvisioningProfiles] App ID not found on portal for '\(bundleIdentifier)'. Required: \(requiredAppIDs), Available: \(availableAppIDs) (teamType: \(team.type))")
+            self.verboseLog("[FetchProvisioningProfiles] App ID not found on portal. Required: \(requiredAppIDs), Available: \(availableAppIDs)")
             
             let sortedExpirationDates = appIDs.compactMap { $0.expirationDate }.sorted(by: { $0 < $1 })
             
-            let sanitized = name.filter { $0.isLetter || $0.isNumber || $0.isWhitespace }
-            let appIDName = sanitized.isEmpty ? bundleIdentifier : sanitized
+            let appIDName = self.sanitizeAppIDName(name: name, bundleIdentifier: bundleIdentifier)
             
-            self.debugLog("[FetchProvisioningProfiles] Calling DeveloperPortalProxy.shared.addAppID with name '\(appIDName)' and identifier '\(bundleIdentifier)'...")
+            self.debugLog("[FetchProvisioningProfiles] Requesting new App ID registration...")
             let appID = try await DeveloperPortalProxy.shared.addAppID(name: appIDName, bundleIdentifier: bundleIdentifier, team: team)
-            self.context.sharedContext?.appendAppID(appID)
-            self.debugLog("[FetchProvisioningProfiles] Successfully registered new App ID '\(appID.bundleIdentifier)' on Apple portal.")
+            self.context.sharedContext.appendAppID(appID)
+            self.debugLog("[FetchProvisioningProfiles] Successfully registered new App ID on Apple portal.")
             return appID
         }
     }
     
     func updateFeatures(for appID: ALTAppID, targetAppBundle: ALTApplication, team: ALTTeam) async throws -> ALTAppID {
-        var entitlements = targetAppBundle.entitlements
+        let bundleID = targetAppBundle.bundleIdentifier
+        var entitlements = self.context.customEntitlementsByBundleID[bundleID]
+            ?? targetAppBundle.entitlements
         for (key, value) in context.additionalEntitlements {
             entitlements[key] = value
         }
@@ -263,8 +274,7 @@ private extension FetchProvisioningProfilesOperation{
         }
         
         if !droppedFeatures.isEmpty {
-            let bulleted = droppedFeatures.map { "  • \($0.rawValue)" }.joined(separator: "\n")
-            self.debugLog("[FetchProvisioningProfiles] Dropped non-applicable features for team type \(team.type):\n\(bulleted)")
+            self.debugLog("[FetchProvisioningProfiles] Dropped \(droppedFeatures.count) non-applicable features.")
         }
         
         // check if we really need to make a update on portal
@@ -275,7 +285,7 @@ private extension FetchProvisioningProfilesOperation{
             return currentValue != targetValue
         }
         guard needsUpdate else { 
-            self.debugLog("[FetchProvisioningProfiles] Features for App ID \(appID.bundleIdentifier) are already satisfied. Skipping portal update.")
+            self.debugLog("[FetchProvisioningProfiles] App ID features are already satisfied. Skipping portal update.")
             return appID 
         }
         
@@ -285,22 +295,24 @@ private extension FetchProvisioningProfilesOperation{
         
         do {
             let updated = try await DeveloperPortalProxy.shared.updateAppID(appID, team: team)
-            self.verboseLog("[FetchProvisioningProfiles] Updated features for App ID \(updated.bundleIdentifier).")
+            self.verboseLog("[FetchProvisioningProfiles] Updated App ID features.")
             return updated
         } catch {
-            self.debugLog("[FetchProvisioningProfiles] Failed to update features for App ID \(appID.bundleIdentifier). \(error.localizedDescription)")
+            self.debugLog("[FetchProvisioningProfiles] Failed to update App ID features.")
             throw error
         }
     }
     
     func updateAppGroups(for appID: ALTAppID, targetAppBundle: ALTApplication, team: ALTTeam) async throws -> ALTAppID {
-        var entitlements = targetAppBundle.entitlements
+        let bundleID = targetAppBundle.bundleIdentifier
+        var entitlements = self.context.customEntitlementsByBundleID[bundleID]
+            ?? targetAppBundle.entitlements
         for (key, value) in self.context.additionalEntitlements {
             entitlements[key] = value
         }
                 
         guard var applicationGroups = entitlements[ALTEntitlement.appGroups.rawValue] as? [String], !applicationGroups.isEmpty else {
-            verboseLog("[FetchProvisioningProfiles] App ID \(appID.bundleIdentifier) has no app groups, skipping assignment.")
+            verboseLog("[FetchProvisioningProfiles] App ID has no app groups, skipping assignment.")
             // Assigning an App ID to an empty app group array fails,
             // so just do nothing if there are no app groups.
             return appID
@@ -308,18 +320,18 @@ private extension FetchProvisioningProfilesOperation{
         
         for group in applicationGroups {
             if group.contains("$(APP_GROUP_IDENTIFIER)") {
-                self.debugLog("[FetchProvisioningProfiles] Error: Application group contains raw placeholder '$(APP_GROUP_IDENTIFIER)': \(group)")
+                self.debugLog("[FetchProvisioningProfiles] Error: Application group contains an unresolved placeholder.")
                 throw OperationError.invalidParameters("Application group '\(group)' contains raw placeholder '$(APP_GROUP_IDENTIFIER)'.")
             }
         }
         
         if targetAppBundle.isAltStoreApp {
-            verboseLog("[FetchProvisioningProfiles] Application groups before modifying for SideStore: \(applicationGroups)")
+            verboseLog("[FetchProvisioningProfiles] Application group count before modifying for SideStore: \(applicationGroups.count)")
             
             // Remove app groups that contain AltStore since they can be problematic (cause SideStore to expire early)
             for (index, group) in applicationGroups.enumerated() {
                 if group.contains("AltStore") {
-                    verboseLog("[FetchProvisioningProfiles] Removing application group: \(group)")
+                    verboseLog("[FetchProvisioningProfiles] Removing application group.")
                     applicationGroups.remove(at: index)
                 }
             }
@@ -343,21 +355,23 @@ private extension FetchProvisioningProfilesOperation{
                 applicationGroups.append(altStoreAppGroupID)
             }
         }
-        verboseLog("[FetchProvisioningProfiles] Application groups: \(applicationGroups)")
+        verboseLog("[FetchProvisioningProfiles] Application group count: \(applicationGroups.count)")
         
         var seenGroupIDs = Set<String>()
         
         do {
-            let fetchedGroups: [ALTAppGroup]
-            if let cachedGroups = self.context.sharedContext?.appGroups {
-                self.debugLog("[FetchProvisioningProfiles] Using cached App Groups from shared context.")
-                fetchedGroups = cachedGroups
-            } else {
-                self.debugLog("[FetchProvisioningProfiles] Fetching existing App Groups from Apple for team \(team.identifier)...")
-                let groups = try await DeveloperPortalProxy.shared.fetchAppGroups(for: team)
-                self.context.sharedContext?.appGroups = groups
-                fetchedGroups = groups
+            let appGroups = try await TaskChainCoalescer.shared.coalesce(key: "fetch_app_groups_\(team.identifier)") {
+                if let cachedGroups = self.context.sharedContext.appGroups {
+                    self.debugLog("[FetchProvisioningProfiles] Using cached App Groups from shared context.")
+                    return cachedGroups
+                }
+                self.debugLog("[FetchProvisioningProfiles] Fetching existing App Groups from Apple...")
+                let fetched = try await DeveloperPortalProxy.shared.fetchAppGroups(for: team)
+                self.context.sharedContext.appGroups = fetched
+                self.verboseLog("[FetchProvisioningProfiles] Found \(fetched.count) existing App Groups on portal.")
+                return fetched
             }
+            self.verboseLog("[FetchProvisioningProfiles] Active App Group count: \(appGroups.count)")
             
             var groups = [ALTAppGroup]()
             
@@ -365,31 +379,39 @@ private extension FetchProvisioningProfilesOperation{
                 let adjustedGroupIdentifier = try await self.adjustedGroupIdentifier(for: groupIdentifier, appID: appID, targetAppBundle: targetAppBundle, team: team)
                 guard seenGroupIDs.insert(adjustedGroupIdentifier).inserted else { continue }
                 
-                if let group = fetchedGroups.first(where: { $0.groupIdentifier == adjustedGroupIdentifier }) {
-                    groups.append(group)
+                let group: ALTAppGroup
+                if let existing = self.context.sharedContext.appGroups?.first(where: { $0.groupIdentifier == adjustedGroupIdentifier }) {
+                    group = existing
                 } else {
                     // Not all characters are allowed in group names, so we replace periods with spaces (like Apple does).
                     let name = "SideStore " + groupIdentifier.replacingOccurrences(of: ".", with: " ")
                     do {
-                        let group = try await DeveloperPortalProxy.shared.addAppGroup(name: name, groupIdentifier: adjustedGroupIdentifier, team: team)
-                        self.context.sharedContext?.appendAppGroup(group)
-                        self.verboseLog("[FetchProvisioningProfiles] Created new App Group \(group.groupIdentifier).")
-                        groups.append(group)
+                        group = try await TaskChainCoalescer.shared.coalesce(key: "add_app_group_\(adjustedGroupIdentifier)") {
+                            // skip add if already added into shared by other tasks
+                            if let existing = self.context.sharedContext.appGroups?.first(where: { $0.groupIdentifier == adjustedGroupIdentifier }) {
+                                return existing
+                            }
+                            let newGroup = try await DeveloperPortalProxy.shared.addAppGroup(name: name, groupIdentifier: adjustedGroupIdentifier, team: team)
+                            self.context.sharedContext.appendAppGroup(newGroup)
+                            self.verboseLog("[FetchProvisioningProfiles] Created new App Group.")
+                            return newGroup
+                        }
                     } catch {
-                        self.debugLog("[FetchProvisioningProfiles] Failed to create new App Group \(adjustedGroupIdentifier). \(error.localizedDescription)")
+                        self.debugLog("[FetchProvisioningProfiles] Failed to create new App Group.")
                         throw error
                     }
                 }
+                groups.append(group)
             }
             
             try await DeveloperPortalProxy.shared.assignAppID(appID, to: Array(groups), team: team)
             let groupIDs = groups.map { $0.groupIdentifier }
-            self.debugLog("[FetchProvisioningProfiles] Assigned App ID \(appID.bundleIdentifier) to App Groups \(groupIDs.description).")
+            self.debugLog("[FetchProvisioningProfiles] Assigned App ID to \(groupIDs.count) App Groups.")
             
             return appID
         } catch {
             let groupIDs = Array(seenGroupIDs.isEmpty ? Set(applicationGroups.map { $0 + "." + team.identifier }) : seenGroupIDs)
-            self.debugLog("[FetchProvisioningProfiles] Failed to assign/create App Groups \(groupIDs) for App ID \(appID.bundleIdentifier): \(error.localizedDescription)")
+            self.debugLog("[FetchProvisioningProfiles] Failed to assign or create App Groups.")
             throw error
         }
     }
@@ -431,5 +453,54 @@ private extension FetchProvisioningProfilesOperation{
         }
 
         return groupIdentifier + "." + team.identifier
+    }
+}
+
+private extension FetchProvisioningProfilesOperation {
+    func sanitizeAppIDName(name: String, bundleIdentifier: String) -> String {
+        let sanitizedName = self.sanitizeToAscii(name)
+        if !sanitizedName.isEmpty {
+            return sanitizedName
+        }
+
+        return self.sanitizeToAscii(bundleIdentifier)
+    }
+
+    func sanitizeToAscii(_ string: String) -> String {
+        let romanized = string.applyingTransform(.toLatin, reverse: false) ?? string
+
+        let asciiConverted: String
+        if let icuTransliterated = romanized.applyingTransform(StringTransform("Latin-ASCII"), reverse: false) {
+            asciiConverted = icuTransliterated
+        } else if let lossyData = romanized.data(using: .ascii, allowLossyConversion: true),
+                  let lossyString = String(data: lossyData, encoding: .ascii) {
+            asciiConverted = lossyString
+        } else {
+            asciiConverted = romanized
+        }
+
+        var result = ""
+        result.reserveCapacity(min(asciiConverted.utf8.count, 50))
+        var lastWasSpace = true
+
+        for scalar in asciiConverted.unicodeScalars {
+            if result.count >= 50 { break }
+
+            if (scalar.value >= 0x30 && scalar.value <= 0x39) ||
+               (scalar.value >= 0x41 && scalar.value <= 0x5A) ||
+               (scalar.value >= 0x61 && scalar.value <= 0x7A) {
+                result.unicodeScalars.append(scalar)
+                lastWasSpace = false
+            } else if !lastWasSpace {
+                result.append(" ")
+                lastWasSpace = true
+            }
+        }
+
+        if lastWasSpace, !result.isEmpty {
+            result.removeLast()
+        }
+
+        return result
     }
 }

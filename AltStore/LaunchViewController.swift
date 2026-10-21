@@ -11,21 +11,51 @@
 import SideSign
 import UniformTypeIdentifiers
 import CryptoKit
+import SwiftUI
 
 final class LaunchViewController: UIViewController {
     private var didFinishLaunching = false
     private var retries = 0
     private var maxRetries = 3
-    private var splashView: SplashView!
+    private var splashViewModel = SplashViewModel()
     private var destinationViewController: TabBarController?
     private var startTime: Date!
 
     override func viewDidLoad() {
         super.viewDidLoad()
         debugLog("[LaunchViewController] viewDidLoad()")
-        splashView = SplashView(frame: view.bounds, appName: "SideStore")
         destinationViewController = storyboard!.instantiateViewController(withIdentifier: "tabBarController") as? TabBarController
-        view.addSubview(splashView)
+
+        #if !os(tvOS)
+            if !UserDefaults.standard.hasCompletedOnboarding {
+                let hostingController = UIHostingController(rootView: OnboardingView { [weak self] in
+                    Task { @MainActor in
+                        self?.transitionToMainInterface()
+                    }
+                })
+                embed(child: hostingController)
+                return
+            }
+        #endif
+
+        let splashHosting = UIHostingController(rootView: SplashView(viewModel: splashViewModel))
+        embed(child: splashHosting)
+    }
+
+    @MainActor
+    private func embed(child: UIViewController) {
+        child.loadViewIfNeeded()
+        addChild(child)
+        child.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(child.view)
+        child.didMove(toParent: self)
+
+        NSLayoutConstraint.activate([
+            child.view.topAnchor.constraint(equalTo: view.topAnchor),
+            child.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            child.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            child.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -33,7 +63,7 @@ final class LaunchViewController: UIViewController {
         super.viewDidAppear(animated)
         guard !didFinishLaunching else { return }
         startTime = Date()
-        splashView.updateStatus(NSLocalizedString("Starting…", comment: ""))
+        splashViewModel.updateStatus(NSLocalizedString("Starting…", comment: ""))
         
         // spin off the startup sequence concurrently
         Task.detached { [weak self] in
@@ -87,29 +117,70 @@ final class LaunchViewController: UIViewController {
 
     @MainActor
     func handleLaunchError(_ error: Error, retryCallback: (() async -> Void)? = nil) {
-        do { throw error } catch let error as NSError {
-            let title = error.userInfo[NSLocalizedFailureErrorKey] as? String ?? NSLocalizedString("Unable to Launch SideStore", comment: "")
-            let desc = ([error.debugDescription] + error.underlyingErrors.map { ($0 as NSError).debugDescription }).joined(separator: "\n\n")
-            let alert = UIAlertController(title: title, message: desc, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: NSLocalizedString("Retry", comment: ""), style: .default) { _ in
-                Task { await retryCallback?() }
-            })
-            present(alert, animated: true)
+        let (title, message, extraActions) = self.parseLaunchErrorDetails(error, retryCallback: retryCallback)
+
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        extraActions.forEach { alert.addAction($0) }
+        alert.addAction(UIAlertAction(title: NSLocalizedString("Retry", comment: ""), style: .default) { _ in
+            Task { await retryCallback?() }
+        })
+        present(alert, animated: true)
+    }
+
+    @MainActor
+    private func parseLaunchErrorDetails(_ error: Error, retryCallback: (() async -> Void)?) -> (title: String, message: String, extraActions: [UIAlertAction]) {
+        if let dbError = error as? DatabaseError {
+            switch dbError {
+            case .databaseDowngradeDetected(let reason):
+                let resetAction = UIAlertAction(title: NSLocalizedString("Reset Database", comment: ""), style: .destructive) { [weak self] _ in
+                    DatabaseManager.recreateDatabase()
+                    Task {
+                        await MainActor.run { self?.retries = 0 }
+                        await retryCallback?()
+                    }
+                }
+                return (
+                    title: dbError.errorDescription ?? NSLocalizedString("Database Downgrade Detected", comment: ""),
+                    message: reason,
+                    extraActions: [resetAction]
+                )
+            case .missingAppGroup(let reason), .migrationFailed(let reason):
+                return (
+                    title: dbError.errorDescription ?? NSLocalizedString("Database Error", comment: ""),
+                    message: reason,
+                    extraActions: []
+                )
+            }
         }
+
+        let nsError = error as NSError
+        let title = nsError.userInfo[NSLocalizedFailureErrorKey] as? String ?? NSLocalizedString("Unable to Launch SideStore", comment: "")
+        let desc = ([nsError.debugDescription] + nsError.underlyingErrors.map { ($0 as NSError).debugDescription }).joined(separator: "\n\n")
+        return (title: title, message: desc, extraActions: [])
     }
 
     @MainActor
     func finishLaunching() async {
         guard !didFinishLaunching else { return }
+
+        #if !os(tvOS)
+            if !UserDefaults.standard.hasCompletedOnboarding {
+                await AppManager.shared.reconcileInstalledApps()
+                AppManager.shared.updateAllSources { _ in }
+                updateKnownSources()
+                didFinishLaunching = true
+                return
+            }
+        #endif
+
         didFinishLaunching = true
         
-        splashView.updateStatus(NSLocalizedString("Loading apps…", comment: ""))
+        splashViewModel.updateStatus(NSLocalizedString("Loading apps…", comment: ""))
         await AppManager.shared.reconcileInstalledApps()
-        splashView.updateStatus(NSLocalizedString("Updating sources…", comment: ""))
+        splashViewModel.updateStatus(NSLocalizedString("Updating sources…", comment: ""))
         AppManager.shared.updateAllSources { result in
             guard case .failure(let error) = result else { return }
             debugLog("Failed to update sources on launch. \(error.localizedDescription)")
-            
             
             let errorDesc = ErrorProcessing(.fullError).getDescription(error: error as NSError)
             debugLog("Failed to update sources on launch. \(errorDesc)")
@@ -119,38 +190,37 @@ final class LaunchViewController: UIViewController {
             toastView.show(in: self.destinationViewController!.selectedViewController ?? self.destinationViewController!)
         }
         updateKnownSources()
-        splashView.updateStatus(NSLocalizedString("Almost there…", comment: ""))
-        didFinishLaunching = true
-        
-        let destinationVC = destinationViewController!
-        
+        splashViewModel.updateStatus(NSLocalizedString("Almost there…", comment: ""))
+
         let elapsed = abs(startTime.timeIntervalSinceNow)
         let remaining = elapsed >= 1 ? 0 : 1 - elapsed
         try? await Task.sleep(nanoseconds: UInt64(remaining * 500_000_000))
-        
-        destinationVC.loadViewIfNeeded()
-        addChild(destinationVC)
-        destinationVC.view.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(destinationVC.view)
-        destinationVC.didMove(toParent: self)
-        
-        // Pin edges BEFORE animation
-        NSLayoutConstraint.activate([
-            destinationVC.view.topAnchor.constraint(equalTo: view.topAnchor),
-            destinationVC.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            destinationVC.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            destinationVC.view.trailingAnchor.constraint(equalTo: view.trailingAnchor)
-        ])
+
+        transitionToMainInterface()
+    }
+
+    @MainActor
+    private func transitionToMainInterface() {
+        let destinationVC = destinationViewController!
+
+        embed(child: destinationVC)
 
         // Set initial alpha for fade-in
         destinationVC.view.alpha = 0
 
         UIView.transition(with: view, duration: 0.3, options: .transitionCrossDissolve) { [self] in
-            self.splashView.alpha = 0
+            for child in self.children where child !== destinationVC {
+                child.view.alpha = 0
+            }
+
             destinationVC.view.alpha = 1
         } completion: { [self] _ in
-            debugLog("[LaunchViewController] Transition complete — exiting LaunchViewController, handing off to TabBarController")
-            self.splashView.removeFromSuperview()
+            debugLog("[LaunchViewController] Transition complete - exiting LaunchViewController, handing off to TabBarController")
+            for child in self.children where child !== destinationVC {
+                child.willMove(toParent: nil)
+                child.view.removeFromSuperview()
+                child.removeFromParent()
+            }
             self.destinationViewController = destinationVC
             
             Task.detached { @MainActor [weak self] in

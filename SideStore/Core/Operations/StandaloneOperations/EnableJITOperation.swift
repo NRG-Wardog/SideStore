@@ -92,9 +92,13 @@ final class EnableJITOperation: BaseStandaloneOperation<StandaloneOperationConte
                 let percent = 30 + Int64(Double(retry) / Double(maxRetries) * 60.0)
                 self.setProgress(percent)
                 do {
-                    try await debugApp(targetBundleId)
+                    await CellularRefreshManager.shared.turnOffDataIfNeeded()
+                    try await safeDebugApp(targetBundleId)
+                    await CellularRefreshManager.shared.turnOnDataIfNeeded()
+                    await notifyJITSuccess(appName: appName)
                     return
                 } catch {
+                    await CellularRefreshManager.shared.turnOnDataIfNeeded()
                     lastError = error
                 }
             }
@@ -103,10 +107,41 @@ final class EnableJITOperation: BaseStandaloneOperation<StandaloneOperationConte
     }
 }
 
+func notifyJITSuccess(appName: String) async {
+    #if !os(tvOS)
+    let settings = await UNUserNotificationCenter.current().notificationSettings()
+    if settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional {
+        let content = UNMutableNotificationContent()
+        content.title = NSLocalizedString("JIT Successfully Enabled", comment: "")
+        content.subtitle = String(format: NSLocalizedString("JIT Enabled For %@", comment: ""), appName)
+        content.sound = .default
+
+        let request = UNNotificationRequest(identifier: "EnabledJIT", content: content, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
+        return
+    }
+    #endif
+
+    // Toast ONLY when notifications are disabled or not authorized
+    await MainActor.run {
+        if let window = UIApplication.shared.connectedScenes
+            .compactMap({ ($0 as? UIWindowScene)?.windows.first(where: { $0.isKeyWindow }) }).first {
+            let toastView = ToastView(text: NSLocalizedString("JIT Successfully Enabled", comment: ""), detailText: appName)
+            toastView.show(in: window)
+        }
+    }
+}
+
 @available(iOS 17, *)
 func enableJITSideJITServer(serverURL: URL, bundleIdentifier: String, appName: String) async throws {
-    guard let udid = try await fetchUDID(useStatic: true) else {
-        throw SideJITServerErrorType.other("Unable to get UDID")
+    let udid: String
+    do {
+        await CellularRefreshManager.shared.turnOffDataIfNeeded()
+        udid = try await safeFetchUDID()
+        await CellularRefreshManager.shared.turnOnDataIfNeeded()
+    } catch {
+        await CellularRefreshManager.shared.turnOnDataIfNeeded()
+        throw error
     }
 
     let serverURLWithUDID = serverURL.appendingPathComponent(udid)
@@ -125,22 +160,7 @@ func enableJITSideJITServer(serverURL: URL, bundleIdentifier: String, appName: S
     let cleanString = dataString.trimmingCharacters(in: CharacterSet(charactersIn: "\"'\n\r\t "))
 
     if cleanString.contains("Enabled JIT for") {
-        #if !os(tvOS)
-        let content = UNMutableNotificationContent()
-        content.title = "JIT Successfully Enabled"
-        content.subtitle = "JIT Enabled For \(appName)"
-        content.sound = .default
-
-        let request = UNNotificationRequest(identifier: "EnabledJIT", content: content, trigger: nil)
-        try? await UNUserNotificationCenter.current().add(request)
-        #else
-        DispatchQueue.main.async {
-            if let window = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.windows.first(where: { $0.isKeyWindow }) }).first {
-                let toastView = ToastView(text: "JIT Successfully Enabled for \(appName)", detailText: nil)
-                toastView.show(in: window)
-            }
-        }
-        #endif
+        await notifyJITSuccess(appName: appName)
     } else {
         let errorType: SideJITServerErrorType = cleanString.contains("Could not find device")
             ? .deviceNotFound

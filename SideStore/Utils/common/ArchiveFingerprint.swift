@@ -15,12 +15,11 @@ public enum ArchiveFingerprint {
     public static func compute(for url: URL) -> String? {
         guard url.isFileURL else { return nil }
 
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else {
+        guard let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey]) else {
             return nil
         }
 
-        if isDir.boolValue {
+        if resourceValues.isDirectory == true {
             return computeDirectoryFingerprint(for: url)
         }
 
