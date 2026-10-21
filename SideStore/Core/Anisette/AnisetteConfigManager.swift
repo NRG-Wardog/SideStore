@@ -128,8 +128,17 @@ public actor AnisetteConfigManager {
         }
     }
     
-    public func loadConfig() -> AnisetteConfig {
+    // Android ADI requires an Android client profile. Never migrate persisted overrides.
+    // Keep remote-provider defaults and all other headers unchanged.
+    public nonisolated static func defaultClientInfo(forOnDeviceAndroid: Bool) -> String {
+        forOnDeviceAndroid
+            ? "<Pixel 7> <Android;14;UQ1A.240205.002> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+            : AppConstants.Anisette.defaultClientInfo
+    }
+
+    public func loadConfig(forOnDeviceAndroid: Bool? = nil) -> AnisetteConfig {
         let ud = UserDefaults.standard
+        let onDeviceAndroid = forOnDeviceAndroid ?? ud.useOnDeviceAnisette
         let udClientInfo   = ud.customAnisetteClientInfo
         let udUserAgent    = ud.customAnisetteUserAgent
         let udDeviceID     = ud.customAnisetteDeviceID
@@ -148,7 +157,7 @@ public actor AnisetteConfigManager {
             return config
         }()
 
-        let resolvedClientInfo   = (udClientInfo?.isEmpty == false ? udClientInfo : fileConfig?.clientInfo) ?? AppConstants.Anisette.defaultClientInfo
+        let resolvedClientInfo   = (udClientInfo?.isEmpty == false ? udClientInfo : fileConfig?.clientInfo) ?? Self.defaultClientInfo(forOnDeviceAndroid: onDeviceAndroid)
         let resolvedUserAgent    = (udUserAgent?.isEmpty == false ? udUserAgent : fileConfig?.userAgent) ?? AppConstants.Anisette.defaultUserAgent
         let resolvedDeviceID     = (udDeviceID?.isEmpty == false ? udDeviceID : fileConfig?.customDeviceID)
         let resolvedLocalUserID  = (udLocalUserID?.isEmpty == false ? udLocalUserID : fileConfig?.customLocalUserID)
@@ -171,12 +180,12 @@ public actor AnisetteConfigManager {
         )
     }
 
-    public func makeRequestHeaders() -> AnisetteRequestHeaders {
+    public func makeRequestHeaders(forOnDeviceAndroid: Bool = false) -> AnisetteRequestHeaders {
         let span = LoginDiagnosticTrace.current?.begin(.requestHeaders)
         defer { span?.finish(.succeeded) }
-        let config = loadConfig()
+        let config = loadConfig(forOnDeviceAndroid: forOnDeviceAndroid)
         return AnisetteRequestHeaders().with {
-            $0.clientInfo = config.clientInfo.isEmpty ? AppConstants.Anisette.defaultClientInfo : config.clientInfo
+            $0.clientInfo = config.clientInfo.isEmpty ? Self.defaultClientInfo(forOnDeviceAndroid: forOnDeviceAndroid) : config.clientInfo
             $0.userAgent  = config.userAgent.isEmpty ? AppConstants.Anisette.defaultUserAgent : config.userAgent
             if let customLU = config.customLocalUserID, !customLU.isEmpty { $0.localUserID = customLU }
             if let customDev = config.customDeviceID, !customDev.isEmpty { $0.deviceID = customDev }
@@ -278,7 +287,7 @@ public actor AnisetteConfigManager {
         deleteConfigFile()
 
         let config = AnisetteConfig(
-            clientInfo: AppConstants.Anisette.defaultClientInfo,
+            clientInfo: Self.defaultClientInfo(forOnDeviceAndroid: ud.useOnDeviceAnisette),
             userAgent: AppConstants.Anisette.defaultUserAgent
         )
         return config

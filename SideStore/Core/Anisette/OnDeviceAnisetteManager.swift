@@ -64,7 +64,7 @@ public actor OnDeviceAnisetteManager {
 
         debugStep = .requestHeaders
         debugTrace.record(step: debugStep, outcome: .started)
-        let headers = await AnisetteConfigManager.shared.makeRequestHeaders()
+        let headers = await AnisetteConfigManager.shared.makeRequestHeaders(forOnDeviceAndroid: true)
         debugTrace.record(step: debugStep, outcome: .succeeded)
 
         let sourceURLString = UserDefaults.standard.menuAnisetteList.isEmpty ? AnisetteServersManager.defaultSource : UserDefaults.standard.menuAnisetteList
