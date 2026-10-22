@@ -12,6 +12,8 @@ import Foundation
 import CoreData
 import SideSign
 import AnisetteKit
+import Minimuxer
+import MinimuxerCommon
 
 struct SignInResult {
     let team: ALTTeam
@@ -946,6 +948,7 @@ private extension SignInOperation {
     private func registerCurrentDevice(for team: ALTTeam, session: ALTAppleAPISession) async throws -> ALTDevice {
         self.debugLog("[SignInOperation] registerCurrentDevice starting...")
         var deviceQueryError: Error?
+        var cause = V3ProvisioningCauseRecorder()
         var deviceUDID: String?
         do {
             await CellularRefreshManager.shared.turnOffDataIfNeeded()
@@ -954,29 +957,43 @@ private extension SignInOperation {
         } catch {
             await CellularRefreshManager.shared.turnOnDataIfNeeded(addOnDelay: 2.0)
             deviceQueryError = error
+            cause = cause.recording(error, phase: .liveUDID)
             self.debugLog("[SignInOperation] Primary device query failed.")
         }
         
         if deviceUDID == nil || deviceUDID?.isEmpty == true || deviceUDID == "XXXXX-XXXX-XXXXX-XXXX" {
-            do { deviceUDID = try await fetchUDID(useStatic: true) }
-            catch { deviceQueryError = deviceQueryError ?? error }
+            if deviceQueryError == nil { cause = cause.unverified(phase: .liveUDID) }
+            do {
+                deviceUDID = try await fetchUDID(useStatic: true)
+                if deviceUDID == nil || deviceUDID?.isEmpty == true || deviceUDID == "XXXXX-XXXX-XXXXX-XXXX" {
+                    cause = cause.unverified(phase: .fallbackUDID)
+                }
+            } catch {
+                cause = cause.recording(error, phase: .fallbackUDID)
+                deviceQueryError = deviceQueryError ?? error
+            }
         }
         
         guard let udid = deviceUDID, !udid.isEmpty, udid != "XXXXX-XXXX-XXXXX-XXXX" else {
             self.debugLog("[SignInOperation] Failed to fetch device UDID.")
-            if let deviceQueryError { throw deviceQueryError }
-            throw OperationError.unknownUDID(reason: "No verified device identifier is available.")
+            cause = cause.unverified(phase: .missingVerifiedID)
+            if let deviceQueryError { throw cause.failure(deviceQueryError, phase: .missingVerifiedID) }
+            throw cause.failure(OperationError.unknownUDID(reason: "No verified device identifier is available."), phase: .missingVerifiedID)
         }
         self.debugLog("[SignInOperation] Device registration step.")
         
-        let devices = try await DeveloperPortalProxy.shared.fetchDevices(for: team, types: .all)
+        let devices = try await v3ProvisioningPortalRequest(phase: .listDevices, previous: cause) {
+            try await DeveloperPortalProxy.shared.fetchDevices(for: team, types: .all)
+        }
         if let device = devices.first(where: { $0.identifier.caseInsensitiveCompare(udid) == .orderedSame }) {
             self.debugLog("[SignInOperation] Device registration step.")
             return device
         } else {
             let deviceName = await MainActor.run { UIDevice.current.name }
             self.debugLog("[SignInOperation] Device registration step.")
-            let device = try await DeveloperPortalProxy.shared.registerDevice(name: deviceName, identifier: udid, type: DeveloperPortalProxy.currentDeviceType, team: team)
+            let device = try await v3ProvisioningPortalRequest(phase: .registerDevice, previous: cause) {
+                try await DeveloperPortalProxy.shared.registerDevice(name: deviceName, identifier: udid, type: DeveloperPortalProxy.currentDeviceType, team: team)
+            }
             self.debugLog("[SignInOperation] Device registration step.")
             return device
         }
@@ -1006,4 +1023,350 @@ func v3LoginStageSync<T>(_ stage: LoginDiagnosticStage, perform: () throws -> T)
         span?.finish(.failed, reason: v3IsAuthCancellation(error) ? .cancelled : .none, error: error)
         throw error
     }
+}
+
+// V3_PROVISIONING_CAUSE_PRODUCER_V1: observe actual boundaries without recovery changes.
+// No identifiers, provider text, dynamic type/domain names or userInfo values enter pc1.
+private struct V3ProvisioningPortalMetadata: Sendable {
+    let http: Int?
+    let result: Int?
+    let provider: String?
+    static let unavailable = Self(http: nil, result: nil, provider: nil)
+}
+
+private final class V3ProvisioningPortalObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var http: Int?
+    private var result: Int?
+    private var provider: String?
+    func recordHTTP(_ status: Int?, provider: String?) {
+        lock.lock(); defer { lock.unlock() }
+        http = status.flatMap { (100...599).contains($0) ? $0 : nil }
+        self.provider = provider.flatMap {
+            $0.utf8.prefix(65).count <= 64 && V3ProvisioningCauseDiagnostic.providerCodes.contains($0) ? $0 : nil
+        }
+    }
+    func recordResult(_ value: Int) {
+        lock.lock(); defer { lock.unlock() }
+        result = (-2147483648...2147483647).contains(value) ? value : nil
+    }
+    func snapshot() -> V3ProvisioningPortalMetadata {
+        lock.lock(); defer { lock.unlock() }
+        return V3ProvisioningPortalMetadata(http: http, result: result, provider: provider)
+    }
+}
+
+private func v3ProvisioningPortalRequest<T>(phase: V3ProvisioningCauseDiagnostic.Phase,
+    previous: V3ProvisioningCauseRecorder, operation: () async throws -> T) async throws -> T {
+    let observation = V3ProvisioningPortalObservation()
+    let previousResponse = SideSignPortalDiagnostics.responseObserver
+    let previousResult = SideSignPortalDiagnostics.resultCodeObserver
+    do {
+        return try await SideSignPortalDiagnostics.$responseObserver.withValue({ status, provider in
+            observation.recordHTTP(status, provider: provider)
+            previousResponse?(status, provider)
+        }) {
+            try await SideSignPortalDiagnostics.$resultCodeObserver.withValue({ result in
+                observation.recordResult(result)
+                previousResult?(result)
+            }) { try await operation() }
+        }
+    } catch {
+        throw previous.recording(error, phase: phase, metadata: observation.snapshot()).failure(error, phase: phase)
+    }
+}
+
+private struct V3ProvisioningCauseRecorder {
+    private struct Chain {
+        let rows: [[String]]
+        let truncated: Bool
+        let unknown: Bool
+        let cycle: Bool
+    }
+    private let chains: [Chain]
+    init() { chains = [] }
+    private init(chains: [Chain]) { self.chains = chains }
+
+    func unverified(phase: V3ProvisioningCauseDiagnostic.Phase) -> Self {
+        let row = [phase.rawValue, "state", "unverifiedIdentifier", "-", "-", "-", "-",
+                   "unobserved", "unavailable", "unavailable", "-", "-", "0"]
+        return Self(chains: chains + [Chain(rows: [row], truncated: false, unknown: false, cycle: false)])
+    }
+    func recording(_ error: Error, phase: V3ProvisioningCauseDiagnostic.Phase,
+                   metadata: V3ProvisioningPortalMetadata = .unavailable) -> Self {
+        var current: Error? = error
+        var rows: [[String]] = []
+        var seen = Set<ObjectIdentifier>()
+        var cycle = false
+        var unknown = false
+        var depth = 0
+        var visited = 0
+        while let value = current, depth < 4, visited < 8 {
+            visited += 1
+            // Only explicit owned wrappers, not Mirror or arbitrary associated values.
+            if let wrapper = value as? V3ProvisioningCauseError { current = wrapper.underlying; continue }
+            if let wrapper = value as? V3AccountOperationError { current = wrapper.underlying; continue }
+            if let wrapper = value as? V3AuthenticationPhaseError { current = wrapper.underlying; continue }
+            if let wrapper = value as? V3AnisetteAttemptError { current = wrapper.underlying; continue }
+            let row = Self.row(value, phase: phase, metadata: depth == 0 ? metadata : .unavailable, depth: depth)
+            rows.append(row)
+            unknown = unknown || row[1] == "unknown" || row[2] == "other" || row[2] == "unknown"
+            depth += 1
+            if let wrapper = value as? MinimuxerServiceError { current = wrapper.error; continue }
+            if let wrapper = value as? ALTWrappedError { current = wrapper.wrappedError; continue }
+            // NSError's documented causal link is the only userInfo key inspected.
+            // Recognized Swift enums do not have NSError causal links.
+            if row[1] == "unknown" || row[1] == "native" || row[1] == "url" {
+                let native = value as NSError
+                let identity = ObjectIdentifier(native)
+                if !seen.insert(identity).inserted { cycle = true; rows.removeLast(); current = nil; break }
+                if let next = native.userInfo[NSUnderlyingErrorKey] as? Error {
+                    let nextIdentity = ObjectIdentifier(next as NSError)
+                    if seen.contains(nextIdentity) { cycle = true; current = nil; break }
+                    current = next
+                } else { current = nil }
+            } else { current = nil }
+        }
+        if rows.isEmpty {
+            rows = [Self.row(V3ProvisioningUnknownCause(), phase: phase, metadata: metadata, depth: 0)]
+            unknown = true
+        }
+        return Self(chains: chains + [Chain(rows: rows, truncated: current != nil, unknown: unknown, cycle: cycle)])
+    }
+    func failure(_ error: Error, phase: V3ProvisioningCauseDiagnostic.Phase) -> Error {
+        // Retain the caller's selected primary error; never promote fallback errors.
+        // Cancellation stays the original error, as before this observer existed.
+        if v3IsAuthCancellation(error) { return error }
+        return V3ProvisioningCauseError(underlying: error, provisioningCause: encoded(phase: phase))
+    }
+    func encoded(phase: V3ProvisioningCauseDiagnostic.Phase) -> String {
+        // Reserve one row per actual boundary before adding underlying-chain rows.
+        // A deep live-query error must not hide a separate fallback failure.
+        let roots = chains.compactMap { $0.rows.first }
+        let descendants = chains.flatMap { Array($0.rows.dropFirst()) }
+        let all = roots + descendants
+        var rows = Array(all.prefix(V3ProvisioningCauseDiagnostic.maximumRows))
+        var truncated = all.count > rows.count || chains.contains { $0.truncated }
+        let unknown = chains.contains { $0.unknown }
+        let cycle = chains.contains { $0.cycle }
+        while !rows.isEmpty {
+            let encoded = ["pc1", phase.rawValue, truncated ? "1" : "0", unknown ? "1" : "0", cycle ? "1" : "0",
+                rows.map { $0.joined(separator: ",") }.joined(separator: ";")].joined(separator: "|")
+            if let safe = V3ProvisioningCauseDiagnostic.validated(encoded) { return safe }
+            rows.removeLast()
+            truncated = true
+        }
+        return V3ProvisioningCauseDiagnostic.rejected
+    }
+
+    private static func row(_ error: Error, phase: V3ProvisioningCauseDiagnostic.Phase,
+                            metadata: V3ProvisioningPortalMetadata, depth: Int) -> [String] {
+        var type = "unknown", kind = "unknown", code = "-", shape = "unobserved"
+        var mime = "unavailable", size = "unavailable", expected = "-", key = "-"
+        var http = metadata.http.map(String.init) ?? "-"
+        if error is CancellationError { type = "cancellation"; kind = "cancelled" }
+        else if error is MinimuxerServiceError { type = "wrapper"; kind = "minimuxerService" }
+        else if error is ALTWrappedError { type = "wrapper"; kind = "altWrapped" }
+        else if let operation = error as? OperationError {
+            type = "operation"
+            switch operation {
+            case .noInstalledApps: kind = "noInstalledApps"
+            case .noSources: kind = "noSources"
+            case .notAuthenticated: kind = "notAuthenticated"
+            case .timedOut: kind = "timedOut"
+            case .unableToConnectSideJIT: kind = "unableToConnectSideJIT"
+            case .unableToRespondSideJITDevice: kind = "unableToRespondSideJITDevice"
+            case .unknownResult: kind = "unknownResult"
+            case .cacheClearError: kind = "cacheClearError"
+            case .certificateExpired: kind = "certificateExpired"
+            case .certificateRevoked: kind = "certificateRevoked"
+            case .customCertificateExpired: kind = "customCertificateExpired"
+            case .customCertificateRevoked: kind = "customCertificateRevoked"
+            case .forbidden: kind = "forbidden"
+            case .invalidApp: kind = "invalidApp"
+            case .invalidPairingFile: kind = "invalidPairingFile"
+            case .invalidParameters: kind = "invalidParameters"
+            case .invalidResponse: kind = "invalidResponse"
+            case .invalidVPN: kind = "invalidVPN"
+            case .minimuxerNotStarted: kind = "minimuxerNotStarted"
+            case .missingAppBundle: kind = "missingAppBundle"
+            case .missingAppGroup: kind = "missingAppGroup"
+            case .missingInfoPlist: kind = "missingInfoPlist"
+            case .missingProvisioningProfile: kind = "missingProvisioningProfile"
+            case .missingUpdate: kind = "missingUpdate"
+            case .noConnection: kind = "noConnection"
+            case .noDevice: kind = "noDevice"
+            case .noVPN: kind = "noVPN"
+            case .notReachable: kind = "notReachable"
+            case .openAppFailed: kind = "openAppFailed"
+            case .pairingNotComplete: kind = "pairingNotComplete"
+            case .pledgeInactive: kind = "pledgeInactive"
+            case .SideJITIssue: kind = "SideJITIssue"
+            case .unknownUDID: kind = "unknownUDID"
+            case .unknown: kind = "unknown"
+            case .appNotFound: kind = "appNotFound"
+            case .invalidOperationContext: kind = "invalidOperationContext"
+            case .maximumAppIDLimitReached: kind = "maximumAppIDLimitReached"
+            case .sourceNotAdded: kind = "sourceNotAdded"
+            case .serverNotFound: kind = "serverNotFound"
+            case .connectionFailed: kind = "connectionFailed"
+            case .provisioningError: kind = "provisioningError"
+            case .certificateChanged: kind = "certificateChanged"
+            }
+        } else if let minimuxer = error as? MinimuxerError {
+            type = "minimuxer"
+            switch minimuxer {
+            case .noDevice: kind = "noDevice"
+            case .noConnection: kind = "noConnection"
+            case .notReachable: kind = "notReachable"
+            case .noVPN: kind = "noVPN"
+            case .invalidVPN: kind = "invalidVPN"
+            case .invalidPairing: kind = "invalidPairing"
+            case .notStarted: kind = "notStarted"
+            case .pairingNotLoaded: kind = "pairingNotLoaded"
+            case .connectionModeNotConfigured: kind = "connectionModeNotConfigured"
+            case .createCoreDevice: kind = "createCoreDevice"
+            case .createLockdown: kind = "createLockdown"
+            case .getLockdownValue: kind = "getLockdownValue"
+            case .connect: kind = "connect"
+            case .noService: kind = "noService"
+            default: kind = "other"
+            }
+        } else if let portal = error as? DeveloperPortalError {
+            type = "portal"
+            switch portal {
+            case .unknown: kind = "unknown"
+            case .invalidParameters: kind = "invalidParameters"
+            case .incorrectCredentials: kind = "incorrectCredentials"
+            case .noTeams: kind = "noTeams"
+            case .appSpecificPasswordRequired: kind = "appSpecificPasswordRequired"
+            case .invalidDeviceID: kind = "invalidDeviceID"
+            case .deviceAlreadyRegistered: kind = "deviceAlreadyRegistered"
+            case .invalidCertificateRequest: kind = "invalidCertificateRequest"
+            case .certificateDoesNotExist: kind = "certificateDoesNotExist"
+            case .invalidAppIDName: kind = "invalidAppIDName"
+            case .invalidBundleIdentifier: kind = "invalidBundleIdentifier"
+            case .bundleIdentifierUnavailable: kind = "bundleIdentifierUnavailable"
+            case .appIDDoesNotExist: kind = "appIDDoesNotExist"
+            case .maximumAppIDLimitReached: kind = "maximumAppIDLimitReached"
+            case .invalidAppGroup: kind = "invalidAppGroup"
+            case .appGroupDoesNotExist: kind = "appGroupDoesNotExist"
+            case .invalidProvisioningProfileIdentifier: kind = "invalidProvisioningProfileIdentifier"
+            case .provisioningProfileDoesNotExist: kind = "provisioningProfileDoesNotExist"
+            case .requiresTwoFactorAuthentication: kind = "requiresTwoFactorAuthentication"
+            case .userCancelled: kind = "userCancelled"
+            case .incorrectVerificationCode: kind = "incorrectVerificationCode"
+            case .authenticationHandshakeFailed: kind = "authenticationHandshakeFailed"
+            case .invalidAnisetteData: kind = "invalidAnisetteData"
+            case .tooManyCertificates: kind = "tooManyCertificates"
+            case .tooManyAttempts: kind = "tooManyAttempts"
+            case .accountRepairRequired: kind = "accountRepairRequired"
+            case .invalid2FAResponse: kind = "invalid2FAResponse"
+            }
+        } else if let server = error as? ServerError {
+            type = "server"
+            switch server {
+            case .underlyingError(let value, _):
+                kind = "underlyingError"
+                // -1 is the detail-only sentinel, not an observed Apple code.
+                if value != -1 { code = safeNumber(value) }
+            case .badServerResponse(_, let payload):
+                kind = "badServerResponse"; (shape, size) = payloadMetadata(payload)
+            case .invalidResponseFormat(let payload, let context):
+                kind = "invalidResponseFormat"; (shape, size) = payloadMetadata(payload)
+                if let context {
+                    shape = V3ProvisioningCauseDiagnostic.shapes.contains(context.shape.rawValue) ? context.shape.rawValue : "unobserved"
+                    mime = V3ProvisioningCauseDiagnostic.mimes.contains(context.mime.rawValue) ? context.mime.rawValue : "unavailable"
+                    if let status = context.httpStatus, (100...599).contains(status) { http = String(status) }
+                }
+            case .missingKey(let missing, let payload):
+                kind = "missingKey"; key = safeKey(missing); (shape, size) = payloadMetadata(payload)
+            }
+        } else if let decoding = error as? DecodingError {
+            type = "decoding"
+            switch decoding {
+            case .typeMismatch(let value, let context):
+                kind = "typeMismatch"; expected = expectedType(value)
+                key = context.codingPath.last.map { safeKey($0.stringValue) } ?? "-"
+            case .valueNotFound(let value, let context):
+                kind = "valueNotFound"; expected = expectedType(value)
+                key = context.codingPath.last.map { safeKey($0.stringValue) } ?? "-"
+            case .keyNotFound(let missing, _): kind = "keyNotFound"; key = safeKey(missing.stringValue)
+            case .dataCorrupted(let context):
+                kind = "dataCorrupted"; key = context.codingPath.last.map { safeKey($0.stringValue) } ?? "-"
+            @unknown default: kind = "other"
+            }
+        } else {
+            let native = error as NSError
+            switch native.domain {
+            case NSURLErrorDomain: type = "url"; kind = "transport"; code = safeNumber(native.code)
+            case NSPOSIXErrorDomain: type = "native"; kind = "posix"; code = safeNumber(native.code)
+            case NSCocoaErrorDomain: type = "native"; kind = "cocoa"; code = safeNumber(native.code)
+            case NSOSStatusErrorDomain: type = "native"; kind = "osStatus"; code = safeNumber(native.code)
+            default: break // No arbitrary domain, type name, bridge ordinal or payload.
+            }
+        }
+        return [phase.rawValue, type, kind, code, metadata.result.map(safeNumber) ?? "-", http,
+            metadata.provider ?? "-", shape, mime, size, expected, key, String(depth)]
+    }
+    private static func safeNumber(_ value: Int) -> String {
+        (-2147483648...2147483647).contains(value) ? String(value) : "-"
+    }
+    private static func safeKey(_ key: String) -> String {
+        // Do not retain the key/path even when it contains an account identifier.
+        key.utf8.prefix(65).count <= 64 && V3ProvisioningCauseDiagnostic.codingKeys.contains(key) && key != "-" ? key : "other"
+    }
+    private static func expectedType(_ type: Any.Type) -> String {
+        if type == String.self { return "string" }
+        if type == Int.self || type == Int64.self || type == Int32.self || type == UInt.self || type == UInt64.self || type == UInt32.self { return "integer" }
+        if type == Bool.self { return "boolean" }
+        if type == Double.self || type == Float.self || type == Decimal.self { return "number" }
+        if type == Data.self { return "data" }
+        if type == Date.self { return "date" }
+        return "other"
+    }
+    private static func payloadMetadata(_ payload: String) -> (String, String) {
+        // Bound work, not only output. Never create Data from a large raw response.
+        let count = payload.utf8.prefix(4097).count
+        let size = count == 0 ? "empty" : count <= 256 ? "1to256" : count <= 4096 ? "257to4096" : "over4096"
+        guard count > 0, count <= 4096 else { return ("unobserved", size) }
+        let data = Data(payload.utf8)
+        if let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
+            return (object is [String: Any] ? "jsonDictionary" : object is [Any] ? "jsonArray" : "jsonScalar", size)
+        }
+        if let object = try? PropertyListSerialization.propertyList(from: data, format: nil) {
+            return (object is [String: Any] ? "plistDictionary" : object is [Any] ? "plistArray" : "plistScalar", size)
+        }
+        return ("unrecognized", size)
+    }
+}
+
+private struct V3ProvisioningUnknownCause: Error {}
+
+// Capture before account unwrapping. Missing evidence is not guessed from error text.
+func v3ProvisioningCauseContext(_ error: Error) -> String? {
+    var current: Error? = error
+    var seen = Set<ObjectIdentifier>()
+    for _ in 0..<8 {
+        guard let value = current else { return nil }
+        if let wrapper = value as? V3ProvisioningCauseError {
+            return V3ProvisioningCauseDiagnostic.validated(wrapper.provisioningCause) ?? V3ProvisioningCauseDiagnostic.rejected
+        }
+        if let wrapper = value as? V3AccountOperationError { current = wrapper.underlying }
+        else if let wrapper = value as? V3AuthenticationPhaseError { current = wrapper.underlying }
+        else if let wrapper = value as? V3AnisetteAttemptError { current = wrapper.underlying }
+        else if let wrapper = value as? MinimuxerServiceError { current = wrapper.error }
+        else if let wrapper = value as? ALTWrappedError { current = wrapper.wrappedError }
+        else {
+            let native = value as NSError
+            guard seen.insert(ObjectIdentifier(native)).inserted else { return nil }
+            current = native.userInfo[NSUnderlyingErrorKey] as? Error
+        }
+    }
+    return nil
+}
+
+// Caller restricts this to provisioning source steps. It never claims a boundary.
+func v3UnobservedProvisioningCause(_ error: Error) -> String {
+    V3ProvisioningCauseRecorder().recording(error, phase: .unobserved).encoded(phase: .unobserved)
 }

@@ -16,6 +16,7 @@ SOURCE_PATHS = (
     "SideStore/Core/Anisette/AnisetteProvider.swift",
     "SideStore/Utils/concurrency/TaskChainCoalescer.swift",
     "AltStore/AppDelegate.swift",
+    "SideStore/Core/Operations/Errors/OperationError.swift",
 )
 
 def digest(data):
@@ -64,6 +65,18 @@ def generate(output, sidestore_root=ROOT, sidesign_root=None):
                          "sha256": digest(result.encode())})
         return result
     parts = ["import Foundation\n"]
+    for anchor in ["public struct V3ProvisioningCauseDiagnostic {", "struct V3ProvisioningCauseError:",
+                   "func v3IsAuthCancellation(", "func v3AccountUnderlyingError("]:
+        parts.append(take("AltStore/AppDelegate.swift", anchor))
+    parts.append(take("SideStore/Core/Operations/Errors/OperationError.swift", "public enum OperationError:"))
+    error_path = "Sources/Models/Errors.swift"
+    error_source = (sidesign_root / error_path).read_text()
+    for anchor in ["public enum DeveloperPortalError:", "public struct AuthenticationResponseContext:", "public enum ServerError:"]:
+        parts.append(take(error_path, anchor, error_source, "SideSign"))
+    observer_path = "Sources/DeveloperPortal/DeveloperPortalAPI.swift"
+    observer_source = (sidesign_root / observer_path).read_text()
+    parts.append(take(observer_path, "public enum SideSignPortalDiagnostics {", observer_source, "SideSign"))
+
     for anchor in ["public enum ILoaderRemoteEndpoint:", "public enum ILoaderRemoteError:",
                    "public enum ILoaderRemoteAuthentication {", "public final class ILoaderRemoteAuthenticationContext:"]:
         parts.append(re.sub(r"\bURLSession\b", "FakeSession", take(remote_path, anchor, source_remote, "SideSign")))
@@ -95,6 +108,14 @@ def generate(output, sidestore_root=ROOT, sidesign_root=None):
                  "public static let shared = DeveloperPortalProxy()\n" + "\n".join(proxy) + "\n}")
     op_path = "SideStore/Core/Operations/StandaloneOperations/SignInOperation.swift"
     parts.append(take(op_path, "struct SignInResult {"))
+    for anchor in ["private struct V3ProvisioningPortalMetadata:", "private final class V3ProvisioningPortalObservation:",
+                   "private func v3ProvisioningPortalRequest<T>(", "private struct V3ProvisioningCauseRecorder {",
+                   "private struct V3ProvisioningUnknownCause:", "func v3ProvisioningCauseContext(", "func v3UnobservedProvisioningCause("]:
+        parts.append(take(op_path, anchor))
+    parts.append("final class RegistrationFixtureOperation {\nfunc debugLog(_ value: String) {}\n" +
+                 "func fixtureRegister(team: ALTTeam, session: ALTAppleAPISession) async throws -> ALTDevice { try await registerCurrentDevice(for: team, session: session) }\n" +
+                 take(op_path, "private func registerCurrentDevice(for team:") + "\n}")
+
     operation = [take(op_path, a) for a in ["private func v3RemoteContextSnapshot()", "override func cancel()",
                  "override func execute(parentProgress:", "private func getAnisetteData()",
                  "private func signIn(appleID:", "private func provisioningLoop(account:",
@@ -102,11 +123,13 @@ def generate(output, sidestore_root=ROOT, sidesign_root=None):
     parts.append("final class SignInOperation: FixtureOperationBase, @unchecked Sendable {\n" +
                  (HERE / "OperationBoundaries.swift").read_text() + "\n" + "\n".join(operation) + "\n}")
     contents = {"CandidateOnboarding.swift": "\n\n".join(parts) + "\n",
-                "BoundaryDoubles.swift": (HERE / "BoundaryDoubles.swift").read_text(),
-                "RuntimeTests.swift": (HERE / "RuntimeTests.swift").read_text()}
+                "BoundaryDoubles.swift": (HERE / "BoundaryDoubles.swift").read_text() + "\n" +
+                    (HERE / "RegistrationDoubles.swift").read_text() + "\n" + (HERE / "RegistrationDiagnosticDoubles.swift").read_text(),
+                "RuntimeTests.swift": (HERE / "RuntimeTests.swift").read_text() + "\n" + (HERE / "RegistrationCases.swift").read_text()}
     for name, content in contents.items(): (output / name).write_text(content)
     inputs = {"SideStore/" + p: digest((sidestore_root / p).read_bytes()) for p in SOURCE_PATHS}
-    inputs["SideSign/" + remote_path] = digest((sidesign_root / remote_path).read_bytes())
+    for path in [remote_path, error_path, observer_path]:
+        inputs["SideSign/" + path] = digest((sidesign_root / path).read_bytes())
     for path in sorted(HERE.rglob("*")):
         if path.is_file() and "__pycache__" not in path.parts:
             inputs["SideStore/" + str(path.relative_to(ROOT))] = digest(path.read_bytes())
@@ -117,7 +140,7 @@ def generate(output, sidestore_root=ROOT, sidesign_root=None):
                     "Apple authentication and portal response -> synthetic in-memory boundary",
                     "Keychain, defaults and version lookup -> locked in-memory doubles",
                     "SignInOperation pipeline orchestration and certificate-finalization work -> minimal owned drivers; production phase wrappers, execute/cancel and fetchTeam retained",
-                    "Diagnostic collectors -> inert typed boundary; diagnostic validators are not tested by this suite"],
+                    "Original onboarding collectors -> inert typed boundary; registration pc1 producer, validator, NSError chain capture and actual registerCurrentDevice body are extracted and executed with synthetic API/UDID boundaries"],
                 "network": False, "native_provider": False, "swift_executed": False}
     (output / "source-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     return evidence

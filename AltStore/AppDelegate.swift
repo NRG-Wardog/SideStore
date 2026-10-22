@@ -6269,6 +6269,7 @@ enum V3AuthFailureDiagnosticsPolicy {
             " probe_native_code=\($0) probe_native_phase=\(fields["probe_native_phase"] ?? "unknown") probe_native_subcode=\(fields["probe_native_subcode"] ?? "unknown")"
         } ?? ""
         return "diagnostic_code=\(diagnosticCode(for: failure)) builder_commit=\(V3DiagnosticBuild.commit) kind=\(kind) stage=\(stage) code=\(code) correlation=\(correlation) underlying=\(underlyingDomain)/\(codeText) retryable=\(retryableText)" + accountDetails + authResponseDetails + nativeDetails + initializerDetails + attemptDetails + probeDetails +
+            (fields[V3ProvisioningCauseDiagnostic.contextKey].flatMap(V3ProvisioningCauseDiagnostic.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3TemporaryAnisetteTrace.contextKey].flatMap(V3TemporaryAnisetteTrace.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") +
@@ -11176,6 +11177,7 @@ func v3AnisetteAttemptContext(_ error: Error) -> V3AnisetteAttemptContext? {
     for _ in 0..<5 {
         if let attempt = current as? V3AnisetteAttemptError { return attempt.context }
         if let phase = current as? V3AuthenticationPhaseError { current = phase.underlying }
+        else if let cause = current as? V3ProvisioningCauseError { current = cause.underlying }
         else if let account = current as? V3AccountOperationError { return account.anisetteAttempt }
         else { break }
     }
@@ -11186,6 +11188,10 @@ func v3AccountOperationFailure(_ error: Error, step: CombinedFailure.SourceStep)
     if let known = error as? V3AccountOperationError { return known }
     let step = (error as? V3AuthenticationPhaseError)?.step ?? step
     let anisetteAttempt = v3AnisetteAttemptContext(error)
+    // Capture before unwrapping. No error conversion, description or userInfo is exported.
+    let provisioningCause = v3ProvisioningCauseContext(error) ??
+        ([CombinedFailure.SourceStep.fetchTeams, .fetchCertificate, .registerDevice, .provisioningUnknown].contains(step)
+            ? v3UnobservedProvisioningCause(error) : nil)
     let error = v3AccountUnderlyingError(error)
     let kind: V3AccountOperationError.Kind
     var httpStatus: Int?
@@ -11286,7 +11292,7 @@ func v3AccountOperationFailure(_ error: Error, step: CombinedFailure.SourceStep)
         }
     }
     return V3AccountOperationError(step: kind == .anisetteIdentityStateInvalid ? .anisetteFetch : step,
-        kind: kind, underlying: error, serverCode: serverCode, httpStatus: httpStatus, nativeEvidence: nativeEvidence, anisetteAttempt: anisetteAttempt, acquisitionFailure: acquisitionFailure, authResponseShape: authResponseShape, authResponseMIME: authResponseMIME)
+        kind: kind, underlying: error, serverCode: serverCode, httpStatus: httpStatus, nativeEvidence: nativeEvidence, anisetteAttempt: anisetteAttempt, acquisitionFailure: acquisitionFailure, authResponseShape: authResponseShape, authResponseMIME: authResponseMIME, provisioningCause: provisioningCause)
 }
 
 // Both terminal routes (including cached/provisioning-resume paths that never
@@ -11296,8 +11302,18 @@ func v3CaptureAuthFailure(_ error: Error, operation: String,
                           retryable: Bool? = nil) -> CombinedFailure {
     let diagnostic: Error = error is V3AuthenticationPhaseError
         ? v3AccountOperationFailure(error, step: .authenticate) : error
-    return CombinedFailure.capture(diagnostic, operation: operation, stage: stage,
-                                   id: id, retryable: retryable)
+    let failure = CombinedFailure.capture(diagnostic, operation: operation, stage: stage,
+                                          id: id, retryable: retryable)
+    // Enrich the existing terminal classification, never turn cancellation or
+    // known transport failures into generic provisioning failures.
+    guard operation == "signIn", stage == .provisioning, failure.code != .cancelled,
+          failure.signingContext[V3ProvisioningCauseDiagnostic.contextKey] == nil else { return failure }
+    var context = failure.signingContext
+    context[V3ProvisioningCauseDiagnostic.contextKey] = v3ProvisioningCauseContext(error) ?? v3UnobservedProvisioningCause(error)
+    return CombinedFailure(operation: failure.operation, stage: failure.stage, code: failure.code,
+        id: failure.correlationID, underlying: NSError(domain: failure.underlyingDomain, code: failure.underlyingCode),
+        retryable: failure.retryable, safeCause: failure.safeCause, sourceStep: failure.sourceStep,
+        signingContext: context, launchContext: failure.launchContext)
 }
 
 func v3AccountUnderlyingError(_ error: Error) -> Error {
@@ -11307,6 +11323,7 @@ func v3AccountUnderlyingError(_ error: Error) -> Error {
         if let wrapped = current as? V3AccountOperationError { current = wrapped.underlying }
         else if let phase = current as? V3AuthenticationPhaseError { current = phase.underlying }
         else if let attempt = current as? V3AnisetteAttemptError { current = attempt.underlying }
+        else if let cause = current as? V3ProvisioningCauseError { current = cause.underlying }
         else { break }
     }
     return current
@@ -12501,6 +12518,12 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
         }
         if let operation = error as? OperationError {
             let guidance = v3OperationErrorGuidance(operation)
+            return await askProvisioningRetry(message: guidance.message, hint: guidance.hint, error: diagnosticError)
+        }
+        if let minimuxer = error as? MinimuxerError {
+            // Reuse the existing typed guidance mapping only. Keep the original
+            // MinimuxerError and its finite case in diagnostics, never its message.
+            let guidance = v3OperationErrorGuidance(minimuxer.asOperationError)
             return await askProvisioningRetry(message: guidance.message, hint: guidance.hint, error: diagnosticError)
         }
         return await askProvisioningRetry(
@@ -14770,6 +14793,9 @@ public struct CombinedFailure: Error, LocalizedError {
         }
         guard fields.count <= 20 else { return nil }
         for (key, text) in fields {
+            if key == V3ProvisioningCauseDiagnostic.contextKey {
+                guard V3ProvisioningCauseDiagnostic.validated(text) != nil else { return nil }; continue
+            }
             if key == V3AuthenticationRequestSnapshot.contextKey {
                 guard V3AuthenticationRequestSnapshot(encoded: text) != nil else { return nil }; continue
             }
@@ -15351,8 +15377,8 @@ public struct CombinedFailure: Error, LocalizedError {
     }
     public var technicalDetails: String {
         let displayedUnderlyingCode = underlyingDomain == "redacted" ? "unknown" : String(underlyingCode)
-        let signingDetails = signingContext.filter { $0.key != V3TemporaryAnisetteTrace.contextKey && $0.key != V3TemporaryADIConsumption.contextKey && $0.key != V3LoginDiagnosticSnapshot.contextKey && $0.key != V3ConstructorFaultDiagnostic.contextKey && $0.key != V3AuthenticationRequestSnapshot.contextKey && $0.key != V3AuthenticationHeaderProvenance.contextKey && $0.key != V3AuthenticationProviderObservation.contextKey && $0.key != V3AuthenticationDiagnostics.stateKey }.sorted(by: { $0.key < $1.key }).map { " \($0.key)=\($0.value)" }.joined()
-        return "schema=1 diagnostic_code=\(diagnosticCode) builder_commit=\(V3DiagnosticBuild.commit) operation=\(operation) stage=\(stage.rawValue) code=\(code.rawValue) correlation=\(correlationID) underlying_domain=\(underlyingDomain) underlying_code=\(displayedUnderlyingCode) retryable=\(retryable.map(String.init) ?? "unknown") source_step=\(sourceStep?.rawValue ?? "unknown") safe_cause=\(safeCause?.rawValue ?? "unknown")" + signingDetails + (signingContext[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") + installVerdict + requestContextSuffix + (launchContext?.technicalDetails ?? "") + (temporaryAnisetteTrace?.technicalDetails ?? "") + (signingContext[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") + (signingContext[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:))?.technicalDetails ?? "") + (operation == "signIn" ? V3AuthenticationDiagnostics.technicalDetails(signingContext) : "")
+        let signingDetails = signingContext.filter { $0.key != V3TemporaryAnisetteTrace.contextKey && $0.key != V3TemporaryADIConsumption.contextKey && $0.key != V3LoginDiagnosticSnapshot.contextKey && $0.key != V3ConstructorFaultDiagnostic.contextKey && $0.key != V3AuthenticationRequestSnapshot.contextKey && $0.key != V3AuthenticationHeaderProvenance.contextKey && $0.key != V3AuthenticationProviderObservation.contextKey && $0.key != V3AuthenticationDiagnostics.stateKey && $0.key != V3ProvisioningCauseDiagnostic.contextKey }.sorted(by: { $0.key < $1.key }).map { " \($0.key)=\($0.value)" }.joined()
+        return "schema=1 diagnostic_code=\(diagnosticCode) builder_commit=\(V3DiagnosticBuild.commit) operation=\(operation) stage=\(stage.rawValue) code=\(code.rawValue) correlation=\(correlationID) underlying_domain=\(underlyingDomain) underlying_code=\(displayedUnderlyingCode) retryable=\(retryable.map(String.init) ?? "unknown") source_step=\(sourceStep?.rawValue ?? "unknown") safe_cause=\(safeCause?.rawValue ?? "unknown")" + signingDetails + (signingContext[V3ProvisioningCauseDiagnostic.contextKey].flatMap(V3ProvisioningCauseDiagnostic.init(encoded:))?.technicalDetails ?? "") + (signingContext[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") + installVerdict + requestContextSuffix + (launchContext?.technicalDetails ?? "") + (temporaryAnisetteTrace?.technicalDetails ?? "") + (signingContext[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") + (signingContext[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:))?.technicalDetails ?? "") + (operation == "signIn" ? V3AuthenticationDiagnostics.technicalDetails(signingContext) : "")
     }
     public var temporaryAnisetteTrace: V3TemporaryAnisetteTrace? {
         signingContext[V3TemporaryAnisetteTrace.contextKey].flatMap(V3TemporaryAnisetteTrace.init(encoded:))
@@ -15522,6 +15548,15 @@ public struct CombinedFailure: Error, LocalizedError {
     public static func capture(_ error: Error, operation: String, stage: Stage, id: String,
                                retryable: Bool? = nil) -> CombinedFailure {
         if let known = error as? CombinedFailure { return known }
+        if let wrapped = error as? V3ProvisioningCauseError {
+            let known = capture(wrapped.underlying, operation: operation, stage: stage, id: id, retryable: retryable)
+            var context = known.signingContext
+            context[V3ProvisioningCauseDiagnostic.contextKey] = wrapped.provisioningCause
+            return CombinedFailure(operation: known.operation, stage: known.stage, code: known.code,
+                id: id, underlying: NSError(domain: known.underlyingDomain, code: known.underlyingCode),
+                retryable: known.retryable, safeCause: known.safeCause, sourceStep: known.sourceStep,
+                signingContext: context, launchContext: known.launchContext)
+        }
         if let attempt = error as? V3AnisetteAttemptError {
             let known = capture(attempt.underlying, operation: operation, stage: stage,
                                 id: id, retryable: retryable)
@@ -15851,6 +15886,132 @@ public struct V3TemporaryADIConsumption {
 
 // LOGIN_DIAGNOSTIC_WIRE_V1: finite counterpart to AnisetteKit.LoginDiagnosticTrace.
 // Host support deliberately has no dependency on AnisetteKit or account state.
+// V3_PROVISIONING_CAUSE_CONTRACT_V1: strictly finite, bounded diagnostics only.
+// This declaration is mirrored by the wire owner in both maintained consumers.
+public struct V3ProvisioningCauseDiagnostic {
+    public static let contextKey = "provisioning_cause"
+    public static let maximumBytes = 1024
+    public static let maximumRows = 4
+    public static let rejected = "pc1|unobserved|0|1|0|unobserved,unknown,unknown,-,-,-,-,unobserved,unavailable,unavailable,-,-,0"
+    public enum Phase: String, CaseIterable {
+        case liveUDID, fallbackUDID, missingVerifiedID, listDevices, registerDevice, unobserved
+    }
+    public struct Row {
+        public let boundary: String
+        public let type: String
+        public let kind: String
+        public let code: String
+        public let result: String
+        public let http: String
+        public let provider: String
+        public let shape: String
+        public let mime: String
+        public let size: String
+        public let expected: String
+        public let key: String
+        public let depth: String
+    }
+    public let encoded: String
+    public let phase: Phase
+    public let truncated: Bool
+    public let unknown: Bool
+    public let cycle: Bool
+    public let rows: [Row]
+
+    public static let cases: [String: Set<String>] = [
+        "operation": ["noInstalledApps", "noSources", "notAuthenticated", "timedOut", "unableToConnectSideJIT", "unableToRespondSideJITDevice", "unknownResult", "cacheClearError", "certificateExpired", "certificateRevoked", "customCertificateExpired", "customCertificateRevoked", "forbidden", "invalidApp", "invalidPairingFile", "invalidParameters", "invalidResponse", "invalidVPN", "minimuxerNotStarted", "missingAppBundle", "missingAppGroup", "missingInfoPlist", "missingProvisioningProfile", "missingUpdate", "noConnection", "noDevice", "noVPN", "notReachable", "openAppFailed", "pairingNotComplete", "pledgeInactive", "SideJITIssue", "unknownUDID", "unknown", "appNotFound", "invalidOperationContext", "maximumAppIDLimitReached", "sourceNotAdded", "serverNotFound", "connectionFailed", "provisioningError", "certificateChanged"],
+        "minimuxer": ["noDevice", "noConnection", "notReachable", "noVPN", "invalidVPN", "invalidPairing", "notStarted", "pairingNotLoaded", "connectionModeNotConfigured", "createCoreDevice", "createLockdown", "getLockdownValue", "connect", "noService", "other"],
+        "portal": ["unknown", "invalidParameters", "incorrectCredentials", "noTeams", "appSpecificPasswordRequired", "invalidDeviceID", "deviceAlreadyRegistered", "invalidCertificateRequest", "certificateDoesNotExist", "invalidAppIDName", "invalidBundleIdentifier", "bundleIdentifierUnavailable", "appIDDoesNotExist", "maximumAppIDLimitReached", "invalidAppGroup", "appGroupDoesNotExist", "invalidProvisioningProfileIdentifier", "provisioningProfileDoesNotExist", "requiresTwoFactorAuthentication", "userCancelled", "incorrectVerificationCode", "authenticationHandshakeFailed", "invalidAnisetteData", "tooManyCertificates", "tooManyAttempts", "accountRepairRequired", "invalid2FAResponse"],
+        "server": ["badServerResponse", "invalidResponseFormat", "missingKey", "underlyingError"],
+        "decoding": ["typeMismatch", "valueNotFound", "keyNotFound", "dataCorrupted", "other"],
+        "url": ["transport"], "native": ["cocoa", "posix", "osStatus"],
+        "wrapper": ["minimuxerService", "altWrapped"],
+        "cancellation": ["cancelled"], "state": ["unverifiedIdentifier"], "unknown": ["unknown"]
+    ]
+    public static let providerCodes: Set<String> = ["-", "ENTITY_ERROR", "ENTITY_ERROR.INVALID", "ENTITY_ERROR.ATTRIBUTE.INVALID", "ENTITY_ERROR.ATTRIBUTE.REQUIRED", "ENTITY_ERROR.ATTRIBUTE.UNKNOWN", "ENTITY_ERROR.RELATIONSHIP.INVALID", "ENTITY_ERROR.RELATIONSHIP.INVALID_NOT_ALLOWED", "ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE", "FORBIDDEN_ERROR", "NOT_FOUND", "PARAMETER_ERROR.INVALID", "PARAMETER_ERROR.REQUIRED", "RATE_LIMIT_EXCEEDED", "SERVICE_UNAVAILABLE", "UNEXPECTED_ERROR", "UNKNOWN_ERROR"]
+    public static let shapes: Set<String> = ["unobserved", "plistDictionary", "plistArray", "plistScalar", "jsonDictionary", "jsonArray", "jsonScalar", "unrecognized"]
+    public static let mimes: Set<String> = ["unavailable", "html", "xmlOrPlist", "json", "other"]
+    public static let sizes: Set<String> = ["unavailable", "empty", "1to256", "257to4096", "over4096"]
+    public static let expectedTypes: Set<String> = ["-", "string", "integer", "boolean", "number", "data", "date", "other"]
+    public static let codingKeys: Set<String> = ["-", "device", "devices", "resultCode", "resultString", "name", "deviceNumber", "deviceId", "status", "udid", "other"]
+
+    public static func validated(_ value: String) -> String? {
+        V3ProvisioningCauseDiagnostic(encoded: value)?.encoded
+    }
+    public init?(encoded: String) {
+        guard encoded.utf8.count <= Self.maximumBytes,
+              encoded.utf8.allSatisfy({ $0 < 128 }) else { return nil }
+        let parts = encoded.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 6, parts[0] == "pc1", let phase = Phase(rawValue: parts[1]),
+              [parts[2], parts[3], parts[4]].allSatisfy({ $0 == "0" || $0 == "1" }) else { return nil }
+        let sourceRows = parts[5].split(separator: ";", omittingEmptySubsequences: false)
+        guard (1...Self.maximumRows).contains(sourceRows.count) else { return nil }
+        var rows: [Row] = []
+        var nextDepth: [String: Int] = [:]
+        for source in sourceRows {
+            let f = source.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            guard f.count == 13, Phase(rawValue: f[0]) != nil,
+                  Self.cases[f[1]]?.contains(f[2]) == true,
+                  Self.number(f[3], minimum: -2147483648, maximum: 2147483647),
+                  Self.number(f[4], minimum: -2147483648, maximum: 2147483647),
+                  Self.number(f[5], minimum: 100, maximum: 599),
+                  Self.providerCodes.contains(f[6]), Self.shapes.contains(f[7]),
+                  Self.mimes.contains(f[8]), Self.sizes.contains(f[9]),
+                  Self.expectedTypes.contains(f[10]), Self.codingKeys.contains(f[11]),
+                  ["0", "1", "2", "3"].contains(f[12]) else { return nil }
+            // Numeric values from unknown domains or enum bridge ordinals are not evidence.
+            guard f[3] == "-" || ["url", "native"].contains(f[1]) || (f[1] == "server" && f[2] == "underlyingError") else { return nil }
+            let observedPortal = ["listDevices", "registerDevice"].contains(f[0]) && f[12] == "0"
+            guard (f[4] == "-" && f[6] == "-") || observedPortal else { return nil }
+            guard f[5] == "-" || observedPortal || (f[1] == "server" && f[2] == "invalidResponseFormat") else { return nil }
+            let parser = f[1] == "server" && ["badServerResponse", "invalidResponseFormat", "missingKey"].contains(f[2])
+            guard (f[7] == "unobserved" && f[9] == "unavailable") || parser else { return nil }
+            guard f[8] == "unavailable" || (f[1] == "server" && f[2] == "invalidResponseFormat") else { return nil }
+            guard f[10] == "-" || f[1] == "decoding" else { return nil }
+            guard f[11] == "-" || f[1] == "decoding" || (f[1] == "server" && f[2] == "missingKey") else { return nil }
+            guard f[1] != "state" || ["liveUDID", "fallbackUDID", "missingVerifiedID"].contains(f[0]) else { return nil }
+            guard Int(f[12]) == nextDepth[f[0], default: 0] else { return nil }
+            nextDepth[f[0]] = Int(f[12])! + 1
+            if f[1] == "unknown" || f[2] == "unknown" || f[2] == "other" {
+                guard parts[3] == "1" else { return nil }
+            }
+            rows.append(Row(boundary: f[0], type: f[1], kind: f[2], code: f[3],
+                result: f[4], http: f[5], provider: f[6], shape: f[7], mime: f[8],
+                size: f[9], expected: f[10], key: f[11], depth: f[12]))
+        }
+        guard nextDepth[phase.rawValue] != nil else { return nil }
+        self.encoded = encoded
+        self.phase = phase
+        self.truncated = parts[2] == "1"
+        self.unknown = parts[3] == "1"
+        self.cycle = parts[4] == "1"
+        self.rows = rows
+    }
+    private static func number(_ value: String, minimum: Int64, maximum: Int64) -> Bool {
+        if value == "-" { return true }
+        guard let n = Int64(value), String(n) == value else { return false }
+        return (minimum...maximum).contains(n)
+    }
+}
+
+// Original error remains process-local, not NSError.userInfo or serialized payload.
+struct V3ProvisioningCauseError: Error, LocalizedError {
+    let underlying: Error
+    let provisioningCause: String
+    var errorDescription: String? { "Device registration failed; review the safe diagnostics." }
+}
+
+
+extension V3ProvisioningCauseDiagnostic {
+    public var technicalDetails: String {
+        let header = "\nprovisioning_cause_schema=pc1 provisioning_substep=\(phase.rawValue) cause_truncated=\(truncated) cause_unknown=\(unknown) cause_cycle=\(cycle)"
+        let causes = rows.enumerated().map { index, row in
+            "\nprovisioning_cause[\(index)]: boundary=\(row.boundary) type=\(row.type) case=\(row.kind) native_code=\(row.code) portal_result=\(row.result) http_status=\(row.http) provider_code=\(row.provider) parse_shape=\(row.shape) mime=\(row.mime) body_size=\(row.size) expected_type=\(row.expected) coding_key=\(row.key) depth=\(row.depth)"
+        }.joined()
+        return header + causes
+    }
+}
+
 public struct V3AuthenticationRequestSnapshot {
     public static let contextKey = "auth_request_trace"
     public static let maximumBytes = 1024
@@ -16031,6 +16192,7 @@ public enum V3AuthenticationDiagnostics {
     public static let maximumWireBytes = 4096
     private static let keys: Set<String> = [V3AuthenticationRequestSnapshot.contextKey,
         V3AuthenticationHeaderProvenance.contextKey, V3AuthenticationProviderObservation.contextKey, stateKey]
+    private static let observationKeys = keys.union([V3ProvisioningCauseDiagnostic.contextKey])
     private static let ancillary = [V3LoginDiagnosticSnapshot.contextKey, V3TemporaryAnisetteTrace.contextKey,
         V3TemporaryADIConsumption.contextKey, "capability_names", "enabled_capability_names",
         "team_sha256", "requested_bundle_sha256", "requested_app_group_sha256", "capabilities_sha256",
@@ -16052,6 +16214,9 @@ public enum V3AuthenticationDiagnostics {
     public static func sanitizingContext(_ supplied: [String: String]) -> [String: String] {
         var result = supplied
         var rejected = false
+        if let raw = result[V3ProvisioningCauseDiagnostic.contextKey], V3ProvisioningCauseDiagnostic.validated(raw) == nil {
+            result[V3ProvisioningCauseDiagnostic.contextKey] = V3ProvisioningCauseDiagnostic.rejected; rejected = true
+        }
         if let raw = result[V3AuthenticationRequestSnapshot.contextKey], V3AuthenticationRequestSnapshot(encoded: raw) == nil {
             result.removeValue(forKey: V3AuthenticationRequestSnapshot.contextKey); rejected = true
         }
@@ -16069,7 +16234,7 @@ public enum V3AuthenticationDiagnostics {
             for key in ancillary where result.count >= 20 { _ = removeAncillary(key, from: &result) }
             if result.count < 20 { result[stateKey] = "rejected" }
         }
-        if result.count > 20 && !keys.isDisjoint(with: result.keys) {
+        if result.count > 20 && !observationKeys.isDisjoint(with: result.keys) {
             // Optional extensions cannot erase a primary failure at capacity.
             // Unknown keys and the primary native tuple are never evicted.
             // Earlier probe/recovery annotations are evicted atomically, after chronology.
@@ -16081,8 +16246,10 @@ public enum V3AuthenticationDiagnostics {
     public static func sanitizingWireContext(_ supplied: Any) -> [String: String]? {
         guard var fields = supplied as? [String: Any] else { return nil }
         var rejected = false
-        for key in keys where fields[key] != nil && !(fields[key] is String) {
-            fields.removeValue(forKey: key); rejected = true
+        for key in observationKeys where fields[key] != nil && !(fields[key] is String) {
+            if key == V3ProvisioningCauseDiagnostic.contextKey { fields[key] = V3ProvisioningCauseDiagnostic.rejected }
+            else { fields.removeValue(forKey: key) }
+            rejected = true
         }
         guard var strings = fields as? [String: String] else { return nil }
         if rejected { strings[stateKey] = "rejected" }
@@ -16110,7 +16277,7 @@ public enum V3AuthenticationDiagnostics {
         return boundingWire(result)
     }
     public static func boundingWire(_ supplied: [String: Any]) -> [String: Any] {
-        guard let raw = supplied["signingContext"] as? [String: String], !keys.isDisjoint(with: raw.keys) else { return supplied }
+        guard let raw = supplied["signingContext"] as? [String: String], !observationKeys.isDisjoint(with: raw.keys) else { return supplied }
         var fields = sanitizingContext(raw)
         if fields[stateKey] == nil { fields[stateKey] = "recorded" }
         var trimmed = fields != raw
@@ -16807,6 +16974,18 @@ struct V3AccountOperationError: Error, LocalizedError {
     var acquisitionFailure: AcquisitionFailure? = nil
     var authResponseShape: AuthResponseShape? = nil
     var authResponseMIME: AuthResponseMIME? = nil
+    let provisioningCause: String?
+
+    init(step: CombinedFailure.SourceStep, kind: Kind, underlying: Error, serverCode: Int?,
+         httpStatus: Int? = nil, nativeEvidence: V3AnisetteNativeEvidence? = nil,
+         anisetteAttempt: V3AnisetteAttemptContext? = nil, acquisitionFailure: AcquisitionFailure? = nil,
+         authResponseShape: AuthResponseShape? = nil, authResponseMIME: AuthResponseMIME? = nil,
+         provisioningCause: String? = nil) {
+        self.step = step; self.kind = kind; self.underlying = underlying; self.serverCode = serverCode
+        self.httpStatus = httpStatus; self.nativeEvidence = nativeEvidence; self.anisetteAttempt = anisetteAttempt
+        self.acquisitionFailure = acquisitionFailure; self.authResponseShape = authResponseShape
+        self.authResponseMIME = authResponseMIME; self.provisioningCause = provisioningCause
+    }
 
     var errorDescription: String? { "An account operation failed; review the safe diagnostics." }
     var credentialCommit: Bool { step == .credentialCommit && kind != .anisetteIdentityStateInvalid }
@@ -16839,6 +17018,9 @@ struct V3AccountOperationError: Error, LocalizedError {
         // HTTP status remains unavailable unless a typed producer observes it.
         var signingContext = ["typed_error": acquisitionFailure?.rawValue ?? kind.rawValue,
             "server_code": serverCode.map(String.init) ?? "unknown", "http_status": httpStatus.map(String.init) ?? "unavailable"]
+        if let provisioningCause {
+            signingContext[V3ProvisioningCauseDiagnostic.contextKey] = provisioningCause
+        }
         if kind == .sideSignInvalidResponse, let authResponseMIME {
             signingContext["auth_response_mime"] = authResponseMIME.rawValue
         }

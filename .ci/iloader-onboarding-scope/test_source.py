@@ -22,6 +22,8 @@ CASES = {
     "cancelled-attempt-sentinel-and-next-independent-default",
 }
 
+REGISTRATION_CASES = ['registration-live-and-fallback-preserve-first', 'registration-wrapped-minimuxer-cause', 'registration-fallback-error-without-first-error', 'registration-missing-verified-identifier', 'registration-local-list-auth-before-response', 'registration-local-list-auth-after-http200', 'registration-list-parser-response', 'registration-conditional-register-portal-error', 'registration-unknown-cycle', 'registration-deep-chain-truncated', 'registration-decoder-unknown-key', 'registration-oversize-payload', 'registration-wrapped-native-cause', 'registration-preserves-existing-observers']
+
 def read(path): return (ROOT / path).read_text()
 def sha(text): return hashlib.sha256(text.encode()).hexdigest()
 
@@ -84,10 +86,42 @@ class OnboardingSourceTests(unittest.TestCase):
         self.assertIn("matching: { $0 is CancellationError }", runtime)
         self.assertIn('reasonCode == "consentRequired"', runtime)
         self.assertIn('rows.count == 8', runtime)
-        for name in ["BoundaryDoubles.swift", "OperationBoundaries.swift", "RuntimeTests.swift"]:
+        for name in ["BoundaryDoubles.swift", "OperationBoundaries.swift", "RuntimeTests.swift", "RegistrationDoubles.swift", "RegistrationDiagnosticDoubles.swift", "RegistrationCases.swift"]:
             text = (generate.HERE / name).read_text()
             for forbidden in ["URLSession.shared", ".data(for:", "dataTask(", "Process(", "SecItem", "dlopen("]:
                 self.assertNotIn(forbidden, text)
+
+    def test_registration_producer_and_fixture_contract(self):
+        operation = read("SideStore/Core/Operations/StandaloneOperations/SignInOperation.swift")
+        body = generate.extract(operation, "private func registerCurrentDevice(for team:")
+        self.assertIn("deviceQueryError = deviceQueryError ?? error", body)
+        self.assertIn("if let deviceQueryError { throw cause.failure(deviceQueryError, phase: .missingVerifiedID) }", body)
+        expected_calls = ["await CellularRefreshManager.shared.turnOffDataIfNeeded()", "deviceUDID = try await fetchUDID()", "deviceUDID = try await fetchUDID(useStatic: true)", "DeveloperPortalProxy.shared.fetchDevices(for: team, types: .all)", "DeveloperPortalProxy.shared.registerDevice(name: deviceName, identifier: udid, type: DeveloperPortalProxy.currentDeviceType, team: team)"]
+        positions = [body.index(value) for value in expected_calls]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn("safeFetchUDID", body)
+        self.assertEqual(body.count("turnOnDataIfNeeded(addOnDelay: 2.0)"), 2)
+        recorder = generate.extract(operation, "private struct V3ProvisioningCauseRecorder {")
+        for forbidden in ["localizedDescription", "String(describing:", "Mirror(", "NSMultipleUnderlyingErrorsKey", "Task.detached", "UserDefaults", "Keychain"]:
+            self.assertNotIn(forbidden, recorder)
+        self.assertIn("depth < 4, visited < 8", recorder)
+        self.assertIn("payload.utf8.prefix(4097)", recorder)
+        self.assertIn("if v3IsAuthCancellation(error) { return error }", recorder)
+        self.assertIn("let roots = chains.compactMap", recorder)
+        self.assertIn("wrapper.error", recorder)
+        self.assertIn("wrapper.wrappedError", recorder)
+        self.assertEqual(recorder.count("native.userInfo["), 1)
+        fixture = (generate.HERE / "RegistrationCases.swift").read_text()
+        labels = re.findall(r'(?:failed\(|cases.append\(\()"([^\"]+)"', fixture)
+        self.assertEqual(labels, REGISTRATION_CASES)
+        self.assertEqual(len(labels), 14)
+        for expected in ["catch is CancellationError", "catch let error as URLError", "SECRET_PASSWORD_CANARY", "cycle.next = nil", "listResult = 0", "previous observers", "fallback:true"]:
+            if expected == "previous observers": expected = "prior observers forwarded exactly once"
+            self.assertIn(expected, fixture)
+        runtime = (generate.HERE / "RuntimeTests.swift").read_text()
+        self.assertIn("registrationFixtureCases()", runtime)
+        self.assertIn('appendingPathComponent("registration-cases.json")', runtime)
+        self.assertIn('let schema = "device-registration-cause-cases-v1"', runtime)
 
     def test_generated_projection_and_source_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -118,7 +152,7 @@ class OnboardingSourceTests(unittest.TestCase):
             a = generate.generate(Path(one), ROOT, SIGN)
             b = generate.generate(Path(two), ROOT, SIGN)
             self.assertEqual(a, b)
-            self.assertEqual(len(a["production_extracts"]), 35)
+            self.assertEqual(len(a["production_extracts"]), 52)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

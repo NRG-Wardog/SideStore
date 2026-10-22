@@ -170,10 +170,37 @@ struct Export: Encodable {
         try await testProviderFailure(&rows)
         try await testAttemptEndAndCancel(&rows)
         try expect(rows.count == 8 && Set(rows).count == rows.count, "exact unique executed case count")
+        let registration = try await registrationFixtureCases()
+        let registrationRows = try registration.map { row -> RegistrationExport.Row in
+            guard let cause = v3ProvisioningCauseContext(row.error), let parsed = V3ProvisioningCauseDiagnostic(encoded: cause) else {
+                throw FixtureFailure("registration export lacks validated production evidence")
+            }
+            let underlying = v3UnobservedProvisioningCause(v3AccountUnderlyingError(row.error))
+            let primaryRows = V3ProvisioningCauseDiagnostic(encoded: underlying)?.rows ?? parsed.rows
+            let primary = primaryRows.first(where: { $0.type != "wrapper" }) ?? primaryRows[0]
+            return RegistrationExport.Row(name: row.name, provisioning_cause: cause,
+                primary_type: primary.type, primary_kind: primary.kind, expected: row.expected)
+        }
+        try expect(registrationRows.count == 14 && Set(registrationRows.map { $0.name }).count == 14, "exact registration fixture count")
         if CommandLine.arguments.count > 1 {
-            try JSONEncoder().encode(Export(cases: rows)).write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
+            let output = URL(fileURLWithPath: CommandLine.arguments[1])
+            try JSONEncoder().encode(Export(cases: rows)).write(to: output)
+            try JSONEncoder().encode(RegistrationExport(cases: registrationRows)).write(to: output.deletingLastPathComponent().appendingPathComponent("registration-cases.json"))
         }
         print("ILOADER_ONBOARDING_SCOPE_FIXTURE_PASS")
         print("{\"case_count\":\(rows.count)}")
     }
+}
+
+struct RegistrationExport: Encodable {
+    let schema = "device-registration-cause-cases-v1"
+    let fake_only = true
+    struct Row: Encodable {
+        let name: String
+        let provisioning_cause: String
+        let primary_type: String
+        let primary_kind: String
+        let expected: [String]
+    }
+    let cases: [Row]
 }

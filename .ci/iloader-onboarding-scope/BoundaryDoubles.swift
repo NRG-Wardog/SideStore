@@ -73,8 +73,6 @@ public struct ALTAppleAPISession: Sendable {
 public struct ALTAccount: Sendable { let appleID: String }
 public struct ALTTeam: Sendable { let account: ALTAccount; let route: String }
 public struct ALTCertificate: Sendable {}
-enum OperationError: Error, Equatable { case notAuthenticated, cancelled }
-enum DeveloperPortalError: Error { case noTeams }
 final class ALTAppleAPI: @unchecked Sendable {
     static let shared = ALTAppleAPI()
     func fetchTeams(for account: ALTAccount, session: ALTAppleAPISession) async throws -> [ALTTeam] {
@@ -152,3 +150,5 @@ func syntheticSession(_ route: String) -> ALTAppleAPISession {
     ALTAppleAPISession(dsid: "synthetic-dsid", authToken: "synthetic-token",
                       anisetteData: AnisetteData(route: route), xcodeVersion: "synthetic-version")
 }
+
+enum Constants { static let defaultAccountRepairMessage = "Synthetic account repair message" }
