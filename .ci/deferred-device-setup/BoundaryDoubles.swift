@@ -8,6 +8,17 @@ struct SyntheticX509 { var data: Data? = Boundary.certificateDER; var organizati
 struct ALTCertificate { var x509 = SyntheticX509(); var data: Data? { x509.data }; var privateKey = Boundary.privateKeyPEM; var serialNumber = "fixture-certificate" }
 struct ALTSigner { let team: ALTTeam; let certificate: ALTCertificate }
 struct Credentials { var appleIDEmailAddress: String? = "fixture@example.invalid"; var isAuthenticated = true }
+// This suite has no remote identity/store. Execute the actual terminal guard's
+// nil-handoff call, but reject an unsupported remote handoff rather than claiming
+// persistence succeeded. The dedicated remote-identity suite owns real handoffs.
+struct V3RemoteIdentityHandoff {}
+enum V3RemoteIdentityError: Error { case stateChanged }
+enum V3RemoteIdentityContinuity {
+    static func commit(_ handoff: V3RemoteIdentityHandoff?, credentials: Credentials) throws {
+        guard handoff == nil else { throw V3RemoteIdentityError.stateChanged }
+        Boundary.events.append("identityCommit:nil")
+    }
+}
 struct ActiveCertificate { var certificate = ALTCertificate(); var p12Data = Boundary.syntheticP12; var password: String? = "" }
 struct ParsedCertificate { let subject = "SYNTHETIC"; let issuer = "SYNTHETIC" }
 func parseCertificate(derData: Data) -> ParsedCertificate { ParsedCertificate() }
@@ -174,7 +185,7 @@ class ServiceBoundary {
     var resumableProvisioning: (String, String)?
     var terminal: [String: Any]?
     func ownsActiveSession(_ id: String) -> Bool { ownsSession && id == sessionID }
-    func finish(id: String, response: [String: Any]) { terminal = response }
+    func finish(id: String, response: [String: Any]) { Boundary.events.append("serviceTerminal"); terminal = response }
     func debugLog(_ message: String) {}
 }
 

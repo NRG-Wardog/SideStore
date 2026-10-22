@@ -146,6 +146,9 @@ func expectFailure(_ op: DeferredFixtureOperation) async throws {
                 "Checked finalization activates the exact owned account and team")
             let service = DeferredServiceFixture()
             try service.complete(operation: operation, result: result)
+            try require(Array(Boundary.events.suffix(2)) == ["identityCommit:nil", "serviceTerminal"] &&
+                Boundary.events.filter { $0 == "identityCommit:nil" }.count == 1,
+                "Actual terminal publishes only after the owned nil-handoff boundary returns once")
             guard let terminal = service.terminal else { throw FixtureAssertion(message: "Actual deferred branch must publish terminal") }
             let wire = try JSONSerialization.data(withJSONObject: terminal, options: [.sortedKeys])
             guard let decoded = try JSONSerialization.jsonObject(with: wire) as? [String: Any] else { throw FixtureAssertion(message: "Terminal must round-trip") }
@@ -183,7 +186,7 @@ func expectFailure(_ op: DeferredFixtureOperation) async throws {
         }
         cases.append("real_proof_rejects_wrong_malformed_and_truncated_keys")
 
-        for failure in ["missingAccount", "missingTeam", "accountOwner", "teamOwner", "teamID", "activeCertificate", "sessionOwner", "cancelled", "mode"] {
+        for failure in ["missingAccount", "missingTeam", "accountOwner", "teamOwner", "teamID", "activeCertificate", "sessionOwner", "cancelled", "mode", "missingCredentials"] {
             Boundary.reset()
             let operation = DeferredFixtureOperation(); let result = try await operation.run()
             let service = DeferredServiceFixture()
@@ -196,13 +199,25 @@ func expectFailure(_ op: DeferredFixtureOperation) async throws {
             case "activeCertificate": CertificateManager.shared.activeCertificate?.certificate.x509.data = Data([1])
             case "sessionOwner": service.ownsSession = false
             case "cancelled": service.sessions[service.sessionID]?.cancellationRequested = true
+            case "missingCredentials": AuthManager.shared.authenticationSnapshot = nil
             default: service.sessions[service.sessionID]?.mode = .resumeProvisioning
             }
             var blocked = false
             do { try service.complete(operation: operation, result: result) }
             catch is V3ProvisioningResumeUnavailableError { blocked = true }
-            try require(blocked && service.terminal == nil, "Service must not turn lost ownership into deferred success")
+            try require(blocked && service.terminal == nil && service.resumableProvisioning == nil &&
+                !Boundary.events.contains("identityCommit:nil") && !Boundary.events.contains("serviceTerminal"),
+                "Missing credentials or lost ownership must fail before identity commit or terminal/journal success")
         }
+        Boundary.reset()
+        // This boundary check must also compile against the frozen pre-handoff
+        // SignInResult used by the historical PEM rejection control.
+        var remoteCommitBlocked = false
+        do { try V3RemoteIdentityContinuity.commit(V3RemoteIdentityHandoff(), credentials: Credentials()) }
+        catch V3RemoteIdentityError.stateChanged { remoteCommitBlocked = true }
+        try require(remoteCommitBlocked && !Boundary.events.contains("identityCommit:nil") &&
+            !Boundary.events.contains("serviceTerminal"),
+            "Unsupported remote handoff cannot silently pass the inert persistence boundary")
         for failure in ["missingAccount", "missingTeam", "accountOwner", "teamOwner", "unstable", "signedOut", "missingCertificate", "emptyTeam", "activeSession"] {
             let (service, _) = try await completeAndExport(Boundary.privateKeyPEM)
             switch failure {

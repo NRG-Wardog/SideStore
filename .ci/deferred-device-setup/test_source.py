@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, hashlib, importlib.util, json, subprocess, sys, tempfile, unittest
+import argparse, hashlib, importlib.util, json, re, subprocess, sys, tempfile, unittest
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 SPEC=importlib.util.spec_from_file_location('fixture',HERE/'generate.py'); G=importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(G)
@@ -27,6 +27,15 @@ class DeferredSourceTests(unittest.TestCase):
             start=self.service.index('        case "certExportActive":\n')+len('        case "certExportActive":\n')
             end=self.service.index('        case "certSetActive":',start)
             self.assertIn(self.service[start:end],generated)
+            doubles=(out/'BoundaryDoubles.swift').read_text()
+            required=set(re.findall(r'\b(V3Remote\w+)\b',generated))
+            declared=set(re.findall(r'(?:struct|enum|class) (V3Remote\w+)',doubles))
+            self.assertLessEqual(required,declared)
+            boundary=G.block(doubles,'enum V3RemoteIdentityContinuity {')
+            calls=set(re.findall(r'V3RemoteIdentityContinuity\.(\w+)',generated))
+            methods=set(re.findall(r'static func (\w+)',boundary))
+            self.assertLessEqual(calls,methods)
+            self.assertIn('guard handoff == nil else { throw V3RemoteIdentityError.stateChanged }',boundary)
     def test_deferral_is_before_registration_after_certificates(self):
         p=G.block(self.op,'private func performProvisioningLoop(')
         self.assertLess(p.index('isCertificateResolved = true'),p.index('V3DeviceSetupDeferralPolicy.mayDefer'))
