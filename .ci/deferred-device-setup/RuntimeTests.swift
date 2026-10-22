@@ -12,6 +12,21 @@ func expectFailure(_ op: DeferredFixtureOperation) async throws {
 
 @main struct DeferredSetupTests {
     static func main() async throws {
+        try SyntheticSigningIdentity.configure()
+        if CommandLine.arguments.contains("--expect-prior-pem-rejection") {
+            Boundary.reset()
+            try require(V3PendingCertificateKeyProof.matches(certificateDER: Boundary.certificateDER,
+                privateKeyPEM: Boundary.privateKeyPEM), "Owned fresh PEM has real matching public-key proof")
+            try require(!V3PendingCertificateKeyProof.matches(certificateDER: Boundary.certificateDER,
+                privateKeyDER: Boundary.privateKeyPEM), "The strict DER-only entry point rejects PEM")
+            var rejected = false
+            do { _ = try await DeferredFixtureOperation().run() }
+            catch is V3ProvisioningResumeUnavailableError { rejected = true }
+            try require(rejected && Boundary.events.contains("verifyCertificate") &&
+                !Boundary.events.contains("activateChecked"), "Exact prior source must reject valid PEM before account activation")
+            print("DEFERRED_PRIOR_PEM_REJECTION_REPRODUCED")
+            return
+        }
         var cases: [String] = []
         Boundary.reset(); Boundary.fileState = "configured"
         let configured = DeferredFixtureOperation(); _ = try await configured.run()
@@ -81,7 +96,7 @@ func expectFailure(_ op: DeferredFixtureOperation) async throws {
             case "owner": Boundary.team.account?.appleID = "other@example.invalid"
             case "account": Boundary.team.account?.identifier = "other-account"
             case "team": Boundary.certificate.x509.organizationalUnit = "OTHER"
-            default: Boundary.keyMatches = false
+            default: Boundary.certificate.privateKey = Boundary.wrongPrivateKeyDER
             }
             let op = DeferredFixtureOperation(); try await expectFailure(op)
             try require(!Boundary.events.contains("activateChecked"), "Wrong identity/key must fail before activating account")
@@ -120,6 +135,92 @@ func expectFailure(_ op: DeferredFixtureOperation) async throws {
         try require(!intentional("authenticatedProvisioningIncomplete", "setupDeferred", "network"), "Reason allowlist")
         try require(!intentional("authenticatedProvisioningIncomplete", "setupDeferred", "pairingUnconfigured", false) && !intentional("authenticatedProvisioningIncomplete", "setupDeferred", "pairingUnconfigured", true, true), "Authentication and absence of failure required")
         cases.append("wire_outcome_allowlist_preserves_incomplete_journal")
+
+        func completeAndExport(_ key: Data) async throws -> (DeferredServiceFixture, SignInResult) {
+            Boundary.reset(); Boundary.certificate.privateKey = key
+            V3HeadlessRuntime.shared.auth.hasActiveSession = true
+            let operation = DeferredFixtureOperation()
+            let result = try await operation.run()
+            try require(DatabaseManager.shared.activeAccount()?.identifier == result.team.account?.identifier &&
+                DatabaseManager.shared.activeTeam()?.identifier == result.team.identifier,
+                "Checked finalization activates the exact owned account and team")
+            let service = DeferredServiceFixture()
+            try service.complete(operation: operation, result: result)
+            guard let terminal = service.terminal else { throw FixtureAssertion(message: "Actual deferred branch must publish terminal") }
+            let wire = try JSONSerialization.data(withJSONObject: terminal, options: [.sortedKeys])
+            guard let decoded = try JSONSerialization.jsonObject(with: wire) as? [String: Any] else { throw FixtureAssertion(message: "Terminal must round-trip") }
+            try require(V3DeviceSetupDeferralPolicy.isIntentionalOutcome(state: decoded["state"] as? String,
+                outcome: decoded["outcome"] as? String, reason: decoded["setupDeferredReason"] as? String,
+                authenticated: decoded["authenticated"] as? Bool == true, hasFailure: decoded["failure"] != nil),
+                "Serialized actual service terminal remains authenticated intentional incompletion")
+            try require(!operation.v3DidCompleteProvisioning && !Boundary.events.contains("register") &&
+                !Boundary.events.contains("resign") && !Boundary.events.contains("postAuth"), "No false setup completion or device work")
+            var activeSessionBlocked = false
+            do { _ = try service.exportActive() } catch ServiceError.notFound { activeSessionBlocked = true }
+            try require(activeSessionBlocked, "Export remains blocked until the authentication owner settles")
+            V3HeadlessRuntime.shared.auth.hasActiveSession = false
+            let exported = try service.exportActive()
+            try require(exported["data"] as? Data == Boundary.syntheticP12 &&
+                exported["teamIdentifier"] as? String == result.team.identifier &&
+                (exported["identitySHA256"] as? String)?.count == 64,
+                "Actual export guards and adapter return this owned synthetic certificate tuple")
+            return (service, result)
+        }
+        _ = try await completeAndExport(Boundary.privateKeyPEM)
+        cases.append("fresh_pem_real_proof_finalization_terminal_and_export")
+        _ = try await completeAndExport(Boundary.privateKeyDER)
+        _ = try await completeAndExport(Boundary.privateKeyPKCS8)
+        cases.append("reloaded_pkcs1_and_pkcs8_real_proof_finalization_terminal_and_export")
+
+        let malformedPEM = Data("-----BEGIN RSA PRIVATE KEY-----\ninvalid-base64\n-----END RSA PRIVATE KEY-----\n".utf8)
+        let unsupportedPEM = Data(("-----BEGIN PRIVATE KEY-----\n" + Boundary.privateKeyPKCS8.base64EncodedString() + "\n-----END PRIVATE KEY-----\n").utf8)
+        for key in [Boundary.wrongPrivateKeyDER, malformedPEM, unsupportedPEM,
+                    Data(Boundary.privateKeyDER.dropLast()), Data(), Data([2])] {
+            Boundary.reset(); Boundary.certificate.privateKey = key
+            try await expectFailure(DeferredFixtureOperation())
+            try require(!Boundary.events.contains("activateChecked") && DatabaseManager.shared.activeAccount() == nil,
+                "Unproved key material cannot activate an account")
+        }
+        cases.append("real_proof_rejects_wrong_malformed_and_truncated_keys")
+
+        for failure in ["missingAccount", "missingTeam", "accountOwner", "teamOwner", "teamID", "activeCertificate", "sessionOwner", "cancelled", "mode"] {
+            Boundary.reset()
+            let operation = DeferredFixtureOperation(); let result = try await operation.run()
+            let service = DeferredServiceFixture()
+            switch failure {
+            case "missingAccount": DatabaseManager.shared.account = nil
+            case "missingTeam": DatabaseManager.shared.team = nil
+            case "accountOwner": DatabaseManager.shared.account?.appleID = "other@example.invalid"
+            case "teamOwner": DatabaseManager.shared.team?.account?.identifier = "other-account"
+            case "teamID": DatabaseManager.shared.team?.identifier = "OTHER"
+            case "activeCertificate": CertificateManager.shared.activeCertificate?.certificate.x509.data = Data([1])
+            case "sessionOwner": service.ownsSession = false
+            case "cancelled": service.sessions[service.sessionID]?.cancellationRequested = true
+            default: service.sessions[service.sessionID]?.mode = .resumeProvisioning
+            }
+            var blocked = false
+            do { try service.complete(operation: operation, result: result) }
+            catch is V3ProvisioningResumeUnavailableError { blocked = true }
+            try require(blocked && service.terminal == nil, "Service must not turn lost ownership into deferred success")
+        }
+        for failure in ["missingAccount", "missingTeam", "accountOwner", "teamOwner", "unstable", "signedOut", "missingCertificate", "emptyTeam", "activeSession"] {
+            let (service, _) = try await completeAndExport(Boundary.privateKeyPEM)
+            switch failure {
+            case "missingAccount": DatabaseManager.shared.account = nil
+            case "missingTeam": DatabaseManager.shared.team = nil
+            case "accountOwner": DatabaseManager.shared.account?.appleID = "other@example.invalid"
+            case "teamOwner": DatabaseManager.shared.team?.account?.identifier = "other-account"
+            case "unstable": AuthManager.shared.v3IdentityIsStable = false
+            case "signedOut": AuthManager.shared.authenticationSnapshot?.isAuthenticated = false
+            case "missingCertificate": CertificateManager.shared.activeCertificate = nil
+            case "emptyTeam": DatabaseManager.shared.team?.identifier = ""
+            default: V3HeadlessRuntime.shared.auth.hasActiveSession = true
+            }
+            var blocked = false
+            do { _ = try service.exportActive() } catch ServiceError.notFound { blocked = true }
+            try require(blocked, "Certificate export keeps every account/team/session gate")
+        }
+        cases.append("service_terminal_and_export_reject_mismatched_ownership")
 
         let result: [String: Any] = ["schema": "deferred-device-setup-cases-v1", "fake_only": true, "cases": cases]
         if CommandLine.arguments.count > 1 {

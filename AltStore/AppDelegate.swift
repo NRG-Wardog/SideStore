@@ -9464,7 +9464,9 @@ final class V3SideStoreService: NSObject {
            !directRecoveryControl {
             reply(encode(["version": 1, "id": id, "error": "invalidRequest",
                 "failure": CombinedFailure(operation: operation, stage: .command,
-                    code: .invalidConfiguration, id: id).wire], operation: operation))
+                    code: .invalidConfiguration, id: id, retryable: false,
+                    safeCause: directRecoveryRecord == nil
+                        ? .directRecoveryRecordMissing : .directRecoveryTargetMismatch).wire], operation: operation))
             return
         }
         if operation == "directRecoveryReconcile", let directRecoveryRecord,
@@ -9969,16 +9971,23 @@ final class V3SideStoreService: NSObject {
         case "directRecoveryReconcile":
             let acknowledgesTerminal = V3WireContract.strictBool(payload["ackTerminal"]) == true
             let userConfirmed = V3WireContract.strictBool(payload["userConfirmed"]) == true
-            guard acknowledgesTerminal != userConfirmed,
-                  let record = try V3OperationRecoveryJournal.direct(), record.requestID == target else {
-                throw ServiceError.invalidRequest
+            guard acknowledgesTerminal != userConfirmed else {
+                throw CombinedFailure(operation: operation, stage: .command,
+                    code: .invalidConfiguration, id: id, retryable: false, safeCause: .directRecoveryModeInvalid)
+            }
+            let stored = try V3OperationRecoveryJournal.direct()
+            guard let record = stored, record.requestID == target else {
+                throw CombinedFailure(operation: operation, stage: .command,
+                    code: .invalidConfiguration, id: id, retryable: false,
+                    safeCause: stored == nil ? .directRecoveryRecordMissing : .directRecoveryTargetMismatch)
             }
             let current = try V3OperationRecoveryJournal.markDirectUnknownIfOwnerLost(
                 requestID: target, currentServiceInstanceID: recoveryServiceInstanceID) ?? record
             guard current.phase != .dispatched else { throw ServiceError.busy }
             guard (current.phase == .terminal && acknowledgesTerminal) ||
                   ((current.phase == .prepared || current.phase == .unknown) && userConfirmed) else {
-                throw ServiceError.invalidRequest
+                throw CombinedFailure(operation: operation, stage: .command,
+                    code: .invalidConfiguration, id: id, retryable: false, safeCause: .directRecoveryPhaseNotEligible)
             }
             let postcondition = current.phase == .prepared
                 ? "notDispatched" : await directRecoveryPostcondition(current)
@@ -14691,6 +14700,8 @@ public struct CombinedFailure: Error, LocalizedError {
         case recoveryMalformedRecord, recoveryIncompatibleRecord
         case recoveryStorageUnavailable, recoveryLockUnavailable
         case recoveryReadFailure, recoveryDeleteFailure
+        case directRecoveryRecordMissing, directRecoveryTargetMismatch
+        case directRecoveryModeInvalid, directRecoveryPhaseNotEligible
 
         fileprivate var inferredRetryable: Bool? {
             switch self {
@@ -14767,7 +14778,9 @@ public struct CombinedFailure: Error, LocalizedError {
                 return true
             case .operationPersistenceFailed:
                 return false
-            case .recoveryMalformedRecord, .recoveryIncompatibleRecord:
+            case .recoveryMalformedRecord, .recoveryIncompatibleRecord,
+                 .directRecoveryRecordMissing, .directRecoveryTargetMismatch,
+                 .directRecoveryModeInvalid, .directRecoveryPhaseNotEligible:
                 return false
             case .recoveryStorageUnavailable, .recoveryLockUnavailable,
                  .recoveryReadFailure, .recoveryDeleteFailure:
@@ -15166,6 +15179,10 @@ public struct CombinedFailure: Error, LocalizedError {
             case .recoveryLockUnavailable: return "SideStore could not acquire its recovery storage lock."
             case .recoveryReadFailure: return "SideStore could not read the recovery file. Its contents have not been classified."
             case .recoveryDeleteFailure: return "SideStore could not delete and confirm removal of the recovery record."
+            case .directRecoveryRecordMissing: return "SideStore no longer has the recovery record for this request."
+            case .directRecoveryTargetMismatch: return "A different request now owns SideStore's recovery record."
+            case .directRecoveryModeInvalid: return "The recovery request did not specify one valid confirmation mode."
+            case .directRecoveryPhaseNotEligible: return "The recovery record is not in a state that accepts this confirmation."
             }
         }
         switch stage {
@@ -15425,6 +15442,9 @@ public struct CombinedFailure: Error, LocalizedError {
                 return "Keep changes paused. Check device storage access and copy Diagnostics; do not clear an unclassified record."
             case .recoveryDeleteFailure:
                 return "Keep changes paused and copy Diagnostics. The record was not confirmed removed."
+            case .directRecoveryRecordMissing, .directRecoveryTargetMismatch,
+                 .directRecoveryModeInvalid, .directRecoveryPhaseNotEligible:
+                return "Reload status and inspect the current recovery request before trying again. No recovery record was cleared by this refusal."
             }
         }
         switch stage {
@@ -17567,6 +17587,10 @@ extension CombinedFailure.SafeCause {
         case .recoveryLockUnavailable: return "F62"
         case .recoveryReadFailure: return "F63"
         case .recoveryDeleteFailure: return "F64"
+        case .directRecoveryRecordMissing: return "F65"
+        case .directRecoveryTargetMismatch: return "F66"
+        case .directRecoveryModeInvalid: return "F67"
+        case .directRecoveryPhaseNotEligible: return "F68"
         }
     }
 }

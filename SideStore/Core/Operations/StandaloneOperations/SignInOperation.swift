@@ -641,7 +641,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
               certificate.x509.organizationalUnit == result.team.identifier,
               let active = CertificateManager.shared.activeCertificate,
               active.certificate.x509.data == der,
-              V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyDER: active.certificate.privateKey),
+              // Fresh portal results retain RSA PEM; a reloaded P12 contains DER.
+              // Both paths still prove the private key against this exact leaf.
+              (V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: active.certificate.privateKey) ||
+               V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyDER: active.certificate.privateKey)),
               V3AuthReadStampPolicy.mayReturn(capturedStamp: capturedStamp,
                 currentStamp: auth.v3IdentityStamp, stable: auth.v3IdentityIsStable) else {
             throw V3ProvisioningResumeUnavailableError()

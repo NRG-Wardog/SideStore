@@ -12,6 +12,7 @@ class DeferredSourceTests(unittest.TestCase):
         cls.service=(cls.ss/'AltStore/AppDelegate.swift').read_text()
         cls.ui=(cls.lc/'LiveContainerSwiftUI/Views/V3UnifiedShell.swift').read_text()
         cls.pair=(cls.ss/'SideStore/Core/Pairing/PairingFileManager.swift').read_text()
+        cls.keychain=(cls.ss/'AltStore/Core/Components/Keychain.swift').read_text()
     def test_source_generation_identity_and_closure(self):
         with tempfile.TemporaryDirectory() as d:
             subprocess.run([sys.executable,str(HERE/'generate.py'),'--sources',str(ROOT),'--output-dir',d],check=True)
@@ -21,6 +22,11 @@ class DeferredSourceTests(unittest.TestCase):
             generated=(out/'CandidateDeferredSetup.swift').read_text()
             for a in ['private func performProvisioningLoop(', 'private func performFinalizeAuthentication(', 'private func v3ValidateDeferredIdentity(']: self.assertIn(G.block(self.op,a),generated)
             self.assertIn(G.block(self.pair,'nonisolated var v3DeviceSetupIsUnconfigured: Bool {'),generated)
+            self.assertIn(G.block(self.keychain,'enum V3PendingCertificateKeyProof {'),generated)
+            self.assertIn(G.block(self.service,'if operation.v3DidDeferDeviceSetup {'),generated)
+            start=self.service.index('        case "certExportActive":\n')+len('        case "certExportActive":\n')
+            end=self.service.index('        case "certSetActive":',start)
+            self.assertIn(self.service[start:end],generated)
     def test_deferral_is_before_registration_after_certificates(self):
         p=G.block(self.op,'private func performProvisioningLoop(')
         self.assertLess(p.index('isCertificateResolved = true'),p.index('V3DeviceSetupDeferralPolicy.mayDefer'))
@@ -39,6 +45,8 @@ class DeferredSourceTests(unittest.TestCase):
     def test_identity_proof_remains_strict(self):
         p=G.block(self.op,'private func v3ValidateDeferredIdentity(')
         for gate in ['!Task.isCancelled', 'v3CachedSessionMatchesCurrentRoute', 'account.identifier == result.session.dsid', 'mayUseTeam', 'organizationalUnit == result.team.identifier', 'V3PendingCertificateKeyProof.matches', 'active.certificate.x509.data == der']: self.assertIn(gate,p)
+        self.assertIn('privateKeyPEM: active.certificate.privateKey) ||',p)
+        self.assertIn('privateKeyDER: active.certificate.privateKey)',p)
     def test_no_absence_inference_from_read_failure(self):
         p=G.block(self.pair,'nonisolated var v3DeviceSetupIsUnconfigured: Bool {')
         self.assertIn('if UserDefaults.standard.isPairingReset { return true }',p)
@@ -61,7 +69,11 @@ class DeferredSourceTests(unittest.TestCase):
         runtime=(HERE/'RuntimeTests.swift').read_text(); doubles=(HERE/'BoundaryDoubles.swift').read_text()
         for case in G.CASE_NAMES: self.assertEqual(runtime.count('cases.append("'+case+'")'),1)
         self.assertEqual(len(G.CASE_NAMES),len(set(G.CASE_NAMES)))
-        for forbidden in ['URLSession', 'SecKeyCreate', 'minimuxer', 'Data(contentsOf:']: self.assertNotIn(forbidden,doubles)
+        for forbidden in ['URLSession', 'SecItemAdd', 'SecItemCopyMatching', 'minimuxer', 'Data(contentsOf:', 'Boundary.keyMatches', 'enum V3PendingCertificateKeyProof']: self.assertNotIn(forbidden,doubles)
+        self.assertIn('SecKeyCreateRandomKey',doubles)
+        self.assertIn('kSecAttrIsPermanent as String: false',doubles)
+        self.assertIn('SecKeyCreateSignature',doubles)
+        self.assertIn('DEFERRED_PRIOR_PEM_REJECTION_REPRODUCED',runtime)
         self.assertIn('DEFERRED_DEVICE_SETUP_FIXTURE_PASS',runtime)
 if __name__=='__main__':
     parser=argparse.ArgumentParser(); parser.add_argument('--sources',type=Path); a,rest=parser.parse_known_args()

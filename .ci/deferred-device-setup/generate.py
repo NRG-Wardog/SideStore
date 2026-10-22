@@ -15,6 +15,10 @@ CASE_NAMES = [
     'cancellation_before_or_during_activation_never_succeeds',
     'deferred_completion_skips_resign_and_postauth',
     'wire_outcome_allowlist_preserves_incomplete_journal',
+    'fresh_pem_real_proof_finalization_terminal_and_export',
+    'reloaded_pkcs1_and_pkcs8_real_proof_finalization_terminal_and_export',
+    'real_proof_rejects_wrong_malformed_and_truncated_keys',
+    'service_terminal_and_export_reject_mismatched_ownership',
 ]
 
 def block(source, anchor):
@@ -35,13 +39,20 @@ def main():
       'service': 'SideStore/AltStore/AppDelegate.swift',
       'host': 'LiveContainer/SideStoreSupport/SideStore.swift',
       'ui': 'LiveContainer/LiveContainerSwiftUI/Views/V3UnifiedShell.swift',
+      'keychain': 'SideStore/AltStore/Core/Components/Keychain.swift',
     }
     sources={k:(root/p).read_text() for k,p in owners.items()}
     policy=block(sources['service'],'enum V3DeviceSetupDeferralPolicy {')
     assert policy==block(sources['host'],'enum V3DeviceSetupDeferralPolicy {')
     assert policy==block(sources['ui'],'enum V3DeviceSetupDeferralPolicy {')
     methods=['private func performProvisioningLoop(', 'private func performFinalizeAuthentication(', 'private func v3ValidateDeferredIdentity(']
-    code='import Foundation\n'+policy+'\n'+block(sources['operation'],'struct SignInResult {')+'\n'
+    proof=block(sources['keychain'],'enum V3PendingCertificateKeyProof {')
+    service_terminal=block(sources['service'],'if operation.v3DidDeferDeviceSetup {')
+    export_start=sources['service'].index('        case "certExportActive":\n')+len('        case "certExportActive":\n')
+    export_end=sources['service'].index('        case "certSetActive":',export_start)
+    export_body=sources['service'][export_start:export_end]
+    code='import Foundation\nimport Security\nimport CryptoKit\n'+policy+'\n'+proof+'\n'+block(sources['operation'],'struct SignInResult {')+'\n'
+    code+='\n'.join(block(sources['service'],a) for a in ['enum V3AuthReadStampPolicy {', 'enum V3AuthIdentityBindingPolicy {', 'enum V3ActiveCertificateExportAdapter {'])+'\n'
     code+='final class DeferredFixtureOperation: DeferredOperationBoundary {\n'
     code+='\n'.join(block(sources['operation'],a) for a in methods)
     code+='''
@@ -54,16 +65,35 @@ def main():
 }
 '''
     code+='final class PairingFileManager: PairingBoundary {\nstatic let shared = PairingFileManager()\n'+block(sources['pairing'],'nonisolated var v3DeviceSetupIsUnconfigured: Bool {')+'\n}\n'
+    code+='''
+final class DeferredServiceFixture: ServiceBoundary {
+    func complete(operation: DeferredFixtureOperation, result: SignInResult) throws {
+        let id = sessionID
+        let identityStamp = AuthManager.shared.v3IdentityStamp
+        let credentials = AuthManager.shared.authenticationSnapshot
+        let account = result.team.account!
+        let activeAccount = DatabaseManager.shared.activeAccount()
+        let activeTeam = DatabaseManager.shared.activeTeam()
+        let activeCertificate = CertificateManager.shared.activeCertificate?.certificate
+        let finalization: FixtureSpan? = FixtureSpan()
+'''+service_terminal+'''
+        throw SyntheticFailure(name: "notDeferred")
+    }
+    func exportActive() throws -> [String: Any] {
+'''+export_body+'''
+    }
+}
+'''
     (out/'CandidateDeferredSetup.swift').write_text(code)
     here=Path(__file__).resolve().parent
     for name in ['BoundaryDoubles.swift','RuntimeTests.swift']:
         (out/name).write_bytes((here/name).read_bytes())
     closure=['CandidateDeferredSetup.swift','BoundaryDoubles.swift','RuntimeTests.swift']
-    fixture_inputs={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in here.iterdir() if p.is_file() and p.suffix in ['.py','.swift','.md']}
+    fixture_inputs={'SideStore/.ci/deferred-device-setup/'+p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in here.iterdir() if p.is_file() and p.suffix in ['.py','.swift','.md']}
     evidence={'schema':'deferred-device-setup-source-evidence-v1','inputs':{p:hashlib.sha256((root/p).read_bytes()).hexdigest() for p in owners.values()},
-      'fixture_inputs':fixture_inputs,'extracted_anchors':methods+['enum V3DeviceSetupDeferralPolicy {','nonisolated var v3DeviceSetupIsUnconfigured: Bool {'],
+      'fixture_inputs':fixture_inputs,'extracted_anchors':methods+['enum V3DeviceSetupDeferralPolicy {','nonisolated var v3DeviceSetupIsUnconfigured: Bool {','enum V3PendingCertificateKeyProof {','enum V3AuthReadStampPolicy {','enum V3AuthIdentityBindingPolicy {','enum V3ActiveCertificateExportAdapter {','if operation.v3DidDeferDeviceSetup {','case "certExportActive":'],
       'output_closure':closure,'outputs':{p:hashlib.sha256((out/p).read_bytes()).hexdigest() for p in closure},
-      'boundary_replacements':['Apple portal and team/certificate acquisition are inert doubles','Core Data checked save is an in-memory success/failure boundary','Keychain identity and cryptographic key proof use synthetic facts only','Pairing file and bundle reads use in-memory metadata only','Sign-in UI, resign and post-auth record calls only'],
+      'boundary_replacements':['Apple portal and team/certificate acquisition are inert doubles','Core Data checked save is an in-memory success/failure boundary','Keychain identity and P12 persistence are in-memory; real source-extracted Security key proof uses ephemeral synthetic keys and certificates','Pairing file and bundle reads use in-memory metadata only','Sign-in UI, resign and post-auth record calls only','Service session storage and terminal transport are in-memory; exact deferred terminal and certificate-export guards execute unchanged'],
       'case_names':CASE_NAMES,'network':False,'native_provider':False,'swift_executed':False}
     evidence['inputs'].update(fixture_inputs)
     (out/'source-evidence.json').write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
