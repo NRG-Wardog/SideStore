@@ -144,9 +144,30 @@ class SwiftSourceContracts(unittest.TestCase):
         self.assertIn('let group = RefreshGroup(context: context)', part)
         self.assertEqual(part.count('group.activeTask = Task.detached'), 1)
 
-    def test_existing_runner_completion_task_and_cancellation_body_unchanged(self):
+    def test_runner_completion_task_and_cancellation_keep_admitted_order(self):
         part = self.runner.split('        group.completionHandler =', 1)[1].split('    func performVoidOperation(', 1)[0]
-        self.assertEqual(hashlib.sha256(part.encode()).hexdigest(), 'a1232f3e40a960f6c2caedb9d81609c838f61afabeb8891fbec00f0a8d96bb81')
+        # Reviewed identity-continuity change: capture before detaching, retain the
+        # route through work, then publish once on MainActor after the final check.
+        self.assertEqual(hashlib.sha256(part.encode()).hexdigest(), 'd1990081f16c0df98972a50c8349cf29c6913f583dabd081b3c7a83da76c1954')
+        order = ['completionHandler(.success(installedApp))',
+                 'queuedAdmission = try V3RemoteRequestLeases.capture()',
+                 'group.activeTask = Task.detached {', 'defer { queuedAdmission.close() }',
+                 'try await queuedAdmission.withScope {',
+                 'try await self.perform([operation], handler: handler, group: group)',
+                 'try await MainActor.run {', 'try queuedAdmission.check()',
+                 'queuedAdmission.close()\n', 'group.completionHandler?(group.results)']
+        positions = [part.index(text) for text in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(part.count('group.activeTask = Task.detached {'), 1)
+        self.assertEqual(part.count('group.completionHandler?(group.results)'), 1)
+        publication = part.split('group.completionHandler?(group.results)', 1)[1].split('} catch {', 1)[0]
+        self.assertNotIn('try ', publication)  # No post-callback failure/double delivery.
+        cancellation = part.split('if Task.isCancelled || error is CancellationError {', 1)[1]
+        self.assertLess(cancellation.index('completionHandler(.failure(OperationError.cancelled))'),
+                        cancellation.index('return'))
+        self.assertLess(cancellation.index('return'), cancellation.index('completionHandler(.failure(error))'))
+        pipeline = self.runner.split('private func performUsingAdmittedRoute(', 1)[1].split('func performOperation(', 1)[0]
+        self.assertNotIn('completionHandler', pipeline)  # Only outer entry owns publication.
 
     def test_host_calls_keep_shared_context_not_only_database(self):
         single = self.app.split('private func single(id:', 1)[1].split('private func isDeleteCancellationError', 1)[0]

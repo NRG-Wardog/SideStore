@@ -407,10 +407,14 @@ class SwiftSourceContractTests(unittest.TestCase):
     def test_await_bound_checks_identity_before_and_after_read(self):
         body = section(self.proxy, "private func awaitBound<T>(", "private struct DatabaseTeamOwnershipSnapshot")
         self.assertEqual(body.count("try verifyCurrent(context)"), 2)
-        self.assertLess(body.index("try verifyCurrent(context)"), body.index("let value = try await operation()"))
-        self.assertGreater(body.rindex("try verifyCurrent(context)"), body.index("let value = try await operation()"))
+        dispatch = "let value = try await context.admission.withScope(operation)"
+        self.assertEqual(body.count(dispatch), 1)
+        self.assertLess(body.index("try verifyCurrent(context)"), body.index(dispatch))
+        self.assertGreater(body.rindex("try verifyCurrent(context)"), body.index(dispatch))
+        self.assertLess(body.rindex("try verifyCurrent(context)"), body.index("return value"))
+        self.assertNotIn("try await operation()", body)
         verification = section(self.proxy, "private func verifyCurrent(", "private func awaitBound<T>(")
-        for text in ("capturedStamp: context.identityStamp", "context.generation == auth.v3IdentityGeneration", "cancelled: Task.isCancelled", "hasUsableSession(", "mayUseTeam("):
+        for text in ("try context.admission.check()", "capturedStamp: context.identityStamp", "context.generation == auth.v3IdentityGeneration", "cancelled: Task.isCancelled", "hasUsableSession(", "mayUseTeam("):
             self.assertIn(text, verification)
 
     def test_unique_serial_match_requires_exact_der_and_existing_key_proof(self):

@@ -1,5 +1,6 @@
 """Synthetic/source checks only: no native execution, live auth or provider requests."""
 from pathlib import Path
+import re
 import unittest
 
 
@@ -8,6 +9,22 @@ HOST = (ROOT / "LiveContainer/LiveContainerSwiftUI/Views/V3UnifiedShell.swift").
 SERVICE = (ROOT / "SideStore/AltStore/AppDelegate.swift").read_text()
 OPERATION = (ROOT / "SideStore/SideStore/Core/Operations/StandaloneOperations/SignInOperation.swift").read_text()
 PROVIDER = (ROOT / "SideStore/SideStore/Core/Anisette/AnisetteProvider.swift").read_text()
+KEYCHAIN = (ROOT / "SideStore/AltStore/Core/Components/Keychain.swift").read_text()
+
+
+def declaration(source, signature):
+    """Bound a known Swift declaration by its balanced body, not the file tail."""
+    start = source.index(signature)
+    opening = source.index("{", start)
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError("Unclosed Swift declaration: " + signature)
 
 
 class AttemptModel:
@@ -167,9 +184,32 @@ class SubmitRouteTests(unittest.TestCase):
         self.assertIn('self.v3RemoteContextSnapshot()?.invalidate()', OPERATION)
         self.assertNotIn('v3RemoteAnisetteContext = nil', OPERATION)
         self.assertIn('ILoaderRemoteAuthentication.$current.withValue(remote)', OPERATION)
-        factory = PROVIDER[PROVIDER.index('func makeILoaderRemoteAuthenticationContext()'):]
+        factory = declaration(PROVIDER, 'func makeILoaderRemoteAuthenticationContext()')
+        self.assertIn('try V3RemoteIdentityContinuity.manualAttempt().context', factory)
+        attempt = declaration(PROVIDER, 'final class V3RemoteAnisetteAttempt:')
+        self.assertIn('canceller: { source.invalidate() }', attempt)
+        self.assertIn('V3RemoteRequestLeases.registerManual(context, id: registrationID)', attempt)
         for forbidden in ['Keychain', 'UserDefaults', 'resolveAnisetteSnapshot', 'commitAnisetteBlob']:
-            self.assertNotIn(forbidden, factory)
+            self.assertNotIn(forbidden, factory + attempt)
+        # Approval covers isolated identity/registration bytes, not revocable
+        # contexts, OTPs, headers or another copy of account credentials.
+        manual = declaration(PROVIDER, 'static func manualAttempt()')
+        self.assertIn('Keychain.shared.remoteIdentityRecord()', manual)
+        commit = declaration(PROVIDER, 'static func commit(_ handoff:')
+        self.assertIn('handoff.state.profile.endpoint == .macJkcoxson', commit)
+        self.assertIn('Keychain.shared.commitRemoteIdentity(record,', commit)
+        record = declaration(KEYCHAIN, 'struct V3RemoteIdentityRecord:')
+        stored = re.findall(r'^    (?:let|var) (\w+): ([^\n{]+)$', record, re.MULTILINE)
+        self.assertEqual(stored, [('schemaVersion', 'Int'), ('identityID', 'String'),
+                                 ('endpoint', 'String'), ('identity', 'Data'),
+                                 ('adiPB', 'String'), ('routeBinding', 'Data?')])
+        adapter = declaration(KEYCHAIN, 'static func remoteIdentityClient()')
+        self.assertIn('V3PendingCertificateKeychainClient(service: service + ".remote-anisette", accessGroup: group)', adapter)
+        security = declaration(KEYCHAIN, 'struct V3PendingCertificateKeychainClient')
+        self.assertIn('kSecAttrSynchronizable: false', security)
+        self.assertIn('kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly', security)
+        for forbidden in ['ILoaderRemoteAuthenticationContext', 'UserDefaults', 'commitAnisetteBlob']:
+            self.assertNotIn(forbidden, record + adapter + commit)
 
     def test_remote_keeps_existing_diagnostic_spans_and_typed_category(self):
         fetch = OPERATION[OPERATION.index('private func getAnisetteData()'):OPERATION.index('private func v3RemoteContextSnapshot()')]
