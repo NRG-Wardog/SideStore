@@ -51,6 +51,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     let v3ReauthenticateAppleID: String?
     let v3ReauthenticationIdentityStamp: String?
     private(set) var v3DidCompleteProvisioning = false
+    private(set) var v3DidDeferDeviceSetup = false
 
     init(
         context: StandaloneOperationContext,
@@ -307,7 +308,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         var diagnosticStep: CombinedFailure.SourceStep = .fetchTeams
 
         while true {
-            if self.isCancelled { throw OperationError.cancelled }
+            if self.isCancelled || Task.isCancelled { throw OperationError.cancelled }
 
             do {
                 // 1. Resolve Team & Save State
@@ -360,6 +361,24 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
 
                 guard isCertificateResolved else { continue }
 
+                // Authentication and certificate setup do not require a paired
+                // device. Only this explicit manual flow can defer missing setup;
+                // transport, UDID and portal errors are never caught as deferrals.
+                if V3DeviceSetupDeferralPolicy.mayDefer(
+                    interactive: self.v3RequireInteractiveCredentials,
+                    fullProvisioning: self.v3RequireFullProvisioning,
+                    retry: self.v3ForceProvisioningRetry,
+                    reauthenticating: self.v3ReauthenticateAppleID != nil,
+                    pendingActivation: self.v3FinishPendingCertificateActivation,
+                    skipDevice: self.skipDeviceRegistration,
+                    skipCertificate: self.skipCertificateProvisioning,
+                    unconfigured: PairingFileManager.shared.v3DeviceSetupIsUnconfigured) {
+                    guard !self.isCancelled, !Task.isCancelled else { throw OperationError.cancelled }
+                    self.v3DidDeferDeviceSetup = true
+                    self.v3DidCompleteProvisioning = false
+                    return SignInResult(team: team, certificate: resolvedCertificate, session: session)
+                }
+
                 // 3. Register Current Device
                 if !isDeviceRegistered {
                     if !self.skipDeviceRegistration {
@@ -381,7 +400,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 )
                 
             } catch {
-                if self.isCancelled { throw OperationError.cancelled }
+                if self.isCancelled || Task.isCancelled { throw OperationError.cancelled }
 
                 self.debugLog("[SignInOperation] Stage result recorded; private payload omitted.")
                 let diagnosticError = v3AccountOperationFailure(error, step: diagnosticStep)
@@ -608,6 +627,27 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         return (account, session)
     }
 
+    private func v3ValidateDeferredIdentity(_ result: SignInResult, capturedStamp: String) throws {
+        guard !self.isCancelled, !Task.isCancelled else { throw OperationError.cancelled }
+        let auth = AuthManager.shared
+        let credentials = auth.authenticationSnapshot
+        guard V3AuthReadStampPolicy.mayReturn(capturedStamp: capturedStamp,
+                currentStamp: auth.v3IdentityStamp, stable: auth.v3IdentityIsStable),
+              auth.v3CachedSessionMatchesCurrentRoute(result.session),
+              let account = result.team.account, account.identifier == result.session.dsid,
+              V3AuthIdentityBindingPolicy.mayUseTeam(sessionOwner: credentials?.appleIDEmailAddress,
+                teamOwner: account.appleID),
+              let certificate = result.certificate, let der = certificate.x509.data,
+              certificate.x509.organizationalUnit == result.team.identifier,
+              let active = CertificateManager.shared.activeCertificate,
+              active.certificate.x509.data == der,
+              V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyDER: active.certificate.privateKey),
+              V3AuthReadStampPolicy.mayReturn(capturedStamp: capturedStamp,
+                currentStamp: auth.v3IdentityStamp, stable: auth.v3IdentityIsStable) else {
+            throw V3ProvisioningResumeUnavailableError()
+        }
+    }
+
     private func finalizeAuthentication(result: Result<SignInResult, Error>) async throws {
         // Final validation may read certificates through the same queued portal path.
         try await ILoaderRemoteAuthentication.$current.withValue(self.v3RemoteContextSnapshot()) {
@@ -632,6 +672,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 let session = result.session
 
                 self.debugLog("[SignInOperation] Stage result recorded; private payload omitted.")
+                let deferredIdentityStamp = AuthManager.shared.v3IdentityStamp
+                if self.v3DidDeferDeviceSetup {
+                    try self.v3ValidateDeferredIdentity(result, capturedStamp: deferredIdentityStamp)
+                }
                 do {
                     try await self.saveTeamAndAccount(team, makeActive: true)
                 } catch {
@@ -640,6 +684,14 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 }
                 self.verboseLog("[SignInOperation] finalizeAuthentication: Database updates completed.")
                 
+                if self.v3DidDeferDeviceSetup {
+                    // The checked account transaction above is still mandatory.
+                    // Do not resign or enter pairing/device-dependent post-auth UI.
+                    try self.v3ValidateDeferredIdentity(result, capturedStamp: deferredIdentityStamp)
+                    await v3LoginStage(.cleanup) { await self.signInHandler.complete() }
+                    return
+                }
+
                 var didResign = false
                 if !self.skipResign, let signingCertificate = certificate, !self.skipCertificateProvisioning
                 {
