@@ -53,11 +53,29 @@ public final class AppBootManager {
     }
     
     @MainActor
-    func usePlacedPairingFile() async throws -> V3PlacedPairingOutcome {
+    func usePlacedPairingFile(validateOperation: @MainActor () throws -> Void) async throws -> V3PlacedPairingOutcome {
         return try await V3PairingActivationGate.withExclusiveAccess {
             let manager = PairingFileManager.shared
             let plan = try manager.preparePlacedImport()
+            try validateOperation()
+            try manager.validatePlacedImport(plan)
+            let transportTicket = minimuxerPairingProtocol() == plan.mode
+                ? V3PairingTransportReceipt.shared.ticket(contents: plan.content, mode: plan.mode) : nil
+            if plan.isCurrentSelection {
+                // Explicit retry owns startup even when no file write is needed.
+                V3PairingActivationGate.placementOwnsStartup = true
+            }
             return try await V3PlacedPairingLifecycle.run(
+                alreadySelected: plan.isCurrentSelection,
+                mayReuseTransport: transportTicket != nil,
+                validateReusableTransport: {
+                    guard let transportTicket,
+                          minimuxerPairingProtocol() == plan.mode,
+                          V3PairingTransportReceipt.shared.ticket(contents: plan.content, mode: plan.mode) == transportTicket else {
+                        throw V3PlacedPairingError.stale
+                    }
+                },
+                validateOperation: validateOperation,
                 validate: { try manager.validatePlacedImport(plan) },
                 validateCommitted: { try manager.validateCommittedPlacedImport(plan) },
                 start: {
@@ -194,7 +212,11 @@ enum V3PlacedPairingReadiness {
 
 @MainActor
 enum V3PlacedPairingLifecycle {
-    static func run(validate: @MainActor () throws -> Void,
+    static func run(alreadySelected: Bool = false,
+                    mayReuseTransport: Bool = false,
+                    validateReusableTransport: @MainActor () throws -> Void = {},
+                    validateOperation: @MainActor () throws -> Void = {},
+                    validate: @MainActor () throws -> Void,
                     validateCommitted: @MainActor () throws -> Void,
                     start: @MainActor () async throws -> Void,
                     verify: @MainActor () async throws -> Void,
@@ -202,17 +224,43 @@ enum V3PlacedPairingLifecycle {
                     rollback: @escaping @MainActor () async -> Bool) async throws -> V3PlacedPairingOutcome {
         try Task.checkCancellation()
         try validate()
-        // Explicit file adoption is the linearization point, like manual
-        // import. A VPN/network problem must not turn it back into "missing".
-        try commit()
+        try validateOperation()
+        if alreadySelected && mayReuseTransport {
+            try validateCommitted()
+            try validateReusableTransport()
+            var connectionVerified = false
+            do {
+                try await verify()
+                connectionVerified = true
+            } catch {
+                // The same explicit action remains a connection retry when
+                // the live check fails. Do not relabel its cause as VPN.
+            }
+            // A fresh live reply is not authority over a reset, replacement,
+            // cancellation, or recovery-owner change during the await.
+            try Task.checkCancellation()
+            try validateOperation()
+            try validate()
+            try validateCommitted()
+            try validateReusableTransport()
+            if connectionVerified { return .ready }
+        }
+        if !alreadySelected {
+            // Explicit file adoption is the linearization point, like manual
+            // import. A connection problem must not turn it back into "missing".
+            try commit()
+        }
         do {
             try Task.checkCancellation()
+            try validateOperation()
             try validateCommitted()
             try await start()
             try Task.checkCancellation()
+            try validateOperation()
             try validateCommitted()
             try await verify()
             try Task.checkCancellation()
+            try validateOperation()
             try validateCommitted()
             return .ready
         } catch {

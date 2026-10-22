@@ -51,6 +51,61 @@ func lifecycle(_ mode: String) async throws {
         if mode != "cleanup" { try expect(!active) }
     }
 }
+@MainActor
+func repeatSelection(_ mode: String) async throws {
+    let manager = try setup()
+    try manager.commitPlacedImport(manager.preparePlacedImport())
+    let plan = try manager.preparePlacedImport()
+    try expect(plan.isCurrentSelection)
+    var commits = 0; var starts = 0; var probes = 0; var rollbacks = 0
+    var ownsOperation = true
+    var transportUnchanged = true
+    var result: V3PlacedPairingOutcome?
+    var rejected = false
+    do {
+        result = try await V3PlacedPairingLifecycle.run(
+            alreadySelected: plan.isCurrentSelection,
+            mayReuseTransport: mode != "missingReceipt",
+            validateReusableTransport: { if !transportUnchanged { throw V3PlacedPairingError.stale } },
+            validateOperation: { if !ownsOperation { throw V3PlacedPairingError.stale } },
+            validate: { try manager.validatePlacedImport(plan) },
+            validateCommitted: { try manager.validateCommittedPlacedImport(plan) },
+            start: { starts += 1 },
+            verify: {
+                probes += 1
+                if mode == "retry" && probes == 1 { throw FixtureFailure.failed }
+                if mode == "unready" { throw FixtureFailure.failed }
+                if mode == "reset" { UserDefaults.standard.isPairingReset = true }
+                if mode == "source" {
+                    try "SYNTHETIC_PAIRING_FIXTURE_ONLY:changed".write(
+                        to: manager.pairingFileURL(for: .unknown), atomically: true, encoding: .utf8)
+                }
+                if mode == "destination" {
+                    // Even identical bytes with a new identity must invalidate
+                    // the prepared observation across the suspension.
+                    try plan.content.write(to: manager.pairingFileURL(for: .lockdown),
+                        atomically: true, encoding: .utf8)
+                }
+                if mode == "owner" { ownsOperation = false }
+                if mode == "receipt" { transportUnchanged = false }
+                if mode == "cancel" { withUnsafeCurrentTask { $0?.cancel() } }
+            },
+            commit: { commits += 1; try manager.commitPlacedImport(plan) },
+            rollback: { rollbacks += 1; return true })
+    } catch { rejected = true }
+    try expect(commits == 0)
+    switch mode {
+    case "ready": try expect(result == .ready && starts == 0 && probes == 1 && rollbacks == 0)
+    case "retry": try expect(result == .ready && starts == 1 && probes == 2 && rollbacks == 0)
+    case "missingReceipt": try expect(result == .ready && starts == 1 && probes == 1 && rollbacks == 0)
+    case "unready":
+        try expect(result == .connectionNotReady && starts == 1 && probes == 2 && rollbacks == 1)
+        try expect(manager.currentSelectionState() == .selected)
+    default:
+        try expect(rejected && result == nil && starts == 0 && probes == 1 && rollbacks == 0)
+    }
+}
+
 @main struct PlacedPairingFixture {
     @MainActor static func main() async throws {
         var rows: [String] = []
@@ -164,7 +219,89 @@ func lifecycle(_ mode: String) async throws {
             try expect(bootStarts == 0 && V3PairingActivationGate.placementOwnsStartup)
             rows.append(name)
         }
-        try expect(rows.count == 27 && Set(rows).count == rows.count)
+        manager = try setup()
+        try manager.commitPlacedImport(manager.preparePlacedImport())
+        let selectedBefore = try V3PlacedPairingDirectory(root: FixtureStore.root)
+            .read(AppConstants.Pairing.lockdownPairingFileName)
+        try expect(manager.currentSelectionState() == .selected)
+        try expect(PairingFileManager().currentSelectionState() == .selected)
+        let selectedAfter = try V3PlacedPairingDirectory(root: FixtureStore.root)
+            .read(AppConstants.Pairing.lockdownPairingFileName)
+        try expect(selectedBefore == selectedAfter && !UserDefaults.standard.isPairingReset)
+        rows.append("saved-selection-restores-from-safe-file")
+        try FileManager.default.removeItem(at: manager.pairingFileURL(for: .lockdown))
+        try expect(manager.currentSelectionState() == .missing)
+        rows.append("selected-file-missing")
+        manager = try setup(); try manager.commitPlacedImport(manager.preparePlacedImport())
+        UserDefaults.standard.isPairingReset = true
+        try expect(manager.currentSelectionState() == .reset)
+        let resetPlan = try manager.preparePlacedImport()
+        try expect(!resetPlan.isCurrentSelection)
+        try expect(UserDefaults.standard.isPairingReset)
+        rows.append("reset-leftover-not-selected")
+        manager = try setup(); try manager.commitPlacedImport(manager.preparePlacedImport())
+        try "SYNTHETIC_PAIRING_FIXTURE_ONLY:new".write(to: manager.pairingFileURL(for: .unknown), atomically: true, encoding: .utf8)
+        try expect(manager.currentSelectionState() == .changed)
+        try rejection { _ = try manager.preparePlacedImport() }
+        rows.append("changed-source-not-selected")
+        manager = try setup(); try manager.commitPlacedImport(manager.preparePlacedImport())
+        UserDefaults.standard.preferredPairingProtocol = .rppairing
+        try expect(manager.currentSelectionState() == .changed)
+        rows.append("changed-preference-not-selected")
+        manager = try setup(); try manager.commitPlacedImport(manager.preparePlacedImport())
+        try "INVALID_SYNTHETIC_ONLY".write(to: manager.pairingFileURL(for: .lockdown), atomically: true, encoding: .utf8)
+        try expect(manager.currentSelectionState() == .invalid)
+        rows.append("malformed-selected-file-no-green")
+        manager = try setup(); try manager.commitPlacedImport(manager.preparePlacedImport())
+        try FileManager.default.removeItem(at: manager.pairingFileURL(for: .lockdown))
+        try FileManager.default.createSymbolicLink(at: manager.pairingFileURL(for: .lockdown), withDestinationURL: manager.pairingFileURL(for: .unknown))
+        try expect(manager.currentSelectionState() == .unknown)
+        rows.append("unsafe-selected-file-no-green")
+        manager = try setup(); try manager.commitPlacedImport(manager.preparePlacedImport())
+        try FileManager.default.removeItem(at: manager.pairingFileURL(for: .unknown))
+        try expect(manager.currentSelectionState() == .selected)
+        try rejection { _ = try manager.preparePlacedImport() }
+        rows.append("source-removed-saved-selection-retained")
+        for (mode, name) in [("ready", "repeated-identical-selection-no-restart"),
+                             ("retry", "repeated-unready-selection-retries-without-commit"),
+                             ("unready", "repeated-unready-selection-retains-file"),
+                             ("reset", "reset-during-probe-no-ready"),
+                             ("source", "changed-source-during-probe-no-ready"),
+                             ("destination", "changed-destination-during-probe-no-ready"),
+                             ("owner", "owner-change-during-probe-no-ready"),
+                             ("cancel", "cancelled-probe-no-restart")] {
+            try await Task { @MainActor in try await repeatSelection(mode) }.value
+            rows.append(name)
+        }
+        try expect(!V3PairingSelectionPresentation.isSaved(connected: true, observed: false, selection: "selected"))
+        try expect(V3PairingSelectionPresentation.isSaved(connected: true, observed: true, selection: "selected"))
+        try expect(!V3PairingSelectionPresentation.isSaved(connected: false, observed: true, selection: "selected"))
+        try expect(V3PairingSelectionPresentation.detail(connected: true, observed: true, selection: "selected") == "Pairing file saved and selected.")
+        rows.append("view-reentry-file-only-status")
+        for state in ["available", "reset", "missing", "changed", "invalid", "unknown", "adoptedReady", "futureValue"] {
+            try expect(!V3PairingSelectionPresentation.isSaved(connected: true, observed: true, selection: state))
+        }
+        rows.append("unknown-selection-never-green")
+        try await repeatSelection("missingReceipt")
+        rows.append("missing-receipt-restarts-without-recommit")
+        try await repeatSelection("receipt")
+        rows.append("changed-receipt-during-probe-no-ready")
+        let receipt = V3PairingTransportReceipt()
+        let startup = receipt.invalidate()
+        try expect(receipt.ticket(contents: "SYNTHETIC_ONLY", mode: .lockdown) == nil)
+        receipt.recordStarted(generation: startup, contents: "SYNTHETIC_ONLY", mode: .lockdown)
+        try expect(receipt.ticket(contents: "SYNTHETIC_ONLY", mode: .lockdown) == startup)
+        try expect(receipt.ticket(contents: "SYNTHETIC_CHANGED", mode: .lockdown) == nil)
+        try expect(receipt.ticket(contents: "SYNTHETIC_ONLY", mode: .rppairing) == nil)
+        rows.append("transport-receipt-binds-input-and-protocol")
+        receipt.invalidate()
+        receipt.recordStarted(generation: startup, contents: "SYNTHETIC_ONLY", mode: .lockdown)
+        try expect(receipt.ticket(contents: "SYNTHETIC_ONLY", mode: .lockdown) == nil)
+        let current = receipt.invalidate()
+        receipt.recordStarted(generation: current, contents: "SYNTHETIC_ONLY", mode: .unknown)
+        try expect(receipt.ticket(contents: "SYNTHETIC_ONLY", mode: .unknown) == nil)
+        rows.append("stale-start-cannot-revive-receipt")
+        try expect(rows.count == 49 && Set(rows).count == rows.count)
         let report: [String: Any] = ["schema": "placed-pairing-cases-v1", "fake_only": true, "cases": rows]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
         if CommandLine.arguments.count == 2 { try data.write(to: URL(fileURLWithPath: CommandLine.arguments[1])) }

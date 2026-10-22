@@ -33,6 +33,8 @@ public class DeveloperPortalProxy {
         let appleID: String
         let generation: UInt64
         let identityStamp: String
+        let remoteContext: ILoaderRemoteAuthenticationContext?
+        let admission: V3RemoteRequestAdmission
     }
 
     private func getBoundSession() async throws -> BoundSession {
@@ -41,7 +43,9 @@ public class DeveloperPortalProxy {
         let generation = auth.v3IdentityGeneration
         let identityStamp = auth.v3IdentityStamp
         let credentialsBefore = auth.authenticationSnapshot
-        let session = try await auth.getAuthenticatedSession()
+        let admission = try V3RemoteRequestLeases.admitted ?? V3RemoteRequestLeases.capture()
+        let remoteContext = admission.context
+        let session = try await admission.withScope { try await auth.getAuthenticatedSession() }
         let credentials = auth.authenticationSnapshot
         guard V3AuthIdentityBindingPolicy.hasUsableSession(
             credentialRoutePresent: credentials?.isAuthenticated == true,
@@ -61,10 +65,11 @@ public class DeveloperPortalProxy {
             throw OperationError.notAuthenticated
         }
         return BoundSession(session: session, appleID: appleID, generation: generation,
-            identityStamp: identityStamp)
+            identityStamp: identityStamp, remoteContext: remoteContext, admission: admission)
     }
 
     private func verifyCurrent(_ context: BoundSession) throws {
+        try context.admission.check()
         let auth = AuthManager.shared
         let credentials = auth.authenticationSnapshot
         guard V3AuthReadStampPolicy.mayReturn(capturedStamp: context.identityStamp,
@@ -87,7 +92,7 @@ public class DeveloperPortalProxy {
     private func awaitBound<T>(_ context: BoundSession,
                                operation: () async throws -> T) async throws -> T {
         try verifyCurrent(context)
-        let value = try await operation()
+        let value = try await context.admission.withScope(operation)
         try verifyCurrent(context)
         return value
     }
@@ -188,7 +193,11 @@ public class DeveloperPortalProxy {
         try verifyCurrent(context)
         let dispatched = try Keychain.shared.advancePendingCertificateCreation(prepared)
         try verifyCurrent(context)
-        let certificate = try await ALTAppleAPI.shared.addCertificate(request: request, machineIdentifier: dispatched.machineIdentifier, type: type, to: team, session: context.session)
+        let certificate = try await V3RemoteRequestLeases.$admitted.withValue(context.admission) {
+            try await ILoaderRemoteAuthentication.$current.withValue(context.remoteContext) {
+                try await ALTAppleAPI.shared.addCertificate(request: request, machineIdentifier: dispatched.machineIdentifier, type: type, to: team, session: context.session)
+            }
+        }
         guard let der = certificate.data, V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: dispatched.privateKey) else { throw V3PendingCertificateCreationError.invalidProof }
         // Retain the original owner's result before rejecting a stale/cancelled caller.
         let created = try Keychain.shared.advancePendingCertificateCreation(dispatched, certificateDER: der)

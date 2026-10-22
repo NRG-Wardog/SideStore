@@ -152,3 +152,29 @@ func syntheticSession(_ route: String) -> ALTAppleAPISession {
 }
 
 enum Constants { static let defaultAccountRepairMessage = "Synthetic account repair message" }
+
+// Persistence and authorization leases are exercised by remote-identity-reuse.
+// This older suite keeps their boundary inert while executing the real queue,
+// operation phase wrappers, identity stamps and provider cancellation checks.
+public struct ILoaderRemoteState: Sendable {}
+struct V3RemoteIdentityHandoff: Sendable {}
+final class FixtureManualAttempt: @unchecked Sendable {
+    func handoff() async throws -> V3RemoteIdentityHandoff { V3RemoteIdentityHandoff() }
+}
+struct V3RemoteRequestAdmission: Sendable {
+    let context: ILoaderRemoteAuthenticationContext?
+    func check() throws { try Task.checkCancellation(); try context?.checkActive() }
+    func withScope<T>(_ operation: () async throws -> T) async throws -> T {
+        try check()
+        return try await V3RemoteRequestLeases.$admitted.withValue(self) {
+            try await ILoaderRemoteAuthentication.$current.withValue(context, operation: operation)
+        }
+    }
+}
+enum V3RemoteRequestLeases {
+    @TaskLocal static var admitted: V3RemoteRequestAdmission?
+    static func capture() throws -> V3RemoteRequestAdmission {
+        V3RemoteRequestAdmission(context: ILoaderRemoteAuthentication.current)
+    }
+    static func invalidateAll() {}
+}

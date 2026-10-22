@@ -78,10 +78,22 @@ final class PipelineRunner: Sendable
             }
         }
         debugLog("[AppManager] performSingleOperation started for: \(operation.bundleIdentifier)")
+        let queuedAdmission: V3RemoteRequestAdmission
+        do { queuedAdmission = try V3RemoteRequestLeases.capture() }
+        catch { completionHandler(.failure(error)); return group }
         group.activeTask = Task.detached {
+            defer { queuedAdmission.close() }
             do {
                 debugLog("[AppManager] performSingleOperation executing task for: \(operation.bundleIdentifier)")
-                try await self.perform([operation], handler: handler, group: group)
+                try await queuedAdmission.withScope {
+                    try await self.perform([operation], handler: handler, group: group)
+                }
+                try await MainActor.run {
+                    try queuedAdmission.check()
+                    queuedAdmission.close()
+                    // Publish once, after all scope checks, on the original callback actor.
+                    group.completionHandler?(group.results)
+                }
             } catch {
                 if Task.isCancelled || error is CancellationError {
                     debugLog("[AppManager] performSingleOperation task cancelled.")
@@ -113,6 +125,15 @@ final class PipelineRunner: Sendable
     
     @discardableResult
     func perform(_ operations: [AppOperation],
+                 handler: PipelineExecutionHandler,
+                 group: RefreshGroup) async throws -> RefreshGroup
+    {
+        try await V3RemoteRequestLeases.withAuthorizedRoute {
+            try await self.performUsingAdmittedRoute(operations, handler: handler, group: group)
+        }
+    }
+
+    private func performUsingAdmittedRoute(_ operations: [AppOperation],
                  handler: PipelineExecutionHandler,
                  group: RefreshGroup) async throws -> RefreshGroup
     {
@@ -164,7 +185,8 @@ final class PipelineRunner: Sendable
         if !CellularRefreshManager.shared.isEnabled,
            case .failure(let error) = await isMinimuxerReady()
         {
-            let opError = V3HeadlessPairingFailure.tagIfInvalidPairing(error.asOperationError)
+            let opError = V3RefreshEarlyFailureBoundary.readiness.preserving(
+                V3HeadlessPairingFailure.tagIfInvalidPairing(error.asOperationError), operations: operations)
             group.context.error = opError
             for operation in operations {
                 let elapsed = CFAbsoluteTimeGetCurrent() - group.operationStartTime
@@ -205,6 +227,7 @@ final class PipelineRunner: Sendable
             )
             try await validateOp.execute()
         } catch {
+            let error = V3RefreshEarlyFailureBoundary.preflight.preserving(error, operations: operations)
             group.error = error
             for operation in operations {
                 let elapsed = CFAbsoluteTimeGetCurrent() - group.operationStartTime
@@ -238,10 +261,7 @@ final class PipelineRunner: Sendable
             try Task.checkCancellation()
             try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount)
         }
-        await MainActor.run {
-            group.completionHandler?(group.results)
-        }
-        
+        // Outer entry wrappers publish completion after their final admission checks.
         await transportCore.endTransportBatch()
         return group
         } catch {
@@ -396,3 +416,30 @@ final class PipelineRunner: Sendable
 
 
 
+
+// V3_REFRESH_EARLY_FAILURE_BOUNDARIES_V1: these checks precede executeStep,
+// so preserve their finite responsibility before AppManager forms app results.
+// This is diagnostic evidence only; the existing check and throw remain intact.
+enum V3RefreshEarlyFailureBoundary {
+    case readiness, preflight
+
+    func preserving(_ error: Error, operations: [AppOperation]) -> Error {
+        guard !operations.isEmpty, operations.allSatisfy({
+            if case .refresh = $0 { return true }; return false
+        }) else { return error }
+        if error is CancellationError || error is CombinedFailure { return error }
+        let native = error as NSError
+        if CombinedFailure.isURLCancellation(domain: native.domain, code: native.code) { return error }
+        let step: CombinedFailure.SourceStep = self == .readiness ? .refreshReadiness : .refreshPreflight
+        let stage: CombinedFailure.Stage
+        if let operation = error as? OperationError, case .notAuthenticated = operation {
+            stage = .authentication
+        } else {
+            // A readiness failure is not, by itself, proof of networking,
+            // pairing, signing, or installation failure.
+            stage = .command
+        }
+        return lcStructuredSigningFailure(error, stage: stage.rawValue,
+            sourceStep: step.rawValue, facts: lcRefreshFailureFacts(error))
+    }
+}

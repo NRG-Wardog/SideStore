@@ -140,7 +140,8 @@ def generate(output, sidestore_root=ROOT, sidesign_root=None):
                     "Apple authentication and portal response -> synthetic in-memory boundary",
                     "Keychain, defaults and version lookup -> locked in-memory doubles",
                     "SignInOperation pipeline orchestration and certificate-finalization work -> minimal owned drivers; production phase wrappers, execute/cancel and fetchTeam retained",
-                    "Original onboarding collectors -> inert typed boundary; registration pc1 producer, validator, NSError chain capture and actual registerCurrentDevice body are extracted and executed with synthetic API/UDID boundaries"],
+                    "Original onboarding collectors -> inert typed boundary; registration pc1 producer, validator, NSError chain capture and actual registerCurrentDevice body are extracted and executed with synthetic API/UDID boundaries",
+                    "Remote persistence/handoff/lease boundary -> inert typed interface; separately exercised by actual-source remote-identity-reuse suite. This suite retains actual context cancellation, coalescer, account stamps and operation wrappers"],
                 "network": False, "native_provider": False, "swift_executed": False}
     (output / "source-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     return evidence

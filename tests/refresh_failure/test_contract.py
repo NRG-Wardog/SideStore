@@ -51,7 +51,7 @@ def generate_source(root):
     step_source = read('SideStore/Core/Operations/OperationStep.swift')
     step_cases = step_source[step_source.index('enum PipelineStep:'):step_source.index('    fileprivate static let stepMap:')]
     source = '\nprotocol OperationStep: Equatable, Hashable {}\n' + step_cases + '}\n'
-    for signature in ['enum V3RefreshFailureBoundary:', 'func lcRefreshFailureFacts(', 'func lcSafeSigningCause(', 'func lcStructuredSigningFailure(']:
+    for signature in ['enum V3RefreshFailureBoundary:', 'func lcRefreshFailureFacts(', 'func lcSafeSigningCause(', 'func lcStructuredSigningFailure(', 'private final class LCSigningHTTPObservation:', 'func lcPortalSigningRequest<T>']:
         source += '\n' + declaration(pipeline, signature)
     app_operation = read('SideStore/Core/Operations/AppOperation.swift')
     source += '\n' + app_operation[app_operation.index('enum AppOperation:'):app_operation.index('    func logSummary(')]

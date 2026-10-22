@@ -2,6 +2,7 @@
     // generate.py are copied unchanged from the candidate source.
     private let v3RemoteAnisetteLock = NSLock()
     private var v3RemoteAnisetteContext: ILoaderRemoteAuthenticationContext?
+    private let v3RemoteAnisetteAttempt: FixtureManualAttempt? = nil
     let loginDiagnosticTrace = LoginDiagnosticTrace()
     let authenticationDiagnosticTrace = AuthenticationDiagnosticTrace()
     let signInHandler = FixtureHandler()
@@ -12,9 +13,9 @@
 
     private func executeLoginPipeline(parentProgress: Progress?) async throws -> SignInResult {
         let (account, session) = try await signIn(appleID: "fixture@example.invalid", password: "synthetic-password")
-        // This is deliberately OUTSIDE signIn's TaskLocal. Production wrappers must
-        // explicitly restore the latched route for the queued portal continuation.
-        try expect(ILoaderRemoteAuthentication.current == nil, "signIn scope ends before onboarding")
+        // execute now retains the selected route across the whole onboarding attempt.
+        // The separate nil-wrapper case still verifies explicit ambient clearing.
+        try expect(ILoaderRemoteAuthentication.current === v3RemoteContextSnapshot(), "execute retains only its selected onboarding route")
         let result = try await provisioningLoop(account: account, session: session, reportProgress: { _ in })
         try await finalizeAuthentication(result: .success(result))
         return result

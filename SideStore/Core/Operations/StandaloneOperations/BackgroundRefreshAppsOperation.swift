@@ -179,12 +179,11 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
     private func refresh(_ apps: [InstalledApp]) async throws -> [String: Result<InstalledApp, Error>] {
         return try await withCheckedThrowingContinuation { continuation in
             debugLog("[AUTO_REFRESH] SIGNING_STARTED app_count=\(apps.count)")
-            let group = AppManager.shared.refresh(apps, presentingViewController: nil)
+            // Install callbacks before queueing: an admission failure can complete immediately.
+            let group = RefreshGroup(dbContext: self.context.dbBackgroundContext)
             self.refreshGroupLock.lock()
             self.activeRefreshGroup = group
-            let shouldCancel = self.isCancelled
             self.refreshGroupLock.unlock()
-            if shouldCancel { group.cancel() }
 
             group.beginInstallationHandler = { [weak self] (installedApp) in
                 self?.debugLog("[AUTO_REFRESH] INSTALLATION_STARTED bundle_id=\(installedApp.bundleIdentifier)")
@@ -211,6 +210,8 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
                 self.setProgress(100)
                 continuation.resume(returning: results)
             }
+            AppManager.shared.refresh(apps, presentingViewController: nil, group: group)
+            if self.isCancelled { group.cancel() }
         }
     }
     

@@ -18,6 +18,11 @@ public struct PairingFileMetadata: Sendable {
     public let modificationDate: Date?
 }
 
+// File-only state. Never persists or implies a live device connection.
+enum V3PairingSelectionState: String {
+    case selected, available, reset, missing, changed, invalid, unknown
+}
+
 final class PairingFileManager: NSObject {
     static let shared = PairingFileManager()
 
@@ -276,6 +281,50 @@ final class PairingFileManager: NSObject {
         let wasReset: Bool
         let active: PairingProtocol?
         let preferred: PairingProtocol?
+
+        var isCurrentSelection: Bool {
+            !wasReset && active == mode && (preferred == nil || preferred == mode) &&
+                destination?.data == source.data
+        }
+    }
+
+    // V3_PAIRING_SAVED_SELECTION_V1: read-only and recomputed on each snapshot.
+    // The protocol preference is not an adoption receipt: only safe, stable
+    // readback plus parsing permits the file-only selected label.
+    func currentSelectionState() -> V3PairingSelectionState {
+        if UserDefaults.standard.isPairingReset { return .reset }
+        let active = persistedActiveProtocol
+        let preferred = preferredProtocol
+        do {
+            let directory = try V3PlacedPairingDirectory(root: FileManager.default.documentsDirectory)
+            let source = try directory.read(AppConstants.Pairing.legacyPairingFileName)
+            if let active, active != .unknown {
+                if let preferred, preferred != active { return .changed }
+                let name = pairingFileURL(for: active).lastPathComponent
+                guard let selected = try directory.read(name) else { return .missing }
+                guard let content = String(data: selected.data, encoding: .utf8),
+                      let parsed = try? parse(content: content, preferred: preferred ?? active),
+                      parsed.mode == active else { return .invalid }
+                guard !UserDefaults.standard.isPairingReset,
+                      persistedActiveProtocol == active, preferredProtocol == preferred,
+                      try directory.read(name) == selected,
+                      try directory.read(AppConstants.Pairing.legacyPairingFileName) == source else {
+                    return .unknown
+                }
+                if let source, source.data != selected.data { return .changed }
+                return .selected
+            }
+            guard let source else { return .unknown }
+            guard let content = String(data: source.data, encoding: .utf8),
+                  let parsed = try? parse(content: content, preferred: preferred),
+                  parsed.mode != .unknown, preferred == nil || parsed.mode == preferred else { return .invalid }
+            guard !UserDefaults.standard.isPairingReset,
+                  persistedActiveProtocol == active, preferredProtocol == preferred,
+                  try directory.read(AppConstants.Pairing.legacyPairingFileName) == source else { return .unknown }
+            return .available
+        } catch {
+            return .unknown
+        }
     }
 
     func preparePlacedImport() throws -> PlacedImport {

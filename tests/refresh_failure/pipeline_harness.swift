@@ -34,3 +34,15 @@ enum ServerError: Error {
     case badServerResponse, invalidResponseFormat, missingKey
 }
 
+
+// This older boundary fixture never emits a provider response. Keep the SDK
+// observation interface inert here; the portal JSON-to-IPC fixture executes the
+// exact SideSign observer, parser and finite-code filter with a fake dispatcher.
+enum SideSignPortalDiagnostics {
+    @TaskLocal static var responseObserver: (@Sendable (Int?, String?) -> Void)? = nil
+    @TaskLocal static var resultCodeObserver: (@Sendable (Int) -> Void)? = nil
+    static func safeProviderCode(_ value: String?) -> String? {
+        precondition(value == nil, "Boundary-only fixture must not fabricate provider evidence")
+        return nil
+    }
+}

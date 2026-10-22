@@ -203,7 +203,7 @@ private extension FetchProvisioningProfilesOperation{
                                name: String,
                                bundleIdentifier: String,
                                team: ALTTeam) async throws -> ALTAppID {
-        let appIDs = try await TaskChainCoalescer.shared.coalesce(key: "fetch_app_ids_\(team.identifier)") {
+        let appIDs = try await V3RemoteRequestLeases.coalesce(key: "fetch_app_ids_\(team.identifier)") {
             if let cachedAppIDs = self.context.sharedContext.appIDs {
                 self.debugLog("[FetchProvisioningProfiles] Using cached App IDs from shared context.")
                 return cachedAppIDs
@@ -360,7 +360,7 @@ private extension FetchProvisioningProfilesOperation{
         var seenGroupIDs = Set<String>()
         
         do {
-            let appGroups = try await TaskChainCoalescer.shared.coalesce(key: "fetch_app_groups_\(team.identifier)") {
+            let appGroups = try await V3RemoteRequestLeases.coalesce(key: "fetch_app_groups_\(team.identifier)") {
                 if let cachedGroups = self.context.sharedContext.appGroups {
                     self.debugLog("[FetchProvisioningProfiles] Using cached App Groups from shared context.")
                     return cachedGroups
@@ -386,7 +386,7 @@ private extension FetchProvisioningProfilesOperation{
                     // Not all characters are allowed in group names, so we replace periods with spaces (like Apple does).
                     let name = "SideStore " + groupIdentifier.replacingOccurrences(of: ".", with: " ")
                     do {
-                        group = try await TaskChainCoalescer.shared.coalesce(key: "add_app_group_\(adjustedGroupIdentifier)") {
+                        group = try await V3RemoteRequestLeases.coalesce(key: "add_app_group_\(adjustedGroupIdentifier)") {
                             // skip add if already added into shared by other tasks
                             if let existing = self.context.sharedContext.appGroups?.first(where: { $0.groupIdentifier == adjustedGroupIdentifier }) {
                                 return existing

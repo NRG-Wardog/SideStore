@@ -10,6 +10,40 @@ import Network
 import Minimuxer
 import MinimuxerCommon
 import Combine
+import CryptoKit
+
+// V3_PAIRING_TRANSPORT_RECEIPT_V1: process-local startup-input provenance only.
+// Never persistence, diagnostics, wire state, or proof of current connectivity.
+// All app-owned start/stop/reinitialize calls below invalidate before awaiting.
+final class V3PairingTransportReceipt: @unchecked Sendable {
+    static let shared = V3PairingTransportReceipt()
+    private let lock = NSLock()
+    private var generation = UUID()
+    private var digest: Data?
+    private var mode: PairingProtocol?
+
+    @discardableResult
+    func invalidate() -> UUID {
+        lock.lock(); defer { lock.unlock() }
+        generation = UUID(); digest = nil; mode = nil
+        return generation
+    }
+
+    func recordStarted(generation expected: UUID, contents: String, mode: PairingProtocol) {
+        guard mode != .unknown else { return }
+        let digest = Data(SHA256.hash(data: Data(contents.utf8)))
+        lock.lock(); defer { lock.unlock() }
+        guard generation == expected else { return }
+        self.digest = digest; self.mode = mode
+    }
+
+    func ticket(contents: String, mode: PairingProtocol) -> UUID? {
+        let digest = Data(SHA256.hash(data: Data(contents.utf8)))
+        lock.lock(); defer { lock.unlock() }
+        guard self.digest == digest, self.mode == mode else { return nil }
+        return generation
+    }
+}
 
 public var selectedGatewayBackendCache: GatewayBackend = .idevice
 public var remotePairingPortCache: UInt16 = AppConstants.Minimuxer.remotePairingPort
@@ -243,6 +277,7 @@ extension MinimuxerError {
 }
 
 func reinitializePairingData(pairingFile: String) async throws {
+    V3PairingTransportReceipt.shared.invalidate()
     defer { debugLog("[SideStore] reinitializePairingData(pairingFile) completed") }
     #if targetEnvironment(simulator)
     debugLog("[SideStore] reinitializePairingData(pairingFile) is no-op on simulator")
@@ -255,6 +290,7 @@ func reinitializePairingData(pairingFile: String) async throws {
 }
 
 func minimuxerStart(_ pairingFile: String, preferred: PairingProtocol? = nil) async throws {
+    let startupGeneration = V3PairingTransportReceipt.shared.invalidate()
     defer { debugLog("[SideStore] minimuxerStart(pairingFile) completed") }
     #if targetEnvironment(simulator)
     debugLog("[SideStore] minimuxerStart(pairingFile) is no-op on simulator")
@@ -266,10 +302,13 @@ func minimuxerStart(_ pairingFile: String, preferred: PairingProtocol? = nil) as
     try await withRemotePairingRetry {
         try await minimuxer.core.start(pairingFile: pairingFile, mountPath: ddiMountPath, preferred: preferred)
     }
+    V3PairingTransportReceipt.shared.recordStarted(generation: startupGeneration,
+        contents: pairingFile, mode: minimuxerPairingProtocol())
     #endif
 }
 
 func minimuxerStop() async throws {
+    V3PairingTransportReceipt.shared.invalidate()
     defer { debugLog("[SideStore] minimuxerStop() completed") }
     #if targetEnvironment(simulator)
     debugLog("[SideStore] minimuxerStop() is no-op on simulator")

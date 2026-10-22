@@ -19,6 +19,7 @@ struct SignInResult {
     let team: ALTTeam
     let certificate: ALTCertificate?
     let session: ALTAppleAPISession
+    var v3RemoteIdentityHandoff: V3RemoteIdentityHandoff? = nil
 }
 
 final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext, SignInResult>, @unchecked Sendable {
@@ -33,6 +34,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     private let v3RemoteAnisetteSelection: (@MainActor @Sendable () throws -> Bool)?
     private let v3RemoteAnisetteLock = NSLock()
     private var v3RemoteAnisetteContext: ILoaderRemoteAuthenticationContext?
+    private var v3RemoteAnisetteAttempt: V3RemoteAnisetteAttempt?
     private var v3AnisetteRouteResolved = false
     
     let signInHandler: SignInHandler
@@ -87,6 +89,11 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         self.v3RemoteAnisetteSelection = v3RemoteAnisetteSelection
 
         try super.init(context: context)
+        if !v3RequireInteractiveCredentials || v3ReauthenticateAppleID != nil || v3ForceProvisioningRetry {
+            let attempt = try V3RemoteIdentityContinuity.continuationAttempt()
+            self.v3RemoteAnisetteAttempt = attempt
+            self.v3RemoteAnisetteContext = attempt?.context
+        }
         self.debugLog("""
         [SignInOperation] Initialized with options:
           • skipDeviceRegistration: \(skipDeviceRegistration)
@@ -117,8 +124,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         guard !selected || (v3RequireInteractiveCredentials && v3ReauthenticateAppleID == nil &&
             !v3ForceProvisioningRetry) else { throw ILoaderRemoteError.consentRequired }
         if selected {
-            let remote = try makeILoaderRemoteAuthenticationContext()
-            v3RemoteAnisetteLock.withLock { v3RemoteAnisetteContext = remote }
+            let attempt = try V3RemoteIdentityContinuity.manualAttempt()
+            v3RemoteAnisetteLock.withLock {
+                v3RemoteAnisetteAttempt = attempt; v3RemoteAnisetteContext = attempt.context
+            }
         }
         v3AnisetteRouteResolved = true
         if isCancelled || Task.isCancelled {
@@ -141,7 +150,13 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
             try await LoginDiagnosticTrace.$current.withValue(loginDiagnosticTrace) {
                 try await AuthenticationDiagnosticTrace.$current.withValue(authenticationDiagnosticTrace) {
                     try await v3LoginStage(.login) {
-                        try await self.executeLoginPipeline(parentProgress: parentProgress)
+                        var result = try await ILoaderRemoteAuthentication.$current.withValue(self.v3RemoteContextSnapshot()) {
+                            try await self.executeLoginPipeline(parentProgress: parentProgress)
+                        }
+                        if let attempt = self.v3RemoteAnisetteAttempt {
+                            result.v3RemoteIdentityHandoff = try await attempt.handoff()
+                        }
+                        return result
                     }
                 }
             }
@@ -206,7 +221,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 guard AuthManager.shared.v3CachedSessionMatchesCurrentRoute(session) else {
                     throw V3ProvisioningResumeUnavailableError()
                 }
+                try self.v3RemoteContextSnapshot()?.checkActive()
                 v3LoginStageSync(.sessionCommit) { AuthManager.shared.v3ReplaceSession(session) }
+                self.v3RemoteAnisetteAttempt?.authorization?.adoptOwnedTransition(
+                    appleID: account.appleID, dsid: session.dsid, token: session.authToken)
                 authResult = try await self.provisioningLoop(account: account, session: session,
                     reportProgress: { [weak self] progress in self?.setProgress(progress) })
             } else if V3ProvisioningResumeExecutionPolicy.mayUseCachedSignIn(
@@ -271,7 +289,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         if let silentResult {
             await self.signInHandler.handleSignInResult(.success(silentResult))
         }
+        try self.v3RemoteContextSnapshot()?.checkActive()
         v3LoginStageSync(.sessionCommit) { AuthManager.shared.v3ReplaceSession(session) }
+        self.v3RemoteAnisetteAttempt?.authorization?.adoptOwnedTransition(
+            appleID: account.appleID, dsid: session.dsid, token: session.authToken)
 
         let authResult = try await self.provisioningLoop(
             account: account,
@@ -454,12 +475,18 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                       candidate.matchesVerifiedIdentity(appleID: account.appleID, dsid: session.dsid) else {
                     throw v3AccountOperationFailure(NSError(domain: "LiveContainerRefresh.Configuration", code: 1008), step: .credentialCommit)
                 }
+                try self.v3RemoteContextSnapshot()?.checkActive()
                 AuthManager.shared.v3BeginIdentityTransition()
-                defer { AuthManager.shared.v3CompleteIdentityTransition() }
+                defer {
+                    AuthManager.shared.v3CompleteIdentityTransition()
+                    self.v3RemoteAnisetteAttempt?.authorization?.adoptOwnedTransition(
+                    appleID: account.appleID, dsid: session.dsid, token: session.authToken)
+                }
                 do {
                     try v3LoginStageSync(.credentialCommit) {
                         try Keychain.shared.writeVerifiedAuthentication(candidate, appleID: account.appleID,
-                            dsid: session.dsid, authToken: session.authToken)
+                            dsid: session.dsid, authToken: session.authToken,
+                            remoteProvider: self.v3RemoteContextSnapshot() != nil)
                     }
                 } catch { throw v3AccountOperationFailure(error, step: .credentialCommit) }
                 v3LoginStageSync(.sessionCommit) { AuthManager.shared.session = session }
@@ -606,17 +633,24 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 throw v3AccountOperationFailure(NSError(domain: "LiveContainerRefresh.Configuration", code: 1008), step: .credentialCommit)
             }
         }
+        try self.v3RemoteContextSnapshot()?.checkActive()
         AuthManager.shared.v3BeginIdentityTransition()
-        defer { AuthManager.shared.v3CompleteIdentityTransition() }
+        defer {
+            AuthManager.shared.v3CompleteIdentityTransition()
+            self.v3RemoteAnisetteAttempt?.authorization?.adoptOwnedTransition(
+                    appleID: account.appleID, dsid: session.dsid, token: session.authToken)
+        }
         do {
             try v3LoginStageSync(.credentialCommit) {
                 if let candidate = recoveryCandidate {
                     do {
                         try Keychain.shared.writeVerifiedAuthentication(candidate, appleID: account.appleID,
-                            dsid: session.dsid, authToken: session.authToken)
+                            dsid: session.dsid, authToken: session.authToken,
+                            remoteProvider: self.v3RemoteContextSnapshot() != nil)
                     } catch { throw v3AccountOperationFailure(error, step: .credentialCommit) }
                 } else {
-                    try Keychain.shared.writeAuthenticationCredentials(appleID: appleID, password: password, dsid: session.dsid, authToken: session.authToken)
+                    try Keychain.shared.writeAuthenticationCredentials(appleID: appleID, password: password, dsid: session.dsid, authToken: session.authToken,
+                            remoteProvider: self.v3RemoteContextSnapshot() != nil)
                 }
             }
         } catch {

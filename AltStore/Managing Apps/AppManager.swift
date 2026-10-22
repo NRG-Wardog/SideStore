@@ -422,14 +422,19 @@ final class AppManager: ObservableObject, @unchecked Sendable
             return
         }
         
+        let admission: V3RemoteRequestAdmission
+        do { admission = try V3RemoteRequestLeases.capture() }
+        catch { completionHandler(.failure(error)); return }
         Task.detached(priority: .utility) {
+            defer { admission.close() }
             do {
-                let managedObjectContext = self.getValidDbContext()
-                let context = StandaloneOperationContext(steps: .syncAppIDs, dbBackgroundContext: managedObjectContext)
-                try await AuthManager.shared.getAuthenticatedSession()
-                
-                let syncAppIDsOperation = try SyncAppIDsOperation(context: context)
-                try await syncAppIDsOperation.execute()
+                try await admission.withScope {
+                    let managedObjectContext = self.getValidDbContext()
+                    let context = StandaloneOperationContext(steps: .syncAppIDs, dbBackgroundContext: managedObjectContext)
+                    try await AuthManager.shared.getAuthenticatedSession()
+                    let syncAppIDsOperation = try SyncAppIDsOperation(context: context)
+                    try await syncAppIDsOperation.execute()
+                }
                 completionHandler(.success(()))
             } catch {
                 completionHandler(.failure(error))
@@ -638,9 +643,19 @@ final class AppManager: ObservableObject, @unchecked Sendable
             actualGroup = RefreshGroup(dbContext: context)
         }
         
+        let queuedAdmission = Result { try V3RemoteRequestLeases.capture() }
         actualGroup.activeTask = Task.detached {
             do {
-                try await self.pipelineRunner.perform(installedApps.map { .refresh($0) }, handler: pipelineHandler, group: actualGroup)
+                let admission = try queuedAdmission.get()
+                defer { admission.close() }
+                try await admission.withScope {
+                    try await self.pipelineRunner.perform(installedApps.map { .refresh($0) }, handler: pipelineHandler, group: actualGroup)
+                }
+                try await MainActor.run {
+                    try admission.check()
+                    admission.close()
+                    actualGroup.completionHandler?(actualGroup.results)
+                }
             } catch {
                 actualGroup.error = error
                 let results = Dictionary(uniqueKeysWithValues: installedApps.map { ($0.bundleIdentifier, Result<InstalledApp, Error>.failure(error)) })
@@ -763,11 +778,12 @@ final class AppManager: ObservableObject, @unchecked Sendable
         let dbBackgroundContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         let context = StandaloneOperationContext(steps: .backgroundRefreshApps, dbBackgroundContext: dbBackgroundContext)
         let backgroundRefreshAppsOperation = try BackgroundRefreshAppsOperation(installedApps: installedApps, context: context)
+        let admission = try V3RemoteRequestLeases.capture()
         Task.detached {
+            defer { admission.close() }
             do {
                 backgroundRefreshAppsOperation.presentsFinishedNotification = presentsNotifications
-                
-                let result = try await backgroundRefreshAppsOperation.execute()
+                let result = try await admission.withScope { try await backgroundRefreshAppsOperation.execute() }
                 completionHandler(.success(result))
             } catch {
                 completionHandler(.failure(error))

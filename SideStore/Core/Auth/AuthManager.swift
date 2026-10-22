@@ -32,7 +32,9 @@ public final class AuthManager: @unchecked Sendable {
         v3IdentityStampState.snapshot.stable
     }
     func v3BeginIdentityTransition() {
+        // Close admission first, then cancel the contexts admitted before this transition.
         v3IdentityStampState.beginTransition()
+        V3RemoteRequestLeases.invalidateAll()
     }
     func v3CompleteIdentityTransition() {
         v3IdentityStampState.completeTransition()
@@ -61,6 +63,8 @@ public final class AuthManager: @unchecked Sendable {
     }
     func v3AdvanceIdentityGeneration() {
         v3IdentityStampState.advanceGeneration()
+        V3RemoteRequestLeases.invalidateAll()
+        V3RemoteRequestLeases.invalidateManualAttempts()
     }
     
     public var team: ALTTeam?
@@ -77,22 +81,22 @@ public final class AuthManager: @unchecked Sendable {
     
     public var currentAppleID: String? {
         get { Keychain.shared.appleIDEmailAddress }
-        set { self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDEmailAddress = newValue }
+        set { V3RemoteRequestLeases.invalidateManualAttempts(); self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDEmailAddress = newValue }
     }
     
     public var password: String? {
         get { Keychain.shared.appleIDPassword }
-        set { self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDPassword = newValue }
+        set { V3RemoteRequestLeases.invalidateManualAttempts(); self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDPassword = newValue }
     }
     
     public var adsid: String? {
         get { Keychain.shared.appleIDAdsid }
-        set { self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDAdsid = newValue }
+        set { V3RemoteRequestLeases.invalidateManualAttempts(); self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDAdsid = newValue }
     }
     
     public var xcodeToken: String? {
         get { Keychain.shared.appleIDXcodeToken }
-        set { self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDXcodeToken = newValue }
+        set { V3RemoteRequestLeases.invalidateManualAttempts(); self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDXcodeToken = newValue }
     }
     
     public var hasStoredPassword: Bool {
@@ -109,6 +113,7 @@ public final class AuthManager: @unchecked Sendable {
         keepAnisetteHeaders: Bool = true,
         keepSideSignHeaders: Bool = true
     ) {
+        V3RemoteRequestLeases.invalidateManualAttempts()
         self.v3BeginIdentityTransition()
         defer { self.v3CompleteIdentityTransition() }
         self.session = nil
@@ -148,11 +153,12 @@ public final class AuthManager: @unchecked Sendable {
         guard identityAtStart.stable else { throw OperationError.notAuthenticated }
         // Capture before queueing. The closure keeps this exact attempt alive, so its
         // ObjectIdentifier cannot be reused while a coalesced task still owns the key.
-        let remoteContext = ILoaderRemoteAuthentication.current
+        let admission = try V3RemoteRequestLeases.admitted ?? V3RemoteRequestLeases.capture()
+        let remoteContext = admission.context
         let defaultKey = V3AuthSessionCoalescerKey.value(for: identityAtStart.stamp)
         let coalescerKey = remoteContext.map { defaultKey + ".remoteAttempt.\(ObjectIdentifier($0))" } ?? defaultKey
         let session = try await TaskChainCoalescer.shared.coalesce(key: coalescerKey) {
-            try await ILoaderRemoteAuthentication.$current.withValue(remoteContext) {
+            try await admission.withScope {
                 // LC_AUTHENTICATED_SESSION_SNAPSHOT_V1
                 let credentialSnapshot: LCEmbeddedAuthenticationSnapshot?
                 do { credentialSnapshot = try Keychain.shared.authenticationSnapshot() }
@@ -197,7 +203,7 @@ public final class AuthManager: @unchecked Sendable {
             }
         }
         // A cancelled waiter must not dispatch the unstructured producer's result.
-        if remoteContext != nil { try Task.checkCancellation() }
+        try admission.check()
         return session
     }
 

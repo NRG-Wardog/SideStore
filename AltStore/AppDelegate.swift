@@ -5508,12 +5508,14 @@ struct V3ProvisioningCompletionState {
     mutating func complete(attemptID: String, owner: String?, identityStamp: String,
                            identityStable: Bool, fullProvisioningCompleted: Bool,
                            activeAccountMatches: Bool, activeTeamMatches: Bool,
-                           activeCertificateMatches: Bool, binding: String?) -> Bool {
+                           activeCertificateMatches: Bool, binding: String?,
+                           beforePersist: () -> Bool = { true }) -> Bool {
         guard self.attemptID == attemptID,
               self.owner != nil, self.owner == V3AuthIdentityBindingPolicy.normalizedOwner(owner),
               self.identityStamp == identityStamp, identityStable,
               fullProvisioningCompleted, activeAccountMatches, activeTeamMatches,
               activeCertificateMatches, let binding, !binding.isEmpty,
+              beforePersist(),
               persist(["version": 1, "state": "complete", "attemptID": attemptID,
                        "identityStamp": identityStamp, "binding": binding]) else { return false }
         completed = true
@@ -6255,6 +6257,10 @@ enum V3AuthFailureDiagnosticsPolicy {
         case "credentialStorageUncertain": kindToken = "A10"
         case "accountIdentityMismatch": kindToken = "A11"
         case "anisetteIdentityStateInvalid": kindToken = "A12"
+        case "remoteIdentityInvalidRecord": kindToken = "A13"
+        case "remoteIdentityStorageUnverified": kindToken = "A14"
+        case "remoteIdentityStateChanged": kindToken = "A15"
+        case "remoteIdentityManualSignInRequired": kindToken = "A16"
         default: kindToken = "A00"
         }
         return failureCode + "-" + kindToken
@@ -6318,6 +6324,8 @@ enum V3AuthTerminalFailureActionPolicy {
     static func resolve(kind: String?, retryable: Bool?) -> V3AuthTerminalFailureAction {
         switch kind {
         case "credentialStorage", "credentialStorageUncertain", "anisetteIdentityStateInvalid": return .blocked
+        case "remoteIdentityInvalidRecord", "remoteIdentityStorageUnverified": return .blocked
+        case "remoteIdentityStateChanged", "remoteIdentityManualSignInRequired": return .beginNewSignIn(title: "Start New Sign-In")
         case "accountIdentityMismatch": return .beginNewSignIn(title: "Use Saved Apple ID")
         case "accountRepairRequired": return .repairAppleAccount
         case "appSpecificPasswordRequired": return .useAppSpecificPassword
@@ -6337,6 +6345,7 @@ enum V3AuthTerminalFailureActionPolicy {
     }
 
     static func guidance(kind: String?, retryable: Bool?) -> String? {
+        if let recovery = V3AccountOperationError.remoteIdentityRecovery(kind) { return recovery }
         if kind == "anisetteIdentityStateInvalid" { return LCAnisettePairError.recovery }
         if kind == "accountIdentityMismatch" {
             return "Reload status, then sign in with the saved Apple ID to finish setup."
@@ -10705,7 +10714,7 @@ final class V3SideStoreService: NSObject {
             throw V3SideStoreServiceError.authRequired
         }
         let capturedStamp = auth.v3IdentityStamp
-        let value = try await fetch()
+        let value = try await V3RemoteRequestLeases.withAuthorizedRoute { try await fetch() }
         guard auth.v3IdentityIsStable, auth.v3IdentityStamp == capturedStamp,
               !V3HeadlessRuntime.shared.auth.hasActiveSession else {
             throw V3SideStoreServiceError.authRequired
@@ -10824,6 +10833,7 @@ final class V3SideStoreService: NSObject {
                 "certificate": activeCertificate == nil ? "No active certificate" : "Active certificate available",
                 "certificateExpiration": certificate?.expiryDate ?? Date.distantPast,
                 "pairing": V3BackendCommands.pairingFileStatus(),
+                "pairingSelection": PairingFileManager.shared.currentSelectionState().rawValue,
                 "installedApps": apps.map { app in
                     ["identifier": app.objectID.uriRepresentation().absoluteString,
                      "bundleID": app.bundleIdentifier, "name": app.name, "version": app.version,
@@ -11175,6 +11185,7 @@ enum V3AuthFailureKind: String, Equatable {
     case credentialStorage, credentialStorageUncertain
     case accountIdentityMismatch
     case anisetteIdentityStateInvalid
+    case remoteIdentityInvalidRecord, remoteIdentityStorageUnverified, remoteIdentityStateChanged, remoteIdentityManualSignInRequired
     case unknown
 }
 
@@ -11184,7 +11195,7 @@ func v3AuthFailureStage(_ kind: V3AuthFailureKind) -> CombinedFailure.Stage {
     switch kind {
     // The wire stage enum intentionally keeps authentication failures under
     // authentication; failureKind preserves the precise Anisette meaning.
-    case .anisette, .anisetteIdentityStateInvalid: return .authentication
+    case .anisette, .anisetteIdentityStateInvalid, .remoteIdentityInvalidRecord, .remoteIdentityStorageUnverified, .remoteIdentityStateChanged, .remoteIdentityManualSignInRequired: return .authentication
     case .network: return .network
     case .credentialStorage, .credentialStorageUncertain: return .persistence
     case .unknown: return .provisioning
@@ -11249,7 +11260,8 @@ func v3AccountOperationFailure(_ error: Error, step: CombinedFailure.SourceStep)
     var acquisitionFailure: V3AccountOperationError.AcquisitionFailure?
     var authResponseShape: V3AccountOperationError.AuthResponseShape?
     var authResponseMIME: V3AccountOperationError.AuthResponseMIME?
-    if error is LCAnisettePairError { kind = .anisetteIdentityStateInvalid }
+    if let remoteKind = V3AccountOperationError.remoteIdentityKind(domain: (error as NSError).domain, code: (error as NSError).code) { kind = remoteKind }
+    else if error is LCAnisettePairError { kind = .anisetteIdentityStateInvalid }
     else if error is V3AccountDatabaseOutcomeUnknownError { kind = .persistenceOutcomeUnknown }
     else if let server = error as? ServerError {
         switch server {
@@ -11340,7 +11352,7 @@ func v3AccountOperationFailure(_ error: Error, step: CombinedFailure.SourceStep)
             else { kind = .unknownAccountFailure }
         }
     }
-    return V3AccountOperationError(step: kind == .anisetteIdentityStateInvalid ? .anisetteFetch : step,
+    return V3AccountOperationError(step: kind == .anisetteIdentityStateInvalid || kind.isRemoteIdentity ? .anisetteFetch : step,
         kind: kind, underlying: error, serverCode: serverCode, httpStatus: httpStatus, nativeEvidence: nativeEvidence, anisetteAttempt: anisetteAttempt, acquisitionFailure: acquisitionFailure, authResponseShape: authResponseShape, authResponseMIME: authResponseMIME, provisioningCause: provisioningCause)
 }
 
@@ -11379,6 +11391,10 @@ func v3AccountUnderlyingError(_ error: Error) -> Error {
 }
 
 func v3ClassifyAuthError(_ error: Error) -> V3AuthFailureKind? {
+    let remoteUnderlying = v3AccountUnderlyingError(error) as NSError
+    if let kind = V3AccountOperationError.remoteIdentityKind(domain: remoteUnderlying.domain, code: remoteUnderlying.code) {
+        return V3AuthFailureKind(rawValue: kind.rawValue)
+    }
     if v3AccountUnderlyingError(error) is LCAnisettePairError { return .anisetteIdentityStateInvalid }
     if let local = error as? V3AccountOperationError, local.credentialCommit {
         return local.kind == .keychainOutcomeUnknown ? .credentialStorageUncertain : .credentialStorage
@@ -11973,6 +11989,8 @@ final class V3AuthCenter {
                       certificate.x509.data == activeCertificate.x509.data else {
                     throw V3ProvisioningResumeUnavailableError()
                 }
+                guard let credentials else { throw V3RemoteIdentityError.stateChanged }
+                try V3RemoteIdentityContinuity.commit(result.v3RemoteIdentityHandoff, credentials: credentials)
                 // begin/authenticated retain the incomplete journal. Do not call
                 // complete or imply that registration, refresh or install is ready.
                 sessions[id]?.prompt = nil
@@ -11987,7 +12005,9 @@ final class V3AuthCenter {
                 debugLog("[V3_AUTH] TERMINAL state=authenticatedProvisioningIncomplete outcome=setupDeferred reason=pairingUnconfigured")
                 return
             }
-            guard ownsActiveSession(id), provisioningCompletion.complete(attemptID: id,
+            var identityCommitError: Error?
+            guard ownsActiveSession(id), sessions[id]?.cancellationRequested != true, !Task.isCancelled,
+                provisioningCompletion.complete(attemptID: id,
                 owner: credentials?.appleIDEmailAddress, identityStamp: AuthManager.shared.v3IdentityStamp,
                 identityStable: V3AuthReadStampPolicy.mayReturn(capturedStamp: identityStamp,
                     currentStamp: AuthManager.shared.v3IdentityStamp, stable: AuthManager.shared.v3IdentityIsStable),
@@ -12000,8 +12020,15 @@ final class V3AuthCenter {
                 activeCertificateMatches: result.certificate != nil && activeCertificate != nil &&
                     result.certificate?.serialNumber == activeCertificate?.serialNumber,
                 binding: v3ProvisioningCompletionBinding(credentials: credentials,
-                    teamID: activeTeam?.identifier, certificateSerial: activeCertificate?.serialNumber)) else {
-                throw V3ProvisioningResumeUnavailableError()
+                    teamID: activeTeam?.identifier, certificateSerial: activeCertificate?.serialNumber),
+                beforePersist: {
+                    do {
+                        guard let credentials else { throw V3RemoteIdentityError.stateChanged }
+                        try V3RemoteIdentityContinuity.commit(result.v3RemoteIdentityHandoff, credentials: credentials)
+                        return true
+                    } catch { identityCommitError = error; return false }
+                }) else {
+                throw identityCommitError ?? V3ProvisioningResumeUnavailableError()
             }
             sessions[id]?.prompt = nil
             resumableProvisioning = nil
@@ -12290,6 +12317,7 @@ final class V3AuthCenter {
 
 enum V3AuthFailureDisplay {
     static func message(for kind: String) -> String {
+        if let message = V3AccountOperationError.remoteIdentityMessage(kind) { return message }
         switch kind {
         case "invalidCredentials": return "Apple did not accept the Apple ID or password. Check them and try again."
         case "appSpecificPasswordRequired": return "Apple requires an app-specific password for this authentication path."
@@ -12897,6 +12925,7 @@ final class V3OperationCenter {
             break
         }
         if kind == "installSharedIPA" { sessions[id]?.ipaToken = target }
+        let identityAtRequest = AuthManager.shared.v3IdentityStamp
         let credentials = AuthManager.shared.authenticationSnapshot
         guard V3AuthIdentityBindingPolicy.hasTokenBackedRoute(
             credentialRoutePresent: credentials?.isAuthenticated == true,
@@ -12907,7 +12936,12 @@ final class V3OperationCenter {
             return terminalReply(id: id)
         }
         do {
-            let driver = try await makeDriver(id: id, kind: kind, target: target)
+            let admission = try V3RemoteRequestLeases.capture(id: id)
+            guard admission.stamp == identityAtRequest, AuthManager.shared.authenticationSnapshot == credentials else {
+                throw V3RemoteIdentityError.stateChanged
+            }
+            let driver = try await admission.withScope { try await makeDriver(id: id, kind: kind, target: target) }
+            try admission.check()
             sessions[id]?.preparation.finish()
             guard sessions[id]?.terminal.isEmpty == true, mutationRegistry.activeID == id else {
                 cleanupTemporaryIPA(id: id)
@@ -12919,7 +12953,7 @@ final class V3OperationCenter {
                 mutationRegistry.finish(id)
                 return terminalReply(id: id)
             }
-            sessions[id]?.task = Task { @MainActor in await self.drive(id: id, driver: driver) }
+            sessions[id]?.task = Task { @MainActor in await self.drive(id: id, driver: driver, admission: admission) }
             sessions[id]?.watchdog = Task { @MainActor in
                 let interval = deadline.timeIntervalSinceNow
                 if interval > 0 { try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000)) }
@@ -12944,10 +12978,11 @@ final class V3OperationCenter {
                 "phaseLabel": V3OperationPhase.working.label]
     }
 
-    private func drive(id: String, driver: V3OpDriver) async {
+    private func drive(id: String, driver: V3OpDriver, admission: V3RemoteRequestAdmission) async {
+        defer { admission.close() }
         let terminal: [String: Any]
         do {
-            try await driver.run()
+            try await admission.withScope { try await driver.run() }
             terminal = ["state": "completed"]
         } catch {
             if error is CancellationError {
@@ -13089,6 +13124,7 @@ final class V3OperationCenter {
 
     @discardableResult
     func cancel(id: String) -> Bool {
+        V3RemoteRequestLeases.invalidate(id)
         guard var session = sessions[id] else { return false }
         guard case nil = session.terminal.value else { return true }
         guard session.terminal.requestCancellation() else { return true }
@@ -13311,9 +13347,9 @@ final class V3OperationCenter {
                     group.set(.failure(error), forAppWithBundleIdentifier: app.bundleIdentifier)
                     throw error
                 }
-                // PipelineRunner.perform returns only after every app result is
-                // recorded. Its completion callback is an observer and cannot
-                // race drive() into writing a second terminal result.
+                // PipelineRunner.perform returns only after app results and
+                // admission checks finish. This direct await caller owns its
+                // terminal result and does not publish a group callback.
                 _ = try V3RefreshResultVerifier.verified(expectedBundleID: app.bundleIdentifier,
                     results: group.results, bundleIdentifier: { $0.bundleIdentifier })
             }
@@ -13929,7 +13965,11 @@ enum V3BackendCommands {
             try await AuthManager.shared.getAuthenticatedTeam()
         }
         let certificates = try await V3CertificatePortalReadBoundary.perform(stage: .signing, step: .fetchCertificate) {
-            try await DeveloperPortalProxy.shared.fetchCertificates(team: team)
+            // Observe only finite portal response evidence for this read command.
+            // Raw provider detail/title and certificate identity never enter IPC.
+            try await lcPortalSigningRequest(sourceStep: "fetchCertificate", facts: [:]) {
+                try await DeveloperPortalProxy.shared.fetchCertificates(team: team)
+            }
         }
         let activeSerial = CertificateManager.shared.activeCertificate?.certificate.serialNumber
         return certificates.map { certificateRow($0, activeSerial: activeSerial) }
@@ -14061,7 +14101,17 @@ enum V3BackendCommands {
 
     static func pairingUsePlaced(id: String) async throws -> V3PlacedPairingOutcome {
         do {
-            return try await AppBootManager.shared.usePlacedPairingFile()
+            guard let owner = try V3OperationRecoveryJournal.direct(),
+                  owner.requestID == id, owner.operation == "pairingUsePlaced", owner.phase == .dispatched else {
+                throw V3PlacedPairingError.stale
+            }
+            return try await AppBootManager.shared.usePlacedPairingFile(validateOperation: {
+                guard let current = try V3OperationRecoveryJournal.direct(),
+                      current.requestID == owner.requestID,
+                      current.operation == owner.operation,
+                      current.serviceInstanceID == owner.serviceInstanceID,
+                      current.phase == .dispatched else { throw V3PlacedPairingError.stale }
+            })
         } catch let failure as V3PlacedPairingError {
             let stage: CombinedFailure.Stage
             let code: CombinedFailure.Code
@@ -14817,6 +14867,7 @@ public struct CombinedFailure: Error, LocalizedError {
         case sourceDownload, manifestParsing, sourceValidation, knownSourcePolicyFetch,
              knownSourcePolicyParsing, catalogRead
         case certificateSelection, refreshMetadataCache, provisioningProfileInstallation, refreshRecordUpdate, refreshApplication
+        case refreshReadiness, refreshPreflight
         var portalUserLabel: String? {
             switch self {
             case .appIDLookup: return "while looking up app identifiers"
@@ -15009,7 +15060,7 @@ public struct CombinedFailure: Error, LocalizedError {
             case "device_registration":
                 guard text == "unobserved" else { return nil }
             case "typed_error":
-                guard ["sideSignServerReportedError", "sideSignBadResponse", "sideSignInvalidResponse", "sideSignMissingKey", "sideSignDeveloperPortalError", "keychainWrite", "keychainValidationFailed", "keychainOutcomeUnknown", "legacyMigrationConflict", "persistenceFailure", "persistenceOutcomeUnknown", "transportFailure", "anisetteFailure", "anisetteKitInvalidArgument", "anisetteKitLoaderFailed", "anisetteKitSymbolMissing", "anisetteKitReadFailure", "anisetteKitInvalidResponse", "anisetteKitADIError", "anisetteKitLibrariesNotFound", "anisetteKitHTTPError", "decodingTypeMismatch", "decodingValueNotFound", "decodingKeyNotFound", "decodingDataCorrupted", "archiveFileNotFound", "archiveCorrupt", "archiveReadFailed", "archiveWriteFailed", "archiveMissingApp", "unknownAccountFailure", "anisetteIdentityStateInvalid"].contains(text) || V3AccountOperationError.AcquisitionFailure(rawValue: text) != nil else { return nil }
+                guard ["sideSignServerReportedError", "sideSignBadResponse", "sideSignInvalidResponse", "sideSignMissingKey", "sideSignDeveloperPortalError", "keychainWrite", "keychainValidationFailed", "keychainOutcomeUnknown", "legacyMigrationConflict", "persistenceFailure", "persistenceOutcomeUnknown", "transportFailure", "anisetteFailure", "anisetteKitInvalidArgument", "anisetteKitLoaderFailed", "anisetteKitSymbolMissing", "anisetteKitReadFailure", "anisetteKitInvalidResponse", "anisetteKitADIError", "anisetteKitLibrariesNotFound", "anisetteKitHTTPError", "decodingTypeMismatch", "decodingValueNotFound", "decodingKeyNotFound", "decodingDataCorrupted", "archiveFileNotFound", "archiveCorrupt", "archiveReadFailed", "archiveWriteFailed", "archiveMissingApp", "unknownAccountFailure", "anisetteIdentityStateInvalid", "remoteIdentityInvalidRecord", "remoteIdentityStorageUnverified", "remoteIdentityStateChanged", "remoteIdentityManualSignInRequired"].contains(text) || V3AccountOperationError.AcquisitionFailure(rawValue: text) != nil else { return nil }
             default: return nil
             }
         }
@@ -15114,6 +15165,7 @@ public struct CombinedFailure: Error, LocalizedError {
         }
     }
     public var message: String {
+        if let message = V3AccountOperationError.remoteIdentityMessage(signingContext["typed_error"]) { return message }
         if signingContext["typed_error"] == "anisetteIdentityStateInvalid" { return LCAnisettePairError.safeMessage }
         if operation == "delete", code == .timedOut {
             return "SideStore could not confirm that the deleted app disappeared from its installed library."
@@ -15329,6 +15381,7 @@ public struct CombinedFailure: Error, LocalizedError {
     }
 
     public var recovery: String {
+        if let recovery = V3AccountOperationError.remoteIdentityRecovery(signingContext["typed_error"]) { return recovery }
         if signingContext["typed_error"] == "anisetteIdentityStateInvalid" { return LCAnisettePairError.recovery }
         // V3_RESPONSE_CLASSIFICATION_CARRIER_V1: the two reply-level causes
         // outrank the catalog recovery for the same reason they outrank its
@@ -15740,6 +15793,27 @@ public struct CombinedFailure: Error, LocalizedError {
         var explicitStageMarker = false
         // Only an allowlisted stage is inspected locally. No arbitrary userInfo is serialized.
         for _ in 0..<5 {
+            if resolvedCode != .cancelled,
+               let remoteKind = V3AccountOperationError.remoteIdentityKind(domain: cause.domain, code: cause.code) {
+                let failure = V3AccountOperationError(step: .anisetteFetch, kind: remoteKind,
+                    underlying: NSError(domain: cause.domain, code: cause.code), serverCode: nil)
+                    .failure(operation: operation, id: id)
+                // Preserve compatible observed HTTP/server facts. Unknown placeholders must not erase them.
+                signingContext.merge(failure.signingContext) { observed, _ in observed }
+                signingContext["typed_error"] = remoteKind.rawValue
+                let context: [String: String]
+                if let valid = Self.validatedSigningContext(signingContext) { context = valid }
+                else {
+                    // An incompatible outer tuple must never discard the decisive local failure.
+                    var primary = failure.signingContext
+                    primary[V3AuthenticationDiagnostics.stateKey] = "trimmed"
+                    context = primary
+                }
+                return CombinedFailure(operation: failure.operation, stage: failure.stage, code: failure.code,
+                    id: id, underlying: NSError(domain: failure.underlyingDomain, code: failure.underlyingCode),
+                    retryable: failure.retryable, safeCause: failure.safeCause, sourceStep: failure.sourceStep,
+                    signingContext: context, launchContext: failure.launchContext)
+            }
             let fingerprint = cause.localizedDescription.lowercased()
             let tokens = cause.localizedDescription.split(whereSeparator: { $0.isWhitespace })
             if let name = cause.userInfo["LCStructuredFailureStageV1"] as? String,
@@ -17101,6 +17175,13 @@ struct V3AccountOperationError: Error, LocalizedError {
         case archiveFileNotFound, archiveCorrupt, archiveReadFailed, archiveWriteFailed, archiveMissingApp
         case unknownAccountFailure
         case anisetteIdentityStateInvalid
+        case remoteIdentityInvalidRecord, remoteIdentityStorageUnverified, remoteIdentityStateChanged, remoteIdentityManualSignInRequired
+        var isRemoteIdentity: Bool {
+            switch self {
+            case .remoteIdentityInvalidRecord, .remoteIdentityStorageUnverified, .remoteIdentityStateChanged, .remoteIdentityManualSignInRequired: return true
+            default: return false
+            }
+        }
     }
     let step: CombinedFailure.SourceStep
     let kind: Kind
@@ -17125,8 +17206,37 @@ struct V3AccountOperationError: Error, LocalizedError {
         self.authResponseMIME = authResponseMIME; self.provisioningCause = provisioningCause
     }
 
+    // V3_REMOTE_IDENTITY_DIAGNOSTICS_V1: fixed local domain/code only; no userInfo or private values.
+    static func remoteIdentityKind(domain: String, code: Int) -> Kind? {
+        guard domain == "SideStore.RemoteIdentity" else { return nil }
+        switch code {
+        case 1: return .remoteIdentityInvalidRecord
+        case 2: return .remoteIdentityStorageUnverified
+        case 3: return .remoteIdentityStateChanged
+        case 4: return .remoteIdentityManualSignInRequired
+        default: return nil
+        }
+    }
+    static func remoteIdentityMessage(_ typed: String?) -> String? {
+        guard let typed, let kind = Kind(rawValue: typed) else { return nil }
+        switch kind {
+        case .remoteIdentityInvalidRecord: return "The saved remote provider identity is invalid. It was not replaced."
+        case .remoteIdentityStorageUnverified: return "The saved remote provider identity could not be verified in protected storage."
+        case .remoteIdentityStateChanged: return "The active account or remote provider identity changed during this request."
+        case .remoteIdentityManualSignInRequired: return "This saved session needs one manual sign-in to confirm its provider identity."
+        default: return nil
+        }
+    }
+    static func remoteIdentityRecovery(_ typed: String?) -> String? {
+        guard let typed, let kind = Kind(rawValue: typed), kind.isRemoteIdentity else { return nil }
+        switch kind {
+        case .remoteIdentityStateChanged, .remoteIdentityManualSignInRequired:
+            return "Open Account & Signing and sign in again. The local pairing file and certificates are kept."
+        default: return "Keep the saved identity unchanged and copy Diagnostics before retrying."
+        }
+    }
     var errorDescription: String? { "An account operation failed; review the safe diagnostics." }
-    var credentialCommit: Bool { step == .credentialCommit && kind != .anisetteIdentityStateInvalid }
+    var credentialCommit: Bool { step == .credentialCommit && kind != .anisetteIdentityStateInvalid && !kind.isRemoteIdentity }
     // Apple Developer Portal result 1100 rejects the portal session. Scope this
     // to the observed team-list boundary; an NSError bridge code is not proof.
     var portalSessionRejected: Bool {
@@ -17136,7 +17246,7 @@ struct V3AccountOperationError: Error, LocalizedError {
         kind == .keychainOutcomeUnknown || kind == .persistenceOutcomeUnknown
     }
     var failureStage: CombinedFailure.Stage {
-        if kind == .anisetteIdentityStateInvalid { return .authentication }
+        if kind == .anisetteIdentityStateInvalid || kind.isRemoteIdentity { return .authentication }
         switch step {
         case .credentialCommit, .saveAccount, .activateAccount, .activateCertificate: return .persistence
         case .authenticate, .anisetteFetch, .appleAuthentication, .accountLookup: return .authentication
@@ -17146,7 +17256,7 @@ struct V3AccountOperationError: Error, LocalizedError {
     func failure(operation: String, id: String) -> CombinedFailure {
         let native = underlying as NSError
         let safeCause: CombinedFailure.SafeCause?
-        if kind == .anisetteIdentityStateInvalid { safeCause = nil }
+        if kind == .anisetteIdentityStateInvalid || kind.isRemoteIdentity { safeCause = nil }
         else if credentialCommit {
             safeCause = kind == .keychainOutcomeUnknown ? .credentialCommitOutcomeUnknown : .credentialCommitFailed
         } else if step == .activateAccount { safeCause = .accountActivationFailed }
@@ -17185,8 +17295,8 @@ struct V3AccountOperationError: Error, LocalizedError {
         }
         return CombinedFailure(operation: operation, stage: failureStage, id: id,
             underlying: NSError(domain: native.domain, code: native.code),
-            retryable: safeCause != nil || portalSessionRejected || kind == .anisetteIdentityStateInvalid ? false : nil, safeCause: safeCause,
-            sourceStep: kind == .anisetteIdentityStateInvalid ? .anisetteFetch : step,
+            retryable: safeCause != nil || portalSessionRejected || kind == .anisetteIdentityStateInvalid || kind.isRemoteIdentity ? false : nil, safeCause: safeCause,
+            sourceStep: kind == .anisetteIdentityStateInvalid || kind.isRemoteIdentity ? .anisetteFetch : step,
             signingContext: signingContext)
     }
 }
@@ -17481,6 +17591,10 @@ extension CombinedFailure {
         case "anisetteAcquisitionMissingLibraries": return "T40"
         case "anisetteAcquisitionProviderNotReady": return "T41"
         case "anisetteAcquisitionDownloadFailed": return "T42"
+        case "remoteIdentityInvalidRecord": return "T43"
+        case "remoteIdentityStorageUnverified": return "T44"
+        case "remoteIdentityStateChanged": return "T45"
+        case "remoteIdentityManualSignInRequired": return "T46"
         default: return nil
         }
     }
@@ -17656,6 +17770,8 @@ extension CombinedFailure.SourceStep {
         case .provisioningProfileInstallation: return "S33"
         case .refreshRecordUpdate: return "S34"
         case .refreshApplication: return "S35"
+        case .refreshReadiness: return "S36"
+        case .refreshPreflight: return "S37"
         }
     }
 }

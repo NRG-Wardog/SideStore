@@ -45,7 +45,7 @@ class OnboardingSourceTests(unittest.TestCase):
             self.assertIn("ILoaderRemoteAuthentication.$current.withValue(self.v3RemoteContextSnapshot())", body)
             self.assertLess(body.index("withValue("), body.index("v3LoginStage("))
         for anchor, expected in {
-            "override func execute(parentProgress:": "deb268734138448d2b8c80e77f2bf151b3dc2b04d6a768a652e1ef844ba76833",
+            "override func execute(parentProgress:": "4a54bc14ab7ddc95f4dff023db39d91ca5f87101998a1284745d5bac81722b1a",
             "override func cancel()": "7a9ce1149a862281983bea580a0b8729b8c8669307b09123e9ccdd93f315f700",
         }.items(): self.assertEqual(sha(generate.extract(operation, anchor)), expected)
         self.assertNotIn("v3RemoteAnisetteContext = nil", operation)
@@ -54,10 +54,11 @@ class OnboardingSourceTests(unittest.TestCase):
         actual = generate.extract(read("SideStore/Utils/concurrency/TaskChainCoalescer.swift"), "actor TaskChainCoalescer {")
         self.assertEqual(sha(actual), "482fb5e39a2942d45965163773be92120deac30ff509a8740d6fc9e33c4f7a11")
         method = generate.extract(read("SideStore/Core/Auth/AuthManager.swift"), "public func getAuthenticatedSession()")
-        self.assertLess(method.index("let remoteContext = ILoaderRemoteAuthentication.current"), method.index("TaskChainCoalescer.shared.coalesce"))
+        self.assertLess(method.index("let admission = try V3RemoteRequestLeases.admitted ?? V3RemoteRequestLeases.capture()"), method.index("TaskChainCoalescer.shared.coalesce"))
         self.assertIn('defaultKey + ".remoteAttempt.\\(ObjectIdentifier($0))" } ?? defaultKey', method)
-        self.assertIn("ILoaderRemoteAuthentication.$current.withValue(remoteContext)", method)
-        self.assertIn("if remoteContext != nil { try Task.checkCancellation() }\n        return session", method)
+        self.assertIn("let remoteContext = admission.context", method)
+        self.assertIn("try await admission.withScope", method)
+        self.assertIn("try admission.check()\n        return session", method)
         for forbidden in ["Task.detached", "UserDefaults", "setPassword", "setObject"]:
             self.assertNotIn(forbidden, method)
 

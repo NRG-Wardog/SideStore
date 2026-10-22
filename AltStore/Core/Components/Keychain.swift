@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import CryptoKit
 import Security
 #if canImport(Darwin)
 import Darwin
@@ -193,6 +194,9 @@ public class Keychain
     public func clearAll()
     {
         debugLog("[Keychain] Clearing all Keychain items related to this instance...")
+        AuthManager.shared.v3BeginIdentityTransition()
+        defer { AuthManager.shared.v3CompleteIdentityTransition() }
+        V3RemoteRequestLeases.invalidateManualAttempts()
         LCEmbeddedSharedKeychain.clearAll(self.keychain)
         debugLog("[Keychain] All Keychain items cleared.")
     }
@@ -1130,6 +1134,7 @@ fileprivate enum LCEmbeddedSharedKeychain {
     static func writeAuthenticationCredentials(appleID: String, password: String?,
                                                dsid: String, authToken: String,
                                                expectedCandidate: LCEmbeddedAuthenticationCandidate? = nil,
+                                               remoteProvider: Bool = false,
                                                client: KeychainAccess.Keychain) throws {
         guard installedGroup != nil else {
             note("authWrite", status: -34018)
@@ -1158,6 +1163,11 @@ fileprivate enum LCEmbeddedSharedKeychain {
                     try client.getData($0)
                 }
                 let originalMarker = try client.getData(LCSharedKeychainMigration.marker)
+                let remoteClient = try remoteIdentityClient()
+                let originalRouteMarker = try checkedRemoteStorage { try remoteClient.getData(remoteRouteKey) }
+                let routeBinding = try V3RemoteIdentityRecord.credentialBinding(appleID: appleID, dsid: dsid, token: authToken)
+                let intendedRouteMarker = try V3RemoteRouteMarker(mode: remoteProvider ? .pendingRemote : .local,
+                    binding: routeBinding).encoded
                 if let candidate = expectedCandidate {
                     guard candidate.marker != LCSharedKeychainMigration.signedOut,
                           candidate.marker == originalMarker, candidate.values == original,
@@ -1194,6 +1204,9 @@ fileprivate enum LCEmbeddedSharedKeychain {
                         throw NSError(domain: "com.SideStore.Keychain", code: 1009)
                     }
 
+                    // Quarantine remote credentials until verified terminal handoff publishes readyRemote.
+                    // A crash with a mismatched marker fails closed; it never selects a different provider.
+                    try checkedRemoteStorage { try setRemoteRouteLocked(intendedRouteMarker, remote: remoteClient) }
                     for key in keys {
                         if let value = expected[key] { try client.set(value, key: key) }
                         else if try client.getData(key) != nil { try client.remove(key) }
@@ -1236,6 +1249,7 @@ fileprivate enum LCEmbeddedSharedKeychain {
                                 throw NSError(domain: "com.SideStore.Keychain", code: 1010)
                             }
                         }
+                        try checkedRemoteStorage { try setRemoteRouteLocked(originalRouteMarker, validate: false, remote: remoteClient) }
                         if let rollbackMarker {
                             try client.set(rollbackMarker, key: LCSharedKeychainMigration.marker)
                         } else if try client.getData(LCSharedKeychainMigration.marker) != nil {
@@ -1724,6 +1738,11 @@ fileprivate enum LCEmbeddedSharedKeychain {
                         throw NSError(domain: "com.SideStore.Keychain", code: 1009)
                     }
                 }
+                let remote = try remoteIdentityClient()
+                for key in [remoteIdentityKey, remoteRouteKey] {
+                    try remote.remove(key)
+                    guard try remote.getData(key) == nil else { throw V3RemoteIdentityError.storageUnverified }
+                }
             }
             note("clear", status: 0)
         } catch { note("clear", status: (error as NSError).code) }
@@ -1797,19 +1816,21 @@ extension Keychain {
         try LCEmbeddedSharedKeychain.readAuthenticationSnapshot(self.keychain)
     }
     func writeAuthenticationCredentials(appleID: String, password: String,
-                                        dsid: String, authToken: String) throws {
+                                        dsid: String, authToken: String, remoteProvider: Bool = false) throws {
         try LCEmbeddedSharedKeychain.writeAuthenticationCredentials(
             appleID: appleID, password: password, dsid: dsid, authToken: authToken,
-            client: self.keychain)
+            remoteProvider: remoteProvider, client: self.keychain)
     }
     func authenticationCandidate() throws -> LCEmbeddedAuthenticationCandidate? {
         try LCEmbeddedSharedKeychain.readAuthenticationCandidate(self.keychain)
     }
     func writeVerifiedAuthentication(_ candidate: LCEmbeddedAuthenticationCandidate,
-                                     appleID: String, dsid: String, authToken: String) throws {
+                                     appleID: String, dsid: String, authToken: String,
+                                     remoteProvider: Bool = false) throws {
         try LCEmbeddedSharedKeychain.writeAuthenticationCredentials(
             appleID: appleID, password: candidate.credentials.appleIDPassword,
-            dsid: dsid, authToken: authToken, expectedCandidate: candidate, client: self.keychain)
+            dsid: dsid, authToken: authToken, expectedCandidate: candidate,
+            remoteProvider: remoteProvider, client: self.keychain)
     }
     func reconcileStorage() throws {
         try LCEmbeddedSharedKeychain.reconcileStorage(self.keychain) { data, password in
@@ -2007,3 +2028,226 @@ enum V3PendingCertificateKeyProof {
     }
 }
 // V3_PENDING_CERTIFICATE_NATIVE_PROOF_END
+
+// V3_REMOTE_IDENTITY_RECORD_CORE_BEGIN
+// Provider/installation identity is intentionally independent of Apple account ownership.
+// routeBinding identifies only the separately authorized active credential route. Never log it.
+enum V3RemoteIdentityError: String, LocalizedError, CustomNSError {
+    static var errorDomain: String { "SideStore.RemoteIdentity" }
+    var errorCode: Int {
+        switch self { case .invalidRecord: return 1; case .storageUnverified: return 2
+        case .stateChanged: return 3; case .manualSignInRequired: return 4 }
+    }
+    var errorUserInfo: [String: Any] { [:] }
+    case invalidRecord, storageUnverified, stateChanged, manualSignInRequired
+    var errorDescription: String? {
+        switch self {
+        case .invalidRecord: return "The saved remote anisette identity is invalid. It was not replaced."
+        case .storageUnverified: return "The remote identity storage result could not be verified."
+        case .stateChanged: return "The remote identity or authenticated account changed. Retry the explicit operation."
+        case .manualSignInRequired: return "Sign in manually once to confirm this saved session's provider identity."
+        }
+    }
+}
+struct V3RemoteIdentityRecord: Codable, Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    var description: String { "Remote anisette identity (redacted)" }
+    var debugDescription: String { description }
+    static let allowedEndpoint = "https://mac-ani.jkcoxson.com"
+    let schemaVersion: Int
+    let identityID: String
+    let endpoint: String
+    let identity: Data
+    let adiPB: String
+    var routeBinding: Data?
+
+    func validated() throws {
+        guard schemaVersion == 1, UUID(uuidString: identityID) != nil,
+              endpoint == Self.allowedEndpoint, identity.count == 16,
+              !adiPB.isEmpty, adiPB.utf8.count <= 8_388_608,
+              let decoded = Data(base64Encoded: adiPB), !decoded.isEmpty,
+              decoded.base64EncodedString() == adiPB,
+              routeBinding == nil || routeBinding?.count == 32 else {
+            throw V3RemoteIdentityError.invalidRecord
+        }
+    }
+    // Length-delimited encoding avoids concatenation ambiguity. No credential is duplicated.
+    static func credentialBinding(appleID: String?, dsid: String?, token: String?) throws -> Data {
+        guard let appleID, !appleID.isEmpty, let dsid, !dsid.isEmpty,
+              let token, !token.isEmpty else { throw V3RemoteIdentityError.manualSignInRequired }
+        let normalized = appleID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { throw V3RemoteIdentityError.manualSignInRequired }
+        let input = try JSONEncoder().encode([normalized, dsid, token])
+        return Data(SHA256.hash(data: input))
+    }
+}
+enum V3RemoteIdentityRecordIO {
+    private static let keys: Set<String> = ["schemaVersion", "identityID", "endpoint", "identity", "adiPB", "routeBinding"]
+    static func read(load: () throws -> Data?) throws -> V3RemoteIdentityRecord? {
+        guard let bytes = try load() else { return nil }
+        guard bytes.count <= 9_000_000,
+              let map = (try? PropertyListSerialization.propertyList(from: bytes, options: [], format: nil)) as? [String: Any],
+              Set(map.keys).isSubset(of: keys),
+              Set(map.keys).isSuperset(of: keys.subtracting(["routeBinding"])) else {
+            throw V3RemoteIdentityError.invalidRecord
+        }
+        let record: V3RemoteIdentityRecord
+        do { record = try PropertyListDecoder().decode(V3RemoteIdentityRecord.self, from: bytes) }
+        catch { throw V3RemoteIdentityError.invalidRecord }
+        try record.validated()
+        return record
+    }
+    static func write(_ record: V3RemoteIdentityRecord, replacing old: V3RemoteIdentityRecord?,
+                      load: () throws -> Data?, save: (Data) throws -> Void) throws {
+        try record.validated()
+        guard try read(load: load) == old else { throw V3RemoteIdentityError.stateChanged }
+        // Updating account authorization never rotates the installation identity.
+        if let old {
+            guard old.identityID == record.identityID, old.endpoint == record.endpoint,
+                  old.identity == record.identity, old.adiPB == record.adiPB else {
+                throw V3RemoteIdentityError.stateChanged
+            }
+        }
+        let encoder = PropertyListEncoder(); encoder.outputFormat = .binary
+        let bytes = try encoder.encode(record)
+        try save(bytes)
+        guard try load() == bytes else { throw V3RemoteIdentityError.storageUnverified }
+    }
+    static func remove(_ record: V3RemoteIdentityRecord,
+                       load: () throws -> Data?, remove: () throws -> Void) throws {
+        guard try read(load: load) == record else { throw V3RemoteIdentityError.stateChanged }
+        try remove()
+        guard try load() == nil else { throw V3RemoteIdentityError.storageUnverified }
+    }
+}
+// No credentials or OTP data: finite mode + private route digest + reset/admission generation.
+struct V3RemoteRouteMarker: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    enum Mode: UInt8, Sendable { case local = 0, pendingRemote = 1, readyRemote = 2 }
+    let mode: Mode
+    let binding: Data
+    let generation: String
+    var description: String { "Remote provider route (redacted)" }
+    var debugDescription: String { description }
+    var encoded: Data { Data([mode.rawValue]) + binding + Data(generation.utf8) }
+    init(mode: Mode, binding: Data, generation: String = UUID().uuidString) throws {
+        guard binding.count == 32, UUID(uuidString: generation)?.uuidString == generation else {
+            throw V3RemoteIdentityError.invalidRecord
+        }
+        self.mode = mode; self.binding = binding; self.generation = generation
+    }
+    init(data: Data) throws {
+        guard data.count == 69, let first = data.first, let mode = Mode(rawValue: first),
+              let generation = String(data: data.suffix(36), encoding: .utf8),
+              UUID(uuidString: generation)?.uuidString == generation else {
+            throw V3RemoteIdentityError.invalidRecord
+        }
+        self.mode = mode; self.binding = Data(data.dropFirst().prefix(32)); self.generation = generation
+    }
+}
+// V3_REMOTE_IDENTITY_RECORD_CORE_END
+
+// V3_REMOTE_IDENTITY_KEYCHAIN_ADAPTER_BEGIN
+fileprivate extension LCEmbeddedSharedKeychain {
+    static var remoteIdentityKey: String { "mac-jkcoxson-v1" }
+    static var remoteRouteKey: String { "mac-jkcoxson-route-v1" }
+    static func checkedRemoteStorage<T>(_ work: () throws -> T) throws -> T {
+        do { return try work() }
+        catch let error as V3RemoteIdentityError { throw error }
+        catch { throw V3RemoteIdentityError.storageUnverified }
+    }
+    static func remoteRouteBytes() throws -> Data? {
+        try checkedRemoteStorage {
+            try withSharedTransaction { try remoteIdentityClient().getData(remoteRouteKey) }
+        }
+    }
+    static func remoteRouteMarker() throws -> V3RemoteRouteMarker? {
+        try checkedRemoteStorage {
+            try withSharedTransaction {
+                let remote = try remoteIdentityClient()
+                return try remote.getData(remoteRouteKey).map { try V3RemoteRouteMarker(data: $0) }
+            }
+        }
+    }
+    static func setRemoteRouteLocked(_ bytes: Data?, validate: Bool = true, remote: V3PendingCertificateKeychainClient) throws {
+        if let bytes {
+            if validate { _ = try V3RemoteRouteMarker(data: bytes) }
+            try remote.set(bytes, key: remoteRouteKey)
+        }
+        else { try remote.remove(remoteRouteKey) }
+        guard try remote.getData(remoteRouteKey) == bytes else { throw V3RemoteIdentityError.storageUnverified }
+    }
+    static func remoteIdentityClient() throws -> V3PendingCertificateKeychainClient {
+        guard let group = installedGroup, !group.isEmpty, !service.isEmpty else {
+            throw V3RemoteIdentityError.storageUnverified
+        }
+        // Reuse the real Security adapter: non-synchronizing, ThisDeviceOnly, same entitled group.
+        return V3PendingCertificateKeychainClient(service: service + ".remote-anisette", accessGroup: group)
+    }
+    static func remoteIdentityRecord() throws -> V3RemoteIdentityRecord? {
+        try checkedRemoteStorage {
+            try withSharedTransaction {
+                let remote = try remoteIdentityClient()
+                return try V3RemoteIdentityRecordIO.read { try remote.getData(remoteIdentityKey) }
+            }
+        }
+    }
+    static func commitRemoteIdentity(_ next: V3RemoteIdentityRecord, replacing old: V3RemoteIdentityRecord?,
+                                     credentials: LCEmbeddedAuthenticationSnapshot, expectedRoute: Data,
+                                     client: KeychainAccess.Keychain) throws {
+        try withSharedTransaction {
+            guard let values = try authenticationValuesLocked(client) else {
+                throw V3RemoteIdentityError.stateChanged
+            }
+            func string(_ key: String) -> String? { values[key].flatMap { String(data: $0, encoding: .utf8) } }
+            let current = LCEmbeddedAuthenticationSnapshot(appleIDEmailAddress: string("appleIDEmailAddress"),
+                appleIDPassword: string("appleIDPassword"), appleIDAdsid: string("appleIDAdsid"),
+                appleIDXcodeToken: string("appleIDXcodeToken"))
+            guard current == credentials else { throw V3RemoteIdentityError.stateChanged }
+            let expectedBinding = try V3RemoteIdentityRecord.credentialBinding(
+                appleID: current.appleIDEmailAddress, dsid: current.appleIDAdsid, token: current.appleIDXcodeToken)
+            guard next.routeBinding == expectedBinding else { throw V3RemoteIdentityError.stateChanged }
+            let remote = try remoteIdentityClient()
+            guard try remote.getData(remoteRouteKey) == expectedRoute else { throw V3RemoteIdentityError.stateChanged }
+            let marker = try V3RemoteRouteMarker(data: expectedRoute)
+            guard marker.binding == expectedBinding, marker.mode == .pendingRemote || marker.mode == .readyRemote else {
+                throw V3RemoteIdentityError.stateChanged
+            }
+            try V3RemoteIdentityRecordIO.write(next, replacing: old,
+                load: { try remote.getData(remoteIdentityKey) }, save: { try remote.set($0, key: remoteIdentityKey) })
+            try setRemoteRouteLocked(try V3RemoteRouteMarker(mode: .readyRemote, binding: expectedBinding,
+                generation: marker.generation).encoded, remote: remote)
+        }
+    }
+    static func resetRemoteIdentity() throws {
+        try withSharedTransaction {
+            let remote = try remoteIdentityClient()
+            let oldMarker = try remote.getData(remoteRouteKey).flatMap { try? V3RemoteRouteMarker(data: $0) }
+            let resetMarker = try V3RemoteRouteMarker(mode: oldMarker?.mode ?? .pendingRemote,
+                binding: oldMarker?.binding ?? Data(repeating: 0, count: 32))
+            // Always advance, including missing identity: an already-captured handoff cannot resurrect it.
+            try setRemoteRouteLocked(resetMarker.encoded, remote: remote)
+            guard let old = try remote.getData(remoteIdentityKey) else { return }
+            guard try remote.getData(remoteIdentityKey) == old else { throw V3RemoteIdentityError.stateChanged }
+            try remote.remove(remoteIdentityKey)
+            guard try remote.getData(remoteIdentityKey) == nil else { throw V3RemoteIdentityError.storageUnverified }
+        }
+    }
+}
+extension Keychain {
+    func remoteIdentityRecord() throws -> V3RemoteIdentityRecord? {
+        try LCEmbeddedSharedKeychain.remoteIdentityRecord()
+    }
+    func commitRemoteIdentity(_ next: V3RemoteIdentityRecord, replacing old: V3RemoteIdentityRecord?,
+                              credentials: LCEmbeddedAuthenticationSnapshot, expectedRoute: Data) throws {
+        try LCEmbeddedSharedKeychain.checkedRemoteStorage {
+            try LCEmbeddedSharedKeychain.commitRemoteIdentity(next, replacing: old, credentials: credentials,
+                expectedRoute: expectedRoute, client: keychain)
+        }
+    }
+    func remoteIdentityRouteBytes() throws -> Data? { try LCEmbeddedSharedKeychain.remoteRouteBytes() }
+    func remoteIdentityRouteMarker() throws -> V3RemoteRouteMarker? { try LCEmbeddedSharedKeychain.remoteRouteMarker() }
+    // Only explicit identity reset may call this. Ordinary signout retains identity and inert route provenance.
+    func resetRemoteIdentity() throws {
+        try LCEmbeddedSharedKeychain.checkedRemoteStorage { try LCEmbeddedSharedKeychain.resetRemoteIdentity() }
+    }
+}
+// V3_REMOTE_IDENTITY_KEYCHAIN_ADAPTER_END
