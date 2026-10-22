@@ -19,7 +19,7 @@ require(previous["kind"] as? String == "accountRepairRequired" && previous["retr
 for expected in [nil, other, "account@example.invalid"] as [String?] {
     require(V3AuthTimeoutDiagnosticRetentionPolicy.failure(reply: reply, expectedID: expected) == nil, "reject wrong session")
 }
-for state in ["working", "awaitingPrompt", "completed", "cancelled", "failed", "authenticatedProvisioningIncomplete"] {
+for state in ["working", "awaitingPrompt", "completed", "failed", "authenticatedProvisioningIncomplete"] {
     var changed = reply; changed["state"] = state
     require(V3AuthTimeoutDiagnosticRetentionPolicy.failure(reply: changed, expectedID: id) == nil, "clear non-timeout storage")
     let value = V3AuthTimeoutDiagnosticRetentionPolicy.selecting(state: state, timeout: retained, previous: previous)!
@@ -55,4 +55,13 @@ require(V3AuthTimeoutDiagnosticRetentionPolicy.shouldClearOnSessionChange(from: 
     "nonterminal ownership change clears")
 require(!V3AuthTimeoutDiagnosticRetentionPolicy.shouldClearOnSessionChange(from: id, to: id, state: "timedOut"),
     "same session remains")
+// Keep the old negative cancelled-with-timeout-code counterexample.
+require(V3AuthTimeoutDiagnosticRetentionPolicy.failure(reply: ["state": "cancelled", "failure": timeout.wire], expectedID: id) == nil, "cancelled requires cancelled envelope")
+let cancelled = CombinedFailure(operation: "signIn", stage: .authentication, code: .cancelled, id: id,
+    signingContext: [V3LoginDiagnosticSnapshot.contextKey: trace])
+let cancelledHeld = V3AuthTimeoutDiagnosticRetentionPolicy.failure(reply: ["state": "cancelled", "failure": cancelled.wire], expectedID: id)!
+require(V3AuthFailureDiagnosticsPolicy.render(cancelledHeld, underlyingCode: 0, retryableValue: nil).contains("code=cancelled"), "cancellation is labelled cancellation")
+require(V3AuthTimeoutDiagnosticRetentionPolicy.selecting(state: "cancelled", timeout: nil, previous: previous) == nil, "cancellation cannot reuse previous failure")
+require(!V3AuthTimeoutDiagnosticRetentionPolicy.shouldClearOnSessionChange(from: id, to: nil, state: "cancelled"), "cancelled owner retirement retains diagnostics")
+require(V3AuthTimeoutDiagnosticRetentionPolicy.shouldClearOnSessionChange(from: id, to: other, state: "cancelled"), "new attempt clears cancelled evidence")
 print("LOGIN_TIMEOUT_HOST_CONTRACT_PASS")

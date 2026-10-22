@@ -6238,7 +6238,7 @@ enum V3AuthFailureDiagnosticsPolicy {
     }
     static func shouldShowTerminalDetails(state: String, hasPrompt: Bool,
                                           hasFailure: Bool) -> Bool {
-        hasFailure && !hasPrompt && ["failed", "timedOut", "promptExpired", "resultUnknown"]
+        hasFailure && !hasPrompt && ["failed", "timedOut", "promptExpired", "resultUnknown", "cancelled"]
             .contains(state)
     }
 
@@ -6272,7 +6272,7 @@ enum V3AuthFailureDiagnosticsPolicy {
             (fields[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3TemporaryAnisetteTrace.contextKey].flatMap(V3TemporaryAnisetteTrace.init(encoded:))?.technicalDetails ?? "") +
             (fields[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") +
-            (fields[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:))?.technicalDetails ?? "")
+            (fields[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:))?.technicalDetails ?? "") + V3AuthenticationDiagnostics.technicalDetails(fields)
     }
 }
 
@@ -11607,6 +11607,7 @@ final class V3AuthCenter {
 
     struct Session {
         let loginDiagnosticTrace = LoginDiagnosticTrace()
+        let authenticationDiagnosticTrace = AuthenticationDiagnosticTrace()
         var mode: BeginMode = .interactive
         var task: Task<Void, Never>?
         var watchdog: Task<Void, Never>?
@@ -11834,9 +11835,11 @@ final class V3AuthCenter {
     }
 
     func run(id: String) async {
-        guard let trace = sessions[id]?.loginDiagnosticTrace else { return }
-        await LoginDiagnosticTrace.$current.withValue(trace) {
-            await self.runLoginPipeline(id: id)
+        guard let session = sessions[id] else { return }
+        await LoginDiagnosticTrace.$current.withValue(session.loginDiagnosticTrace) {
+            await AuthenticationDiagnosticTrace.$current.withValue(session.authenticationDiagnosticTrace) {
+                await self.runLoginPipeline(id: id)
+            }
         }
     }
 
@@ -12146,15 +12149,10 @@ final class V3AuthCenter {
     @discardableResult
     private func finish(id: String, response: [String: Any]) -> Bool {
         guard var session = sessions[id] else { return false }
-        var response = response
-        if let failure = response["failure"] as? [String: Any] {
-            let wire = V3LoginDiagnosticSnapshot.attaching(session.loginDiagnosticTrace.snapshot(), to: failure)
-            response["failure"] = wire
-            if let fields = wire["signingContext"] as? [String: String],
-               let snapshot = fields[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:)) {
-                response["technicalDetails"] = (response["technicalDetails"] as? String ?? "") + snapshot.technicalDetails
-            }
-        }
+        let observation = session.authenticationDiagnosticTrace.snapshot()
+        let response = V3AuthDiagnosticExport.terminal(response, sessionID: id,
+            requestTrace: observation.requestTrace, headerProvenance: observation.headerProvenance,
+            providerObservation: observation.providerObservation, loginTrace: session.loginDiagnosticTrace.snapshot())
         guard session.terminal.setIfEmpty(response) else { return false }
         session.revision += 1
         session.terminalAt = Date()
@@ -12407,9 +12405,10 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
             }
             let diagnosed = v3AccountOperationFailure(error, step: .authenticate)
             let failure = CombinedFailure.capture(diagnosed, operation: "signIn", stage: .authentication, id: sessionID)
-            var wire = failure.wire
-            wire["kind"] = kind.rawValue
-            wire = V3LoginDiagnosticSnapshot.attaching(LoginDiagnosticTrace.current?.snapshot(), to: wire)
+            let observation = V3HeadlessRuntime.shared.auth.sessions[sessionID]?.authenticationDiagnosticTrace.snapshot()
+            let wire = V3AuthDiagnosticExport.previousFailure(failure.wire, kind: kind.rawValue,
+                requestTrace: observation?.requestTrace, headerProvenance: observation?.headerProvenance,
+                providerObservation: observation?.providerObservation, loginTrace: LoginDiagnosticTrace.current?.snapshot())
             V3HeadlessRuntime.shared.auth.sessions[sessionID]?.previousFailure = wire
             debugLog("[V3_AUTH] ATTEMPT_FAILED kind=\(kind.rawValue) stage=\(failure.stage.rawValue) code=\(failure.code.rawValue)")
         }
@@ -12475,8 +12474,10 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
     }
 
     private func askProvisioningRetry(message: String, hint: String, error: Error, mayRetry: Bool = true) async -> ProvisioningErrorDecision {
-        let technical = CombinedFailure.provisioningRetryTechnicalDetails(
-            for: error, correlationID: sessionID)
+        let observation = V3HeadlessRuntime.shared.auth.sessions[sessionID]?.authenticationDiagnosticTrace.snapshot()
+        let technical = CombinedFailure.provisioningRetryTechnicalDetails(for: error, correlationID: sessionID,
+            requestTrace: observation?.requestTrace, headerProvenance: observation?.headerProvenance,
+            providerObservation: observation?.providerObservation, loginTrace: LoginDiagnosticTrace.current?.snapshot())
         // V3_PROVISIONING_RECOVERY_LABELS_V1: authentication already succeeded.
         // "Cancel" would read as a failed sign-in, so the escape action is named
         // Finish Later and the retry is scoped to provisioning only.
@@ -14720,7 +14721,7 @@ public struct CombinedFailure: Error, LocalizedError {
         "extendedVirtualAddressing", "increasedDebuggingMemoryLimit"
     ]
     public static func validatedSigningContext(_ value: [String: String]) -> [String: String]? {
-        var fields = V3TemporaryADIConsumption.sanitizingContext(value)
+        var fields = V3AuthenticationDiagnostics.sanitizingContext(V3TemporaryADIConsumption.sanitizingContext(value))
         if !V3TemporaryAnisetteTrace.temporaryAnisetteTraceEnabled {
             fields.removeValue(forKey: V3TemporaryAnisetteTrace.contextKey)
         }
@@ -14733,6 +14734,19 @@ public struct CombinedFailure: Error, LocalizedError {
         }
         guard fields.count <= 20 else { return nil }
         for (key, text) in fields {
+            if key == V3AuthenticationRequestSnapshot.contextKey {
+                guard V3AuthenticationRequestSnapshot(encoded: text) != nil else { return nil }; continue
+            }
+            if key == V3AuthenticationHeaderProvenance.contextKey {
+                guard V3AuthenticationHeaderProvenance(encoded: text) != nil else { return nil }; continue
+            }
+            if key == V3AuthenticationProviderObservation.contextKey {
+                guard V3AuthenticationProviderObservation(encoded: text) != nil else { return nil }; continue
+            }
+            if key == V3AuthenticationDiagnostics.stateKey {
+                guard ["recorded", "trimmed", "rejected", "notRecorded"].contains(text) else { return nil }; continue
+            }
+
             if key == V3ConstructorFaultDiagnostic.contextKey {
                 guard V3ConstructorFaultDiagnostic(encoded: text) != nil else { return nil }
                 continue
@@ -14824,15 +14838,18 @@ public struct CombinedFailure: Error, LocalizedError {
     /// Safe technical fields for the provisioning retry prompt. Preserve the
     /// area/correlation context, but never interpolate an untrusted NSError.
     public static func provisioningRetryTechnicalDetails(for error: Error,
-                                                         correlationID: String) -> String {
+                                                         correlationID: String, requestTrace: String? = nil, headerProvenance: String? = nil,
+                                                         providerObservation: String? = nil, loginTrace: String? = nil) -> String {
         if let accountError = error as? V3AccountOperationError {
             let failure = accountError.failure(operation: "signIn", id: correlationID)
-            return "area=provisioning " + failure.technicalDetails
+            let wire = V3AuthenticationDiagnostics.attaching(requestTrace: requestTrace, headerProvenance: headerProvenance,
+                providerObservation: providerObservation, loginTrace: loginTrace, to: failure.wire)
+            return "area=provisioning " + (Self.decode(wire, expectedID: correlationID)?.technicalDetails ?? failure.technicalDetails)
         }
         let native = error as NSError
         let underlying = safeDiagnosticUnderlying(domain: native.domain, code: native.code)
         let safeID = UUID(uuidString: correlationID)?.uuidString ?? UUID().uuidString
-        return "diagnostic_code=SS-PROV-C11 builder_commit=\(V3DiagnosticBuild.commit) domain=\(underlying.domain) code=\(underlying.code) area=provisioning correlation=\(safeID)"
+        return "diagnostic_code=SS-PROV-C11 builder_commit=\(V3DiagnosticBuild.commit) domain=\(underlying.domain) code=\(underlying.code) area=provisioning correlation=\(safeID)" + V3AuthenticationDiagnostics.technicalDetails(V3AuthenticationDiagnostics.attaching(requestTrace: requestTrace, headerProvenance: headerProvenance, providerObservation: providerObservation, loginTrace: loginTrace, to: [:])["signingContext"] as? [String: String] ?? [:])
     }
 
     /// The serialized wire keeps an integer field for compatibility. `none/0`
@@ -15298,8 +15315,8 @@ public struct CombinedFailure: Error, LocalizedError {
     }
     public var technicalDetails: String {
         let displayedUnderlyingCode = underlyingDomain == "redacted" ? "unknown" : String(underlyingCode)
-        let signingDetails = signingContext.filter { $0.key != V3TemporaryAnisetteTrace.contextKey && $0.key != V3TemporaryADIConsumption.contextKey && $0.key != V3LoginDiagnosticSnapshot.contextKey && $0.key != V3ConstructorFaultDiagnostic.contextKey }.sorted(by: { $0.key < $1.key }).map { " \($0.key)=\($0.value)" }.joined()
-        return "schema=1 diagnostic_code=\(diagnosticCode) builder_commit=\(V3DiagnosticBuild.commit) operation=\(operation) stage=\(stage.rawValue) code=\(code.rawValue) correlation=\(correlationID) underlying_domain=\(underlyingDomain) underlying_code=\(displayedUnderlyingCode) retryable=\(retryable.map(String.init) ?? "unknown") source_step=\(sourceStep?.rawValue ?? "unknown") safe_cause=\(safeCause?.rawValue ?? "unknown")" + signingDetails + (signingContext[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") + installVerdict + requestContextSuffix + (launchContext?.technicalDetails ?? "") + (temporaryAnisetteTrace?.technicalDetails ?? "") + (signingContext[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") + (signingContext[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:))?.technicalDetails ?? "")
+        let signingDetails = signingContext.filter { $0.key != V3TemporaryAnisetteTrace.contextKey && $0.key != V3TemporaryADIConsumption.contextKey && $0.key != V3LoginDiagnosticSnapshot.contextKey && $0.key != V3ConstructorFaultDiagnostic.contextKey && $0.key != V3AuthenticationRequestSnapshot.contextKey && $0.key != V3AuthenticationHeaderProvenance.contextKey && $0.key != V3AuthenticationProviderObservation.contextKey && $0.key != V3AuthenticationDiagnostics.stateKey }.sorted(by: { $0.key < $1.key }).map { " \($0.key)=\($0.value)" }.joined()
+        return "schema=1 diagnostic_code=\(diagnosticCode) builder_commit=\(V3DiagnosticBuild.commit) operation=\(operation) stage=\(stage.rawValue) code=\(code.rawValue) correlation=\(correlationID) underlying_domain=\(underlyingDomain) underlying_code=\(displayedUnderlyingCode) retryable=\(retryable.map(String.init) ?? "unknown") source_step=\(sourceStep?.rawValue ?? "unknown") safe_cause=\(safeCause?.rawValue ?? "unknown")" + signingDetails + (signingContext[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") + installVerdict + requestContextSuffix + (launchContext?.technicalDetails ?? "") + (temporaryAnisetteTrace?.technicalDetails ?? "") + (signingContext[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") + (signingContext[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:))?.technicalDetails ?? "") + (operation == "signIn" ? V3AuthenticationDiagnostics.technicalDetails(signingContext) : "")
     }
     public var temporaryAnisetteTrace: V3TemporaryAnisetteTrace? {
         signingContext[V3TemporaryAnisetteTrace.contextKey].flatMap(V3TemporaryAnisetteTrace.init(encoded:))
@@ -15350,6 +15367,7 @@ public struct CombinedFailure: Error, LocalizedError {
         if let sourceStep { result["sourceStep"] = sourceStep.rawValue }
         if !signingContext.isEmpty { result["signingContext"] = signingContext }
         if let retryable { result["retryable"] = retryable }
+        result = V3AuthenticationDiagnostics.boundingWire(result)
         result = V3LoginDiagnosticSnapshot.boundingWire(result)
         result = V3TemporaryADIConsumption.boundingWire(result)
         return V3ConstructorFaultDiagnostic.boundingWire(result)
@@ -15385,7 +15403,7 @@ public struct CombinedFailure: Error, LocalizedError {
         } else { sourceStep = nil }
         let signingContext: [String: String]
         if let raw = value["signingContext"] {
-            guard let fields = raw as? [String: String],
+            guard let fields = V3AuthenticationDiagnostics.sanitizingWireContext(raw),
                   let validated = Self.validatedSigningContext(fields) else { return nil }
             signingContext = validated
         } else { signingContext = [:] }
@@ -15797,6 +15815,319 @@ public struct V3TemporaryADIConsumption {
 
 // LOGIN_DIAGNOSTIC_WIRE_V1: finite counterpart to AnisetteKit.LoginDiagnosticTrace.
 // Host support deliberately has no dependency on AnisetteKit or account state.
+public struct V3AuthenticationRequestSnapshot {
+    public static let contextKey = "auth_request_trace"
+    public static let maximumBytes = 1024
+    public let encoded: String
+    public init?(encoded: String) {
+        guard Self.validatedEncodedSnapshot(encoded) != nil else { return nil }
+        self.encoded = encoded
+    }
+    public static func validatedEncodedSnapshot(_ value: String) -> String? {
+        guard value.utf8.count <= 1024, value.utf8.allSatisfy({ $0 >= 32 && $0 <= 126 }) else { return nil }
+        let p = value.split(separator: ";", omittingEmptySubsequences: false).map(String.init)
+        func number(_ s: String, _ range: ClosedRange<Int>) -> Bool { guard let n = Int(s), String(n) == s else { return false }; return range.contains(n) }
+        func one(_ s: String, _ values: String) -> Bool { values.split(separator: " ").contains(Substring(s)) }
+        func bit(_ s: String) -> Bool { s == "0" || s == "1" }
+        func status(_ s: String) -> Bool { s == "-" || s == "invalid" || number(s, 100...599) }
+        func code(_ s: String, hsc: Bool = false) -> Bool { one(s, "u m ib is if io ir") || number(s, hsc ? 100...599 : -99_999_999...99_999_999) }
+        let phases = "init complete apptokens trustedRequest phoneRequest trustedVerify phoneVerify unknown"
+        let outcomes = "started received accepted rejected transport empty parse status"
+        let consumers = "none initFields completeSPD proofField proof sharedSecret spdDecrypt spdParse dsid idms sessionKey sessionChallenge checksum tokenField tokenLength tokenDecrypt tokenParse tokenPath xmlAlert http peToken verify"
+        let validations = "unobserved passed failed retry"
+        let endpoints = "gsa trusted validate phoneRequest phoneVerify apple other unavailable"
+        guard p.count == 9, p[0] == "ar1", number(p[1], 0...65_535), number(p[2], 0...65_535), bit(p[3]), bit(p[4]),
+              one(p[5], "notRequested srpInit serialization response hash pbkdf2 challenge proof sharedSecret spdDecrypt spdParse sessionKey sessionChallenge checksum twoFactor accountRepair accountLookup complete"),
+              one(p[6], validations) else { return nil }
+        let auth = Int(p[1])!, requests = Int(p[2])!
+        guard auth > 0 || requests > 0 || (p[5] == "serialization" && p[6] == "failed") else { return nil }
+        if p[3] == "1" { guard auth == 65_535 || requests == 65_535 else { return nil } }
+        var last = requests + 1
+        if p[7] != "-" {
+            let f = p[7].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            guard f.count == 40, number(f[0], 0...auth), number(f[1], 1...max(1, requests)), requests > 0,
+                  one(f[2], phases), one(f[3], "GET POST PUT DELETE HEAD PATCH OPTIONS other absent"), one(f[4], endpoints),
+                  number(f[5], 0...86_400_000), number(f[6], 0...86_400_000), bit(f[7]), one(f[8], outcomes),
+                  one(f[9], "none cancelled timeout dns connectivity lost tls url unknown"), status(f[10]), one(f[11], endpoints),
+                  one(f[12], "sameURL sameOrigin differentOrigin unavailable"), f[13] == "u", number(f[14], 0...16_777_216),
+                  (f[15] == "-" || number(f[15], 0...16_777_216)), number(f[16], 0...3),
+                  one(f[17], "unobserved plist json html xml text other missing"), one(f[18], "unobserved empty plistXML plistBinary jsonObject jsonArray html xml text binary"),
+                  one(f[19], "unobserved plist json failure"), one(f[20], "unobserved dictionary array scalar invalid"), one(f[21], "unobserved dictionary array scalar invalid"),
+                  one(f[22], "unobserved nested topMissing topWrong topOnly"), one(f[23], "unobserved dictionary missing wrong"), code(f[24]), code(f[25], hsc: true),
+                  one(f[26], "unobserved default cast"), (one(f[27], "- out") || number(f[27], -99_999_999...99_999_999)), one(f[28], "unobserved status top"),
+                  (one(f[29], "u a w") || (f[29].utf8.count == 15 && f[29].allSatisfy { "absedznrco".contains($0) })),
+                  one(f[30], "unobserved absent delta date invalid"), (f[31] == "-" || number(f[31], 0...86_400)), bit(f[32]),
+                  one(f[33], consumers), one(f[34], validations), one(f[35], "none credentials appPassword verification underlying rateLimit xmlAlert http peToken incorrectCode serviceUnavailable unknown"),
+                  bit(f[36]), (f[37] == "u" || number(f[37], 0...32)), one(f[39], "plist none unobserved") else { return nil }
+            if !one(f[38], "twoFactor none unobserved") {
+                let e = f[38].split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+                guard e.count == 3, e[0] == "headerRequest", one(e[1], "builtIn custom unknown"), one(e[2], "builtIn custom unknown") else { return nil }
+            }
+            if one(f[30], "delta date") { guard f[31] != "-", f[10] != "-" else { return nil } }
+            else { guard f[31] == "-", f[32] == "0" else { return nil } }
+            if f[36] == "0" {
+                guard one(f[8], "started transport"), f[10] == "-", f[15] == "-", f[17] == "unobserved", f[18] == "unobserved",
+                      f[11] == "unavailable", f[12] == "unavailable", f[19] == "unobserved", f[20] == "unobserved", f[21] == "unobserved",
+                      f[30] == "unobserved", f[31] == "-", f[32] == "0" else { return nil }
+            } else {
+                guard !one(f[8], "started transport"), f[15] != "-", f[17] != "unobserved", f[18] != "unobserved", f[30] != "unobserved" else { return nil }
+            }
+            last = Int(f[1])!
+        }
+        let rows = p[8].isEmpty ? [] : p[8].split(separator: "~", omittingEmptySubsequences: false).map(String.init)
+        guard rows.count <= 3 else { return nil }
+        var previous = 0
+        for row in rows {
+            let r = row.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            guard r.count == 8, number(r[0], 0...auth), number(r[1], 1...max(1, requests)), one(r[2], phases), one(r[3], outcomes), status(r[4]), code(r[5]), one(r[6], consumers), one(r[7], validations),
+                  let ordinal = Int(r[1]), ordinal > previous, ordinal < last, ordinal <= requests else { return nil }
+            previous = ordinal
+        }
+        return value
+    }
+    public var technicalDetails: String {
+        let p = encoded.components(separatedBy: ";")
+        var text = "\nauth_request_schema=ar1 auth_invocations=\(p[1]) observed_request_count=\(p[2]) ordinal_overflow=\(p[3]) request_history_truncated=\(p[4]) auth_boundary=\(p[5]) auth_validation=\(p[6])"
+        if p[7] == "-" { text += "\nlast_observed_request=notRecorded" }
+        else {
+            let r = p[7].components(separatedBy: ",")
+            let names = ["invocation", "request_ordinal", "phase", "method", "endpoint", "session_elapsed_ms", "request_elapsed_ms",
+                "timing_capped", "state", "transport", "http_status", "final_endpoint", "final_relation", "redirect_history",
+                "request_bytes_capped", "response_bytes_capped", "body_size_cap_bits", "mime", "body_shape", "parser", "plist_root", "json_root",
+                "envelope", "status_shape", "ec_observed", "hsc_observed", "effective_ec_source", "effective_ec", "error_envelope", "cpd_schema",
+                "retry_after_kind", "retry_after_seconds_capped", "retry_after_capped", "consumer_boundary", "consumer_validation", "mapping_reason",
+                "response_observed", "unexpected_cpd_keys_capped_32", "request_envelope", "serialization"]
+            func display(_ value: String) -> String {
+                switch value { case "u": return "unobserved"; case "-": return "unavailable"; case "m": return "missing"
+                case "ib": return "invalidBoolean"; case "is": return "invalidString"; case "if": return "invalidFloat"
+                case "io": return "invalidType"; case "ir": return "invalidRange"; default: return value }
+            }
+            text += "\nlast_observed_request: " + zip(names, r).map { "\($0.0)=\(display($0.1))" }.joined(separator: " ")
+            let cpdKeys = ["bootstrap", "icscrec", "pbe", "prkgen", "svct", "loc", "X-Apple-Locale", "X-Apple-I-MD", "X-Apple-I-MD-M", "X-Mme-Device-Id", "X-Apple-I-MD-LU", "X-Apple-I-MD-RINFO", "X-Apple-I-SRL-NO", "X-Apple-I-Client-Time", "X-Apple-I-TimeZone"]
+            let meanings = ["a": "absent", "b": "boolean", "s": "stringNonempty", "e": "stringEmpty", "d": "dataNonempty", "z": "dataEmpty", "n": "integer", "r": "real", "c": "container", "o": "other"]
+            if r[29].count == 15 {
+                text += "\ncpd_fields: " + zip(cpdKeys, r[29].map(String.init)).map { "\($0.0)=\(meanings[$0.1] ?? "unobserved")" }.joined(separator: " ")
+            } else { text += "\ncpd_fields=" + (["u": "unobserved", "a": "absent", "w": "wrongType"][r[29]] ?? "unobserved") }
+        }
+        text += "\nprior_request_summary_columns=invocation,ordinal,phase,state,http_status,ec,consumer,validation prior_request_summaries=" + (p[8].isEmpty ? "notRecorded" : p[8])
+        return text
+    }
+}
+
+// Diagnostic-only independent readers. No request or persistence input.
+public struct V3AuthenticationHeaderProvenance {
+    public static let contextKey = "auth_header_provenance"
+    public static let maximumBytes = 512
+    private let tokens: [String]
+    public var encoded: String { tokens.joined(separator: ";") }
+    public init?(encoded: String) {
+        guard encoded.utf8.count <= Self.maximumBytes, encoded.utf8.allSatisfy({ $0 < 128 }) else { return nil }
+        let p = encoded.split(separator: ";", omittingEmptySubsequences: false).map(String.init)
+        let source: Set<String> = ["default", "UserDefaults", "file", "caller", "provider", "unknown"]
+        let family: Set<String> = ["Mac-akd", "Android-akd", "Windows", "other", "unknown"]
+        guard p.count == 22, p[0] == "hp2",
+              ["localAndroidADI", "remote", "unknown"].contains(p[1]),
+              source.contains(p[2]), family.contains(p[3]), source.contains(p[4]),
+              ["upstreamDefaultAuthKit", "macAuthKit", "windowsAuthKit", "other", "unknown"].contains(p[5]),
+              ["knownFamilyAgreement", "mixedKnownFamilies", "unknown"].contains(p[6]),
+              ["generated", "cacheHit", "unknown"].contains(p[7]),
+              ["under1s", "1to5s", "5to30s", "atLeast30s", "unknown"].contains(p[8]),
+              family.contains(p[9]), ["sameFamily", "differentFamily", "unknown"].contains(p[10]),
+              ["present", "absent", "unknown"].contains(p[11]),
+              ["generated", "notGenerated", "unknown"].contains(p[12]),
+              ["unicorn", "native", "remote", "unknown"].contains(p[13]),
+              ["appleMusic4961447Arm64", "customOrLocal", "remote", "unknown"].contains(p[14]),
+              ["observedVerified", "notObserved", "unknown"].contains(p[15]),
+              p[16] == "unobserved", ["matched", "different", "unknown"].contains(p[17]),
+              ["notRecorded", "unknown"].contains(p[18]), ["same", "different", "unknown"].contains(p[21]),
+              p[7] == "cacheHit" || (p[8] == "unknown" && p[21] == "unknown") else { return nil }
+        let known = !["unknown", "other"].contains(p[3]) && !["unknown", "other"].contains(p[5])
+        let agreement = (p[3] == "Mac-akd" && ["upstreamDefaultAuthKit", "macAuthKit"].contains(p[5])) || (p[3] == "Windows" && p[5] == "windowsAuthKit")
+        let relation = known ? (agreement ? "knownFamilyAgreement" : "mixedKnownFamilies") : "unknown"
+        let selectedKnown = !["unknown", "other"].contains(p[9]) && !["unknown", "other"].contains(p[3])
+        let selected = selectedKnown ? (p[9] == p[3] ? "sameFamily" : "differentFamily") : "unknown"
+        let verified = p[14] == "appleMusic4961447Arm64"
+        guard p[6] == relation, p[10] == selected, verified == (p[15] == "observedVerified"),
+              p[19] == (verified ? "9d5b557cf3faf88c34c394ab2cd7fc1a3b4acf3aed51f28cd0bc093858107c22" : "unknown"),
+              p[20] == (verified ? "bd335e6963ba5ae2f5babca613435ad56d2660a9aee37df35f876c458d105ce4" : "unknown") else { return nil }
+        tokens = p
+    }
+    public var technicalDetails: String {
+        let names = ["schema", "provider", "client_info_source", "client_info_family", "user_agent_source",
+            "user_agent_family", "profile_relation", "cache", "cache_age", "requested_client_info_family",
+            "selected_vs_used_family", "generation_blob_input", "generation_blob_output", "adapter",
+            "generation_library_selection", "generation_library_validation", "loaded_mapping", "client_info_preservation",
+            "historical_blob_association", "selected_coreADI_sha256", "selected_StoreServices_sha256", "cache_return_input_equality"]
+        return "\nactual_request_used: " + zip(names, tokens).map { "\($0.0)=\($0.1)" }.joined(separator: " ")
+    }
+}
+public struct V3AuthenticationProviderObservation {
+    public static let contextKey = "auth_provider_observation"
+    public static let maximumBytes = 256
+    private let tokens: [String]
+    public var encoded: String { tokens.joined(separator: ";") }
+    public init?(encoded: String) {
+        guard encoded.utf8.count <= Self.maximumBytes, encoded.utf8.allSatisfy({ $0 < 128 }) else { return nil }
+        let p = encoded.split(separator: ";", omittingEmptySubsequences: false).map(String.init)
+        guard p.count == 12, p[0] == "ap1",
+              ["remote", "onDevice", "verifiedAppleMusic", "localODA", "remoteODA", "unknown"].contains(p[1]),
+              ["selected", "clientReady", "dataReady", "cacheHit"].contains(p[2]),
+              ["default", "UserDefaults", "file", "caller", "provider", "unknown"].contains(p[3]),
+              ["Mac-akd", "Android-akd", "Windows", "other", "unknown"].contains(p[4]),
+              ["unicorn", "native", "remote", "unknown"].contains(p[5]),
+              ["appleMusic4961447Arm64", "customOrLocal", "remote", "unknown"].contains(p[6]),
+              ["observedVerified", "notObserved", "unknown"].contains(p[7]),
+              ["present", "absent", "unknown"].contains(p[8]), ["notRecorded", "unknown"].contains(p[9]),
+              p[10] == "unobserved", p[11] == "unobserved",
+              (p[6] == "appleMusic4961447Arm64") == (p[7] == "observedVerified"),
+              p[2] != "selected" || (p[5] == "unknown" && p[6] == "unknown" && p[7] == "unknown") else { return nil }
+        tokens = p
+    }
+    public var technicalDetails: String {
+        let names = ["schema", "mode", "stage", "requested_client_info_source", "requested_client_info_family",
+            "adapter", "library_selection", "library_validation", "requested_blob_input", "historical_blob_association", "loaded_mapping", "request_association"]
+        return "\nlatest_acquisition_observation: " + zip(names, tokens).map { "\($0.0)=\($0.1)" }.joined(separator: " ")
+    }
+}
+
+public enum V3AuthenticationDiagnostics {
+    public static let stateKey = "auth_diagnostic_state"
+    public static let maximumWireBytes = 4096
+    private static let keys: Set<String> = [V3AuthenticationRequestSnapshot.contextKey,
+        V3AuthenticationHeaderProvenance.contextKey, V3AuthenticationProviderObservation.contextKey, stateKey]
+    private static let ancillary = [V3LoginDiagnosticSnapshot.contextKey, V3TemporaryAnisetteTrace.contextKey,
+        V3TemporaryADIConsumption.contextKey, "capability_names", "enabled_capability_names",
+        "team_sha256", "requested_bundle_sha256", "requested_app_group_sha256", "capabilities_sha256",
+        "signing_certificate_serial_sha256", "provisioning_bundle_sha256", "session_generation",
+        "capability_count", "app_group_count", "extension_count", "account_binding", "team_binding",
+        "signing_certificate_present", "preferred_parent_id_match", "profile_mode", "device_registration",
+        "probe_native_code", "anisette_blob_state", "provisioning_bundle_role"]
+    private static func removeAncillary(_ key: String, from fields: inout [String: String]) -> Bool {
+        let group: [String]
+        switch key {
+        case "probe_native_code": group = ["probe_native_code", "probe_native_phase", "probe_native_subcode"]
+        case "anisette_blob_state": group = ["anisette_blob_state", "anisette_recovery"]
+        default: group = [key]
+        }
+        var removed = false
+        for member in group { if fields.removeValue(forKey: member) != nil { removed = true } }
+        return removed
+    }
+    public static func sanitizingContext(_ supplied: [String: String]) -> [String: String] {
+        var result = supplied
+        var rejected = false
+        if let raw = result[V3AuthenticationRequestSnapshot.contextKey], V3AuthenticationRequestSnapshot(encoded: raw) == nil {
+            result.removeValue(forKey: V3AuthenticationRequestSnapshot.contextKey); rejected = true
+        }
+        if let raw = result[V3AuthenticationHeaderProvenance.contextKey], V3AuthenticationHeaderProvenance(encoded: raw) == nil {
+            result.removeValue(forKey: V3AuthenticationHeaderProvenance.contextKey); rejected = true
+        }
+        if let raw = result[V3AuthenticationProviderObservation.contextKey], V3AuthenticationProviderObservation(encoded: raw) == nil {
+            result.removeValue(forKey: V3AuthenticationProviderObservation.contextKey); rejected = true
+        }
+        if let state = result[stateKey], !["recorded", "trimmed", "rejected", "notRecorded"].contains(state) {
+            result.removeValue(forKey: stateKey); rejected = true
+        }
+        if rejected || result[stateKey] == "rejected" {
+            result.removeValue(forKey: stateKey)
+            for key in ancillary where result.count >= 20 { _ = removeAncillary(key, from: &result) }
+            if result.count < 20 { result[stateKey] = "rejected" }
+        }
+        if result.count > 20 && !keys.isDisjoint(with: result.keys) {
+            // Optional extensions cannot erase a primary failure at capacity.
+            // Unknown keys and the primary native tuple are never evicted.
+            // Earlier probe/recovery annotations are evicted atomically, after chronology.
+            if result[stateKey] != "rejected" { result[stateKey] = "trimmed" }
+            for key in ancillary where result.count > 20 { _ = removeAncillary(key, from: &result) }
+        }
+        return result
+    }
+    public static func sanitizingWireContext(_ supplied: Any) -> [String: String]? {
+        guard var fields = supplied as? [String: Any] else { return nil }
+        var rejected = false
+        for key in keys where fields[key] != nil && !(fields[key] is String) {
+            fields.removeValue(forKey: key); rejected = true
+        }
+        guard var strings = fields as? [String: String] else { return nil }
+        if rejected { strings[stateKey] = "rejected" }
+        return sanitizingContext(strings)
+    }
+    public static func fits(_ value: [String: Any]) -> Bool {
+        guard let binary = try? PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0),
+              binary.count <= maximumWireBytes, JSONSerialization.isValidJSONObject(value),
+              let json = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              json.count <= maximumWireBytes else { return false }
+        return true
+    }
+    public static func attaching(requestTrace: String?, headerProvenance: String?, providerObservation: String? = nil,
+                                 loginTrace: String?, to supplied: [String: Any]) -> [String: Any] {
+        var result = supplied
+        var fields = (result["signingContext"] as? [String: String]) ?? [:]
+        for key in keys { fields.removeValue(forKey: key) }
+        if let requestTrace { fields[V3AuthenticationRequestSnapshot.contextKey] = requestTrace }
+        if let headerProvenance { fields[V3AuthenticationHeaderProvenance.contextKey] = headerProvenance }
+        if let providerObservation { fields[V3AuthenticationProviderObservation.contextKey] = providerObservation }
+        fields[stateKey] = requestTrace == nil && headerProvenance == nil && providerObservation == nil ? "notRecorded" : "recorded"
+        fields = sanitizingContext(fields)
+        if let loginTrace, let trace = V3LoginDiagnosticSnapshot(encoded: loginTrace) { fields[V3LoginDiagnosticSnapshot.contextKey] = trace.encoded }
+        result["signingContext"] = fields
+        return boundingWire(result)
+    }
+    public static func boundingWire(_ supplied: [String: Any]) -> [String: Any] {
+        guard let raw = supplied["signingContext"] as? [String: String], !keys.isDisjoint(with: raw.keys) else { return supplied }
+        var fields = sanitizingContext(raw)
+        if fields[stateKey] == nil { fields[stateKey] = "recorded" }
+        var trimmed = fields != raw
+        for key in ancillary where fields.count > 20 { if removeAncillary(key, from: &fields) { trimmed = true } }
+        var result = supplied; result["signingContext"] = fields
+        let beforeTrace = fields[V3LoginDiagnosticSnapshot.contextKey]
+        result = V3LoginDiagnosticSnapshot.boundingWire(result)
+        fields = (result["signingContext"] as? [String: String]) ?? fields
+        if fields[V3LoginDiagnosticSnapshot.contextKey] != beforeTrace { trimmed = true }
+        for key in ancillary where !fits(result) {
+            if removeAncillary(key, from: &fields) { trimmed = true }
+            result["signingContext"] = fields
+        }
+        if trimmed && fields[stateKey] != "rejected" { fields[stateKey] = "trimmed" }
+        result["signingContext"] = fields
+        // Reserved finite observations and primary evidence are never displaced
+        // by chronology or ancillary fingerprints. Needs proper testing in CI.
+        return result
+    }
+    public static func technicalDetails(_ supplied: [String: String]) -> String {
+        let fields = sanitizingContext(supplied)
+        return "\nauth_diagnostic_state=\(fields[stateKey] ?? "notRecorded")" +
+            (fields[V3AuthenticationRequestSnapshot.contextKey].flatMap(V3AuthenticationRequestSnapshot.init(encoded:))?.technicalDetails ?? "\nauth_request_trace=notRecorded") +
+            (fields[V3AuthenticationHeaderProvenance.contextKey].flatMap(V3AuthenticationHeaderProvenance.init(encoded:))?.technicalDetails ?? "\nactual_request_used=notRecorded") +
+            (fields[V3AuthenticationProviderObservation.contextKey].flatMap(V3AuthenticationProviderObservation.init(encoded:))?.technicalDetails ?? "\nlatest_acquisition_observation=notRecorded")
+    }
+}
+
+enum V3AuthDiagnosticExport {
+    static func previousFailure(_ failure: [String: Any], kind: String, requestTrace: String?, headerProvenance: String?,
+                                providerObservation: String? = nil, loginTrace: String?) -> [String: Any] {
+        var wire = failure; wire["kind"] = kind
+        return V3AuthenticationDiagnostics.attaching(requestTrace: requestTrace, headerProvenance: headerProvenance,
+            providerObservation: providerObservation, loginTrace: loginTrace, to: wire)
+    }
+    static func terminal(_ supplied: [String: Any], sessionID: String, requestTrace: String?, headerProvenance: String?,
+                         providerObservation: String? = nil, loginTrace: String?) -> [String: Any] {
+        var response = supplied
+        // Display-only cancellation evidence; state and retry actions do not change.
+        if response["state"] as? String == "cancelled", response["failure"] == nil {
+            response["failure"] = CombinedFailure(operation: "signIn", stage: .authentication, code: .cancelled, id: sessionID).wire
+        }
+        if let failure = response["failure"] as? [String: Any] {
+            let wire = V3AuthenticationDiagnostics.attaching(requestTrace: requestTrace, headerProvenance: headerProvenance,
+                providerObservation: providerObservation, loginTrace: loginTrace, to: failure)
+            response["failure"] = wire
+            response["technicalDetails"] = V3AuthFailureDiagnosticsPolicy.render(wire,
+                underlyingCode: wire["underlyingCode"] as? Int, retryableValue: wire["retryable"] as? Bool)
+        }
+        return response
+    }
+}
+
 public struct V3LoginDiagnosticSnapshot {
     public static let contextKey = "debug_login_trace"
     public static let maximumBytes = 2048
@@ -15864,8 +16195,7 @@ public struct V3LoginDiagnosticSnapshot {
         while true {
             context[contextKey] = snapshot.encoded
             result["signingContext"] = context
-            if let data = try? PropertyListSerialization.data(fromPropertyList: result, format: .binary, options: 0),
-               data.count <= maximumWireBytes { return result }
+            if V3AuthenticationDiagnostics.fits(result) { return result }
             if snapshot.rows.isEmpty {
                 context.removeValue(forKey: contextKey)
                 result["signingContext"] = context

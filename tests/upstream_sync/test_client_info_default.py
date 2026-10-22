@@ -32,7 +32,21 @@ class DefaultClientInfoContract(unittest.TestCase):
         value="    public func saveConfig("+value
         self.assertEqual(hashlib.sha256(value.encode()).hexdigest(), "cc1d0407bca759d1785f244413149a0c18b991da312502128f0a6f7d75802184")
     def test_verified_android_library_acquisition_unchanged(self):
-        value=(ROOT / "SideStore/Core/Anisette/OnDeviceAnisetteManager.swift").read_bytes()
-        self.assertEqual(hashlib.sha256(value).hexdigest(), "b318c722a1b44d44892237d34ee361d80a6df3f190db1fbd75f8e216cdbcfdf3")
+        value=(ROOT / "SideStore/Core/Anisette/OnDeviceAnisetteManager.swift").read_text()
+        # Reverse only the three reviewed diagnostics-only insertions; retain
+        # the original complete acquisition/recovery algorithm hash unchanged.
+        diagnostics_only = (
+            ("        _ = AuthenticationDiagnosticTrace.current?.beginProviderObservation(.selectedBranch(onDevice: true))\n", ""),
+            ("        let headerSelection = await AnisetteConfigManager.shared.makeRequestHeaderSelection(forOnDeviceAndroid: true)\n"
+             "        let headers = headerSelection.headers\n",
+             "        let headers = await AnisetteConfigManager.shared.makeRequestHeaders(forOnDeviceAndroid: true)\n"),
+            ("                    existingAdiBlob: existingAdiPbData, headers: headers,\n"
+             "                    diagnosticClientInfoSource: headerSelection.clientInfoSource)",
+             "                    existingAdiBlob: existingAdiPbData, headers: headers)"),
+        )
+        for observed, original in diagnostics_only:
+            self.assertEqual(value.count(observed), 1, "Missing or ambiguous diagnostic insertion")
+            value = value.replace(observed, original, 1)
+        self.assertEqual(hashlib.sha256(value.encode()).hexdigest(), "b318c722a1b44d44892237d34ee361d80a6df3f190db1fbd75f8e216cdbcfdf3")
 
 if __name__ == "__main__": unittest.main(verbosity=2)

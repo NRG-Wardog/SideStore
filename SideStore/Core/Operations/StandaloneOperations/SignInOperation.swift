@@ -23,6 +23,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     
     // Own the trace across queued execution; unstructured operation tasks do not inherit callers.
     let loginDiagnosticTrace = LoginDiagnosticTrace.current ?? LoginDiagnosticTrace()
+    let authenticationDiagnosticTrace = AuthenticationDiagnosticTrace.current ?? AuthenticationDiagnosticTrace()
 
     private var appleIDEmailAddress: String?
     private var requiresPostAuthFlow = false
@@ -96,8 +97,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     // Main Pipeline Execution
     override func execute(parentProgress: Progress?) async throws -> SignInResult {
         try await LoginDiagnosticTrace.$current.withValue(loginDiagnosticTrace) {
-            try await v3LoginStage(.login) {
-                try await self.executeLoginPipeline(parentProgress: parentProgress)
+            try await AuthenticationDiagnosticTrace.$current.withValue(authenticationDiagnosticTrace) {
+                try await v3LoginStage(.login) {
+                    try await self.executeLoginPipeline(parentProgress: parentProgress)
+                }
             }
         }
     }

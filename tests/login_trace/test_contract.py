@@ -85,13 +85,16 @@ class LoginTraceContract(unittest.TestCase):
         self.assertIn('skip(.recoveryCommit, reason: .disabled)', recovery)
         self.assertIn('recoveryLegacyRead', recovery)
         app = owner(ss).read_text()
-        self.assertIn('LoginDiagnosticTrace.$current.withValue(trace)', app)
+        self.assertIn('LoginDiagnosticTrace.$current.withValue(session.loginDiagnosticTrace)', app)
+        self.assertIn('AuthenticationDiagnosticTrace.$current.withValue(session.authenticationDiagnosticTrace)', app)
         for line in app.splitlines():
             if '[V3_AUTH]' in line and 'debugLog(' in line:
                 self.assertNotIn('session=', line)
                 self.assertNotIn('failure.correlationID', line)
                 self.assertNotIn('\\(error', line)
-        self.assertIn('V3LoginDiagnosticSnapshot.attaching(session.loginDiagnosticTrace.snapshot(), to: failure)', app)
+        self.assertIn('V3AuthDiagnosticExport.terminal(response, sessionID: id,', app)
+        self.assertIn('loginTrace: session.loginDiagnosticTrace.snapshot()', app)
+        self.assertIn('V3AuthDiagnosticExport.previousFailure(failure.wire, kind: kind.rawValue,', app)
 
     def test_timeout_adds_diagnostics_without_changing_terminal_policy(self):
         ss = ROOT if (ROOT/'AltStore').exists() else PEER
@@ -159,6 +162,7 @@ class LoginTraceContract(unittest.TestCase):
         compiler = shutil.which('swiftc')
         if compiler is None: self.skipTest('Swift compiler unavailable; real parser/wire execution NOT RUN')
         source = 'import Foundation\n' + declaration(owner(ROOT).read_text(), 'public struct V3LoginDiagnosticSnapshot {')
+        source += '\nenum V3AuthenticationDiagnostics {\nstatic let maximumWireBytes = V3LoginDiagnosticSnapshot.maximumWireBytes\n' + declaration(owner(ROOT).read_text(), 'public static func fits(') + '\n}\n'
         ss = ROOT if (ROOT/'AltStore').exists() else PEER
         if ss is None: self.fail('Set LOGIN_TRACE_PEER_ROOT for actual timeout contract')
         source += '\n' + declaration(owner(ss).read_text(), 'enum V3AuthSessionExpiryPolicy {')

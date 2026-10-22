@@ -13,9 +13,11 @@ import AnisetteKit
 enum AnisetteProvider {
     static func fetch(handler: AnisetteServerHandler? = nil) async throws -> ALTAnisetteData {
         if UserDefaults.standard.useOnDeviceAnisette {
+            _ = AuthenticationDiagnosticTrace.current?.beginProviderObservation(.selectedBranch(onDevice: true))
             debugLog("[AnisetteProvider] Fetching anisette via On-Device Anisette (ODA)...")
             return try await OnDeviceAnisetteManager.shared.fetchAnisetteData()
         } else {
+            _ = AuthenticationDiagnosticTrace.current?.beginProviderObservation(.selectedBranch(onDevice: false))
             debugLog("[AnisetteProvider] Fetching anisette via remote server...")
             return try await v3LoginStage(.primaryProvider) { try await fetchRemote(handler: handler) }
         }
@@ -36,7 +38,8 @@ enum AnisetteProvider {
         let anisetteSnapshot = try await AnisetteConfigManager.shared.resolveAnisetteSnapshot()
         let existingBlob = anisetteSnapshot.adiBlob
         let identifier = anisetteSnapshot.identifier
-        let headers = await AnisetteConfigManager.shared.makeRequestHeaders()
+        let headerSelection = await AnisetteConfigManager.shared.makeRequestHeaderSelection()
+        let headers = headerSelection.headers
 
         let (anisetteData, newAdiBlob) = try await provider.fetchAnisetteDataWithFailover(
             servers: UserDefaults.standard.disableAnisetteRotation ? [servers[startIndex]] : servers,
@@ -44,6 +47,7 @@ enum AnisetteProvider {
             identifier: identifier,
             existingAdiBlob: existingBlob,
             headers: headers,
+            diagnosticClientInfoSource: headerSelection.clientInfoSource,
             onError: { error in
                 if let anisetteError = error as? SideSign.AnisetteError,
                    case .outdatedV1Server(let serverURL, _) = anisetteError {

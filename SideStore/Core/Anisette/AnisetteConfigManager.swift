@@ -136,6 +136,11 @@ public actor AnisetteConfigManager {
     }
 
     public func loadConfig(forOnDeviceAndroid: Bool? = nil) -> AnisetteConfig {
+        resolveConfig(forOnDeviceAndroid: forOnDeviceAndroid).config
+    }
+
+    private func resolveConfig(forOnDeviceAndroid: Bool?)
+        -> (config: AnisetteConfig, clientInfoSource: AuthenticationHeaderSource) {
         let ud = UserDefaults.standard
         let onDeviceAndroid = forOnDeviceAndroid ?? ud.useOnDeviceAnisette
         let udClientInfo   = ud.customAnisetteClientInfo
@@ -166,7 +171,9 @@ public actor AnisetteConfigManager {
         let resolvedSerialNumber = (udSerialNumber?.isEmpty == false ? udSerialNumber : fileConfig?.customSerialNumber)
         let resolvedRoutingInfo  = (udRoutingInfo?.isEmpty == false ? udRoutingInfo : fileConfig?.customRoutingInfo)
 
-        return AnisetteConfig(
+        let clientInfoSource: AuthenticationHeaderSource = udClientInfo?.isEmpty == false
+            ? .userDefaults : (fileConfig != nil ? .file : .defaultValue)
+        let config = AnisetteConfig(
             clientInfo: resolvedClientInfo,
             userAgent: resolvedUserAgent,
             customDeviceID: resolvedDeviceID,
@@ -177,13 +184,20 @@ public actor AnisetteConfigManager {
             customSerialNumber: resolvedSerialNumber,
             customRoutingInfo: resolvedRoutingInfo
         )
+        return (config, clientInfoSource)
     }
 
     public func makeRequestHeaders(forOnDeviceAndroid: Bool = false) -> AnisetteRequestHeaders {
+        makeRequestHeaderSelection(forOnDeviceAndroid: forOnDeviceAndroid).headers
+    }
+
+    public func makeRequestHeaderSelection(forOnDeviceAndroid: Bool = false)
+        -> (headers: AnisetteRequestHeaders, clientInfoSource: AuthenticationHeaderSource) {
         let span = LoginDiagnosticTrace.current?.begin(.requestHeaders)
         defer { span?.finish(.succeeded) }
-        let config = loadConfig(forOnDeviceAndroid: forOnDeviceAndroid)
-        return AnisetteRequestHeaders().with {
+        let selected = resolveConfig(forOnDeviceAndroid: forOnDeviceAndroid)
+        let config = selected.config
+        let headers = AnisetteRequestHeaders().with {
             $0.clientInfo = config.clientInfo.isEmpty ? Self.defaultClientInfo(forOnDeviceAndroid: forOnDeviceAndroid) : config.clientInfo
             $0.userAgent  = config.userAgent.isEmpty ? AppConstants.Anisette.defaultUserAgent : config.userAgent
             if let customLU = config.customLocalUserID, !customLU.isEmpty { $0.localUserID = customLU }
@@ -193,6 +207,9 @@ public actor AnisetteConfigManager {
             if let serial = config.customSerialNumber, !serial.isEmpty { $0.serialNumber = serial }
             if let routing = config.customRoutingInfo, !routing.isEmpty { $0.routingInfo = routing }
         }
+        // Empty file values still use the existing request-time default.
+        let source: AuthenticationHeaderSource = config.clientInfo.isEmpty ? .defaultValue : selected.clientInfoSource
+        return (headers, source)
     }
 
     public func resolvedXcodeVersion() async -> String {

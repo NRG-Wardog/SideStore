@@ -45,6 +45,7 @@ public actor OnDeviceAnisetteManager {
     }
 
     public func fetchAnisetteData() async throws -> ALTAnisetteData {
+        _ = AuthenticationDiagnosticTrace.current?.beginProviderObservation(.selectedBranch(onDevice: true))
         debugLog("[OnDeviceAnisetteManager] [Fetch] Fetching on-device Anisette headers...")
 
         // DEBUG TEMPORARY: one value-owned trace for this invocation only.
@@ -64,7 +65,8 @@ public actor OnDeviceAnisetteManager {
 
         debugStep = .requestHeaders
         debugTrace.record(step: debugStep, outcome: .started)
-        let headers = await AnisetteConfigManager.shared.makeRequestHeaders(forOnDeviceAndroid: true)
+        let headerSelection = await AnisetteConfigManager.shared.makeRequestHeaderSelection(forOnDeviceAndroid: true)
+        let headers = headerSelection.headers
         debugTrace.record(step: debugStep, outcome: .succeeded)
 
         let sourceURLString = UserDefaults.standard.menuAnisetteList.isEmpty ? AnisetteServersManager.defaultSource : UserDefaults.standard.menuAnisetteList
@@ -85,7 +87,8 @@ public actor OnDeviceAnisetteManager {
             primary = try await v3LoginStage(.primaryProvider) {
                 try await provider.fetchAnisetteData(
                     mode: mode, identifier: identifierUUID,
-                    existingAdiBlob: existingAdiPbData, headers: headers)
+                    existingAdiBlob: existingAdiPbData, headers: headers,
+                    diagnosticClientInfoSource: headerSelection.clientInfoSource)
             }
         } catch {
             debugTrace.record(step: debugStep, outcome: .failed)
