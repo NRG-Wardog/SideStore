@@ -28,6 +28,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     private var appleIDEmailAddress: String?
     private var requiresPostAuthFlow = false
     private var portalCertificates: [ALTX509Certificate]?
+    private let v3RemoteAnisetteSelection: (@MainActor @Sendable () throws -> Bool)?
+    private let v3RemoteAnisetteLock = NSLock()
+    private var v3RemoteAnisetteContext: ILoaderRemoteAuthenticationContext?
+    private var v3AnisetteRouteResolved = false
     
     let signInHandler: SignInHandler
     let anisetteServerHandler: AnisetteServerHandler
@@ -59,7 +63,8 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         v3FinishPendingCertificateActivation: Bool = false,
         v3RequireInteractiveCredentials: Bool = false,
         v3ReauthenticateAppleID: String? = nil,
-        v3ReauthenticationIdentityStamp: String? = nil
+        v3ReauthenticationIdentityStamp: String? = nil,
+        v3RemoteAnisetteSelection: (@MainActor @Sendable () throws -> Bool)? = nil
     ) throws {
         guard !v3FinishPendingCertificateActivation || v3RequireFullProvisioning else {
             throw V3PendingCertificateCreationError.pending
@@ -76,6 +81,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         self.v3RequireInteractiveCredentials = v3RequireInteractiveCredentials
         self.v3ReauthenticateAppleID = v3ReauthenticateAppleID
         self.v3ReauthenticationIdentityStamp = v3ReauthenticationIdentityStamp
+        self.v3RemoteAnisetteSelection = v3RemoteAnisetteSelection
 
         try super.init(context: context)
         self.debugLog("""
@@ -89,19 +95,55 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         // V3_AUTHENTICATION_PHASE_EVIDENCE_V1
         try await v3LoginStage(.anisetteFetch) {
             try await v3AuthenticationPhase(.anisetteFetch) {
-                try await AnisetteProvider.fetch(handler: self.anisetteServerHandler)
+                if let remote = self.v3RemoteContextSnapshot() {
+                    _ = AuthenticationDiagnosticTrace.current?.beginProviderObservation(.selectedBranch(onDevice: false))
+                    return try await remote.fetch()
+                }
+                return try await AnisetteProvider.fetch(handler: self.anisetteServerHandler)
             }
         }
+    }
+
+    private func v3RemoteContextSnapshot() -> ILoaderRemoteAuthenticationContext? {
+        v3RemoteAnisetteLock.withLock { v3RemoteAnisetteContext }
+    }
+
+    private func v3ResolveAnisetteRouteAfterCredentials() async throws {
+        guard !v3AnisetteRouteResolved else { return }
+        let selected = try await v3RemoteAnisetteSelection?() ?? false
+        guard !selected || (v3RequireInteractiveCredentials && v3ReauthenticateAppleID == nil &&
+            !v3ForceProvisioningRetry) else { throw ILoaderRemoteError.consentRequired }
+        if selected {
+            let remote = try makeILoaderRemoteAuthenticationContext()
+            v3RemoteAnisetteLock.withLock { v3RemoteAnisetteContext = remote }
+        }
+        v3AnisetteRouteResolved = true
+        if isCancelled || Task.isCancelled {
+            v3RemoteContextSnapshot()?.invalidate()
+            throw OperationError.cancelled
+        }
+    }
+
+    override func cancel() {
+        super.cancel()
+        v3RemoteContextSnapshot()?.invalidate()
     }
     
     // Main Pipeline Execution
     override func execute(parentProgress: Progress?) async throws -> SignInResult {
-        try await LoginDiagnosticTrace.$current.withValue(loginDiagnosticTrace) {
-            try await AuthenticationDiagnosticTrace.$current.withValue(authenticationDiagnosticTrace) {
-                try await v3LoginStage(.login) {
-                    try await self.executeLoginPipeline(parentProgress: parentProgress)
+        // Invalidation deliberately retains the selected context: it must throw,
+        // never turn a cancelled remote attempt into the default local route.
+        defer { v3RemoteContextSnapshot()?.invalidate() }
+        return try await withTaskCancellationHandler {
+            try await LoginDiagnosticTrace.$current.withValue(loginDiagnosticTrace) {
+                try await AuthenticationDiagnosticTrace.$current.withValue(authenticationDiagnosticTrace) {
+                    try await v3LoginStage(.login) {
+                        try await self.executeLoginPipeline(parentProgress: parentProgress)
+                    }
                 }
             }
+        } onCancel: {
+            self.v3RemoteContextSnapshot()?.invalidate()
         }
     }
 
@@ -439,6 +481,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
             }
             let (appleID, password) = credentials
             if self.isCancelled { throw OperationError.cancelled }
+            try await self.v3ResolveAnisetteRouteAfterCredentials()
             
             do {
                 let (account, session) = try await self.signIn(appleID: appleID, password: password)
@@ -455,6 +498,9 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 }
                 self.debugLog("[V3_AUTH] attempt_failed")
                 await handler.handleSignInResult(.failure(error))
+                // A remote attempt ends on failure. A new Submit is required;
+                // neither credentials retries nor 2FA can change its provider.
+                if self.v3RemoteContextSnapshot() != nil { throw error }
                 // A local commit failure must reconcile, never replay Apple login.
                 if let local = error as? V3AccountOperationError, local.credentialCommit { throw local }
                 if v3ClassifyAuthError(error)?.rawValue == "anisetteIdentityStateInvalid" { throw error }
@@ -483,6 +529,19 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     }
 
     private func signIn(appleID: String, password: String,
+                        recoveryCandidate: LCEmbeddedAuthenticationCandidate? = nil,
+                        capturedStamp: String? = nil) async throws -> (ALTAccount, ALTAppleAPISession) {
+        guard let remote = v3RemoteContextSnapshot() else {
+            return try await performSignIn(appleID: appleID, password: password,
+                recoveryCandidate: recoveryCandidate, capturedStamp: capturedStamp)
+        }
+        return try await ILoaderRemoteAuthentication.$current.withValue(remote) {
+            try await self.performSignIn(appleID: appleID, password: password,
+                recoveryCandidate: recoveryCandidate, capturedStamp: capturedStamp)
+        }
+    }
+
+    private func performSignIn(appleID: String, password: String,
                         recoveryCandidate: LCEmbeddedAuthenticationCandidate? = nil,
                         capturedStamp: String? = nil) async throws -> (ALTAccount, ALTAppleAPISession) {
         try self.v3ValidateReauthenticationIdentity(submittedAppleID: appleID)

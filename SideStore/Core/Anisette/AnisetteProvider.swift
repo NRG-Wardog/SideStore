@@ -80,3 +80,43 @@ enum AnisetteProvider {
         return anisetteData
     }
 }
+
+// One credentials Submit owns this experimental route. No defaults, Keychain,
+// local ADI snapshot or disk provisioning record is read or written here.
+func makeILoaderRemoteAuthenticationContext() throws -> ILoaderRemoteAuthenticationContext {
+    let source = ILoaderAttemptAnisetteSource()
+    return ILoaderRemoteAuthenticationContext(
+        endpoint: .macJkcoxson,
+        canceller: { source.invalidate() },
+        fetcher: { sim in try await source.fetch(sim: sim) })
+}
+
+private actor ILoaderAttemptAnisetteSource {
+    private nonisolated let client = ILoaderRemoteAnisetteClient(endpoint: .macJkcoxson)
+    private var state: ILoaderRemoteState?
+    private var fetching = false
+
+    nonisolated func invalidate() { client.invalidate() }
+
+    func fetch(sim: String?) async throws -> ALTAnisetteData {
+        try await v3LoginStage(.primaryProvider) { try await self.fetchCore(sim: sim) }
+    }
+
+    private func fetchCore(sim: String?) async throws -> ALTAnisetteData {
+        // Reject reentrant acquisitions instead of producing competing identities.
+        guard !fetching else { throw SideSign.AnisetteError.providerNotReady("An acquisition is already in progress.") }
+        fetching = true
+        defer { fetching = false }
+        try Task.checkCancellation()
+        if state == nil {
+            let profile = try await client.fetchProfile()
+            try Task.checkCancellation()
+            state = ILoaderRemoteState(profile: profile)
+        }
+        guard let current = state else { throw SideSign.AnisetteError.invalidAnisetteData }
+        let (data, updated) = try await client.fetch(state: current, sim: sim)
+        try Task.checkCancellation()
+        state = updated
+        return data
+    }
+}

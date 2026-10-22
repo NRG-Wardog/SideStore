@@ -11210,6 +11210,13 @@ func v3AccountOperationFailure(_ error: Error, step: CombinedFailure.SourceStep)
         case .missingKey: kind = .sideSignMissingKey
         }
     } else if error is DeveloperPortalError { kind = .sideSignDeveloperPortalError }
+    else if let remote = error as? ILoaderRemoteError {
+        // Only our finite error type and observed HTTP status enter existing diagnostics.
+        kind = .anisetteFailure
+        if case .httpStatus(let status) = remote, (100...599).contains(status) {
+            httpStatus = status
+        }
+    }
     else if let anisette = error as? SideSign.AnisetteError {
         kind = .anisetteFailure
         switch anisette {
@@ -11329,7 +11336,7 @@ func v3ClassifyAuthError(_ error: Error) -> V3AuthFailureKind? {
     // DeveloperPortalError exists (for example, when no servers are configured
     // or every provider fails). Preserve that typed infrastructure category and
     // never forward its associated response/path text.
-    if error is SideSign.AnisetteError || error is AnisetteKit.AnisetteError { return .anisette }
+    if error is SideSign.AnisetteError || error is AnisetteKit.AnisetteError || error is ILoaderRemoteError { return .anisette }
     if let server = error as? ServerError {
         switch server {
         // These response-shape cases have unsafe associated text/payload and
@@ -11863,7 +11870,8 @@ final class V3AuthCenter {
                 v3FinishPendingCertificateActivation: sessions[id]?.finishPendingCertificateActivation == true,
                 v3RequireInteractiveCredentials: sessions[id]?.mode == .interactive,
                 v3ReauthenticateAppleID: sessions[id]?.reauthenticationAppleID,
-                v3ReauthenticationIdentityStamp: sessions[id]?.reauthenticationIdentityStamp)
+                v3ReauthenticationIdentityStamp: sessions[id]?.reauthenticationIdentityStamp,
+                v3RemoteAnisetteSelection: { try handler.remoteMacAnisetteSelected() })
             let result = try await operation.execute()
             finalization = LoginDiagnosticTrace.current?.begin(.accountFinalize)
             let account = result.team.account ?? ALTAccount(appleID: "", identifier: result.team.identifier)
@@ -12039,6 +12047,12 @@ final class V3AuthCenter {
             return pending
         }
         guard session.prompt?["id"] as? String == promptID else { return nil }
+        if let provider = answer["anisetteProvider"] {
+            guard provider == "remoteMac",
+                  session.prompt?["kind"] as? String == "credentials",
+                  session.prompt?["remoteMacAnisette"] as? String == "submit-v1",
+                  session.mode == .interactive else { return nil }
+        }
         let disposition = V3HeadlessRuntime.shared.prompts.answer(promptID: promptID, answer: answer)
         if let pending = V3PromptResponseStatePolicy.responsePending(disposition,
             acceptedPromptID: session.acceptedPromptIDs.last, promptID: promptID,
@@ -12220,7 +12234,15 @@ enum V3TwoFactorPhoneSelectionPolicy {
 @MainActor
 final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
     let sessionID: String
+    // Nil means no credentials have been submitted. Both false and true are final.
+    private var remoteMacAnisetteSelection: Bool?
     init(sessionID: String) { self.sessionID = sessionID }
+
+    func remoteMacAnisetteSelected() throws -> Bool {
+        _ = try center()
+        guard let selected = remoteMacAnisetteSelection else { throw ILoaderRemoteError.consentRequired }
+        return selected
+    }
 
     private func center() throws -> V3AuthCenter {
         let center = V3HeadlessRuntime.shared.auth
@@ -12230,10 +12252,14 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
 
     private func ask(kind: String, title: String, message: String,
                      fields: [[String: String]] = [], options: [[String: String]] = [],
-                     destructive: Bool = false) async throws -> [String: String] {
+                     destructive: Bool = false, offersRemoteMacAnisette: Bool = false) async throws -> [String: String] {
         let center = try center()
-        let prompt = v3Prompt(kind: kind, title: title, message: message,
+        var promptValue = v3Prompt(kind: kind, title: title, message: message,
                               fields: fields, options: options, destructive: destructive)
+        if offersRemoteMacAnisette && kind == "credentials" {
+            promptValue["remoteMacAnisette"] = "submit-v1"
+        }
+        let prompt = promptValue
         guard let promptID = prompt["id"] as? String else { throw CancellationError() }
         defer {
             if center.sessions[sessionID]?.prompt?["id"] as? String == promptID {
@@ -12253,13 +12279,22 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
 
     func credentials() async throws -> (String, String) {
         let expectedOwner = V3HeadlessRuntime.shared.auth.sessions[sessionID]?.reauthenticationAppleID
+        let offersRemote = remoteMacAnisetteSelection == nil && expectedOwner == nil &&
+            V3HeadlessRuntime.shared.auth.sessions[sessionID]?.mode == .interactive
         let answer = try await ask(kind: "credentials", title: "Apple ID Sign In",
                                    message: expectedOwner == nil ? "Enter the Apple ID and password used for signing."
                                     : "Sign in with the saved Apple ID to finish device provisioning. Your account and certificate are kept.",
                                    fields: [["key": "appleID", "label": "Apple ID", "secure": "false", "value": expectedOwner ?? ""],
-                                            ["key": "password", "label": "Password", "secure": "true"]])
+                                            ["key": "password", "label": "Password", "secure": "true"]],
+                                   offersRemoteMacAnisette: offersRemote)
         guard let appleID = answer["appleID"], !appleID.isEmpty,
               let password = answer["password"], !password.isEmpty else { throw CancellationError() }
+        if let provider = answer["anisetteProvider"] {
+            guard offersRemote, provider == "remoteMac" else { throw ILoaderRemoteError.consentRequired }
+        }
+        if remoteMacAnisetteSelection == nil {
+            remoteMacAnisetteSelection = answer["anisetteProvider"] == "remoteMac"
+        }
         V3HeadlessRuntime.shared.auth.sessions[sessionID]?.submittedAppleID = appleID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return (appleID, password)
     }
@@ -12287,7 +12322,7 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
             ["id": "sms", "label": "Send SMS"],
             ["id": "voice", "label": "Request Voice Call"],
             ["id": "cancel", "label": "Cancel Sign In"]
-        ]
+        ].filter { remoteMacAnisetteSelection != true || $0["id"] != "voice" }
         // Empty lists still support Apple's default phone target, as in the original handler.
         let priorKind = V3HeadlessRuntime.shared.auth.sessions[sessionID]?.previousFailure?["kind"] as? String
         let message = V3TwoFactorRetryPolicy.recoveryMessage(authFailureKind: priorKind)
@@ -12302,6 +12337,7 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
             return .requestTrustedDevice
         case "sms", "voice":
             let method = answer["action"] ?? "sms"
+            guard method != "voice" || remoteMacAnisetteSelection != true else { return .cancel }
             var phoneID = phoneNumbers.first?.id ?? ""
             if phoneNumbers.count > 1 {
                 let phoneChoices = phoneNumbers.map { ["id": "phone:\($0.id)", "label": $0.number] }
