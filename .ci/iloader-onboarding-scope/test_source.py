@@ -142,6 +142,16 @@ class OnboardingSourceTests(unittest.TestCase):
                 self.assertEqual(entry["sha256"], sha(body))
                 if repository == "SideSign": body = re.sub(r"\bURLSession\b", "FakeSession", body)
                 self.assertIn(body, generated)
+            # Every lease entry used by the exact extracted lifecycle must be
+            # present on this suite's typed inert boundary before native compile.
+            boundary = generate.extract((target / "BoundaryDoubles.swift").read_text(),
+                                        "enum V3RemoteRequestLeases {")
+            declared = set(re.findall(r"static (?:func|var) (\w+)", boundary))
+            required = set(re.findall(r"V3RemoteRequestLeases\.\$?(\w+)", generated))
+            self.assertLessEqual(required, declared)
+            self.assertIn("invalidateManualAttempts", required)
+            runtime = (target / "RuntimeTests.swift").read_text()
+            self.assertIn('["leaseInvalidation:regular", "leaseInvalidation:manual"]', runtime)
             for name, expected in evidence["outputs"].items():
                 self.assertEqual(hashlib.sha256((target / name).read_bytes()).hexdigest(), expected)
             for path, expected in evidence["inputs"].items():

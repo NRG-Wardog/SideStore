@@ -116,6 +116,9 @@ func testIdentityGuard(_ rows: inout [String]) async throws {
         try await expectFailure({ try await task.value }, "changed identity passed bound proxy", matching: { ($0 as? OperationError) == .notAuthenticated })
     }
     try expect(FixtureLog.shared.count("sessionInstall") == 0 && FixtureLog.shared.count("portal:stale-identity") == 0, "existing identity guards retained")
+    try expect(FixtureLog.shared.snapshot.filter { $0.hasPrefix("leaseInvalidation:") } ==
+               ["leaseInvalidation:regular", "leaseInvalidation:manual"],
+               "identity transition requests regular and manual revocation exactly once in order")
     context.invalidate()
     rows.append("queued-identity-change-rejected-before-install-and-dispatch")
 }

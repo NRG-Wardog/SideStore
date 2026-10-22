@@ -176,5 +176,8 @@ enum V3RemoteRequestLeases {
     static func capture() throws -> V3RemoteRequestAdmission {
         V3RemoteRequestAdmission(context: ILoaderRemoteAuthentication.current)
     }
-    static func invalidateAll() {}
+    // Record the real transition's two invalidation requests. Actual registry
+    // revocation is exercised by remote-identity-reuse, not this inert boundary.
+    static func invalidateAll() { FixtureLog.shared.record("leaseInvalidation:regular") }
+    static func invalidateManualAttempts() { FixtureLog.shared.record("leaseInvalidation:manual") }
 }
