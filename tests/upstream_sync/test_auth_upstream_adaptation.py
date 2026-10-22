@@ -356,10 +356,32 @@ class SwiftSourceContractTests(unittest.TestCase):
         self.assertIn("return device\n        } else {", self.device)
 
     def test_original_verified_udid_and_typed_failure_guards_remain(self):
-        for text in ("deviceUDID = try await fetchUDID()", "fetchUDID(useStatic: true)",
-                     'guard let udid = deviceUDID, !udid.isEmpty, udid != "XXXXX-XXXX-XXXXX-XXXX"',
-                     "if let deviceQueryError { throw deviceQueryError }"):
+        live = "deviceUDID = try await fetchUDID()"
+        fallback = "deviceUDID = try await fetchUDID(useStatic: true)"
+        verified = 'guard let udid = deviceUDID, !udid.isEmpty, udid != "XXXXX-XXXX-XXXXX-XXXX"'
+        primary = "if let deviceQueryError { throw cause.failure(deviceQueryError, phase: .missingVerifiedID) }"
+        unknown = 'throw cause.failure(OperationError.unknownUDID(reason: "No verified device identifier is available."), phase: .missingVerifiedID)'
+        portal = "DeveloperPortalProxy.shared.fetchDevices(for: team, types: .all)"
+        for text in ("var deviceQueryError: Error?", live, "deviceQueryError = error", fallback,
+                     "deviceQueryError = deviceQueryError ?? error", verified, primary, unknown, portal):
             self.assertIn(text, self.device)
+        order = [live, "deviceQueryError = error", fallback,
+                 "deviceQueryError = deviceQueryError ?? error", verified, primary, unknown, portal]
+        positions = [self.device.index(text) for text in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(self.device.count(live), 1)
+        self.assertEqual(self.device.count(fallback), 1)
+        self.assertEqual(self.device.count(unknown), 1)
+        self.assertIn('if deviceUDID == nil || deviceUDID?.isEmpty == true || deviceUDID == "XXXXX-XXXX-XXXXX-XXXX" {', self.device)
+        self.assertEqual(self.device.count("turnOnDataIfNeeded(addOnDelay: 2.0)"), 2)
+        self.assertNotIn("safeFetchUDID", self.device)
+        # The diagnostic wrapper must retain the selected first error rather than
+        # replace it with the fallback error, an NSError ordinal or generic text.
+        failure = section(self.signin,
+                          "func failure(_ error: Error, phase: V3ProvisioningCauseDiagnostic.Phase) -> Error {",
+                          "\n    func encoded(")
+        self.assertIn("if v3IsAuthCancellation(error) { return error }", failure)
+        self.assertIn("return V3ProvisioningCauseError(underlying: error, provisioningCause: encoded(phase: phase))", failure)
 
     def test_journal_proof_and_created_record_precede_metadata_fetch(self):
         order = ["V3CertificateMutationAdmission.acquire()", "getBoundSession()", "getBoundTeam(team, context: context)",
