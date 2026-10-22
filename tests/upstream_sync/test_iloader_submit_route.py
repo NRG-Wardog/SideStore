@@ -100,25 +100,46 @@ class SubmitRouteTests(unittest.TestCase):
         self.assertIn('].filter { remoteMacAnisetteSelection != true || $0["id"] != "voice" }', chooser)
         self.assertIn('guard method != "voice" || remoteMacAnisetteSelection != true else { return .cancel }', chooser)
 
-    def test_inline_disclosure_precedes_existing_submit(self):
+    def test_ui_defaults_supported_manual_submit_without_toggle_or_inline_explanation(self):
         section = HOST[HOST.index("struct V3PromptSection:"):HOST.index("final class V3AuthStore:")]
-        self.assertIn('@State private var useRemoteMacAnisette = false', section)
-        self.assertIn('prompt["remoteMacAnisette"] as? String == "submit-v1"', section)
-        self.assertLess(section.index('signin.remote-mac-anisette.disclosure'), section.index('Button("Submit")'))
-        self.assertIn('mac-ani.jkcoxson.com', section)
-        self.assertIn('password and verification code are sent only to Apple', section)
-        self.assertIn('Remote identity and ADI state stay in memory', section)
-        self.assertIn('The provider can correlate this activity', section)
-        self.assertNotIn('.alert(', section)
+        self.assertIn('kind == "credentials" && prompt["remoteMacAnisette"] as? String == "submit-v2"', section)
+        self.assertIn('if usesRemoteMacAnisetteForSubmit {', section)
         self.assertIn('answer["anisetteProvider"] = "remoteMac"', section)
-        self.assertGreaterEqual(section.count('useRemoteMacAnisette = false'), 3)
+        self.assertNotIn('useRemoteMacAnisette', section)
+        self.assertNotIn('Toggle("Use Remote Mac', section)
+        self.assertNotIn('signin.remote-mac-anisette.disclosure', section)
+        self.assertNotIn('mac-ani.jkcoxson.com', section)
+        self.assertIn('SecureField(', section)
+        submit = section[section.index('private func submit(choice:'):section.index('private func respond(')]
+        self.assertLess(submit.index('answer["anisetteProvider"]'), submit.index('respond(answer)'))
+
+    def test_new_host_requires_exact_v2_prompt_and_old_clients_stay_local(self):
+        def host_answer(kind, capability):
+            return {"anisetteProvider": "remoteMac"} if kind == "credentials" and capability == "submit-v2" else {}
+        self.assertEqual(host_answer("credentials", "submit-v2"), {"anisetteProvider": "remoteMac"})
+        for capability in [None, "submit-v1", "submit-v3", "submit-v2 "]:
+            self.assertEqual(host_answer("credentials", capability), {})
+        for kind in ["twoFactor", "provisioning", "team"]:
+            self.assertEqual(host_answer(kind, "submit-v2"), {})
+        legacy = AttemptModel()
+        legacy.submit()
+        self.assertEqual(legacy.fetch_route(), "default")
+        modern = AttemptModel()
+        modern.submit(host_answer("credentials", "submit-v2")["anisetteProvider"])
+        self.assertEqual(modern.fetch_route(), "remote")
+
+    def test_initial_draft_cannot_submit_or_grant_remote(self):
+        draft = HOST[HOST.index('private var displayedPrompt: [String: Any]?'):]
+        draft = draft[:draft.index('private var shouldShowAccountSection:')]
+        self.assertNotIn('remoteMacAnisette', draft)
+        self.assertIn('isSubmissionBlocked: showsInitialCredentialDraft ||', HOST)
 
     def test_service_checks_capability_before_delivering_answer(self):
         respond = SERVICE[SERVICE.index('func respond(id: String, promptID: String, answer: [String: String])'):]
         respond = respond[:respond.index('func expire(id:')]
         self.assertLess(respond.index('if let provider = answer["anisetteProvider"]'),
                         respond.index('prompts.answer(promptID:'))
-        for fragment in ['provider == "remoteMac"', '== "credentials"', '== "submit-v1"',
+        for fragment in ['provider == "remoteMac"', '== "credentials"', '== "submit-v2"',
                          'session.mode == .interactive']:
             self.assertIn(fragment, respond)
 

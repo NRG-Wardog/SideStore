@@ -1,0 +1,9 @@
+# Offline onboarding continuation regression
+
+This focused fixture covers the continuation after successful authentication, not another SRP/2FA matrix. It projects unmodified production method bodies for SignInOperation's selected-route wrappers, execute/cancel lifecycle and fetchTeam; AuthManager session acquisition and identity checks; the real TaskChainCoalescer actor; AnisetteProvider selection; DeveloperPortalProxy's bound-session/fetchTeams path; and the remote context's actual cache/revocation behavior.
+
+Only external boundaries and surrounding app/UI/database orchestration are synthetic. Apple authentication produces an in-memory accepted response; portal calls only record the selected session's synthetic route. No credentials, HTTP, remote provider, native ADI or persistent store is used. Finalization's wrapper is real; certificate work is replaced by a read-only fake portal validation through the real bound proxy. Diagnostic validators remain owned by the existing suites.
+
+Generate with `python3 -B .ci/iloader-onboarding-scope/generate.py --output-dir OUTPUT --sidesign-root SIDESIGN`. Source checks use the same optional root arguments with `test_source.py`. Generate never compiles or executes Swift. The CI-owned fake fixture compiles exactly CandidateOnboarding.swift, BoundaryDoubles.swift and RuntimeTests.swift, then runs its binary with the case-export JSON path as its sole optional argument. Successful execution emits ILOADER_ONBOARDING_SCOPE_FIXTURE_PASS and exactly eight unique case labels. A process watchdog exits with failure if a broken key partition leaves the queued gates blocked.
+
+Source evidence binds every extracted production declaration, all fixture inputs and the exact three-file output closure. Default provider bytes, cancellation lifecycle and the coalescer implementation are checked against the delivered baseline; the nil/default session key and acquisition order remain unchanged.

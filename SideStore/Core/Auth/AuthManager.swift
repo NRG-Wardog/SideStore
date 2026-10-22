@@ -146,40 +146,59 @@ public final class AuthManager: @unchecked Sendable {
     public func getAuthenticatedSession() async throws -> ALTAppleAPISession {
         let identityAtStart = v3IdentityStampState.snapshot
         guard identityAtStart.stable else { throw OperationError.notAuthenticated }
-        return try await TaskChainCoalescer.shared.coalesce(
-            key: V3AuthSessionCoalescerKey.value(for: identityAtStart.stamp)) {
-            // LC_AUTHENTICATED_SESSION_SNAPSHOT_V1
-            let credentialSnapshot: LCEmbeddedAuthenticationSnapshot?
-            do { credentialSnapshot = try Keychain.shared.authenticationSnapshot() }
-            catch { throw Keychain.shared.embeddedAuthenticationFailure(error) }
-            guard let adsid = credentialSnapshot?.appleIDAdsid,
-                  let xcodeToken = credentialSnapshot?.appleIDXcodeToken else {
-                debugLog("[AuthManager] No stored tokens found.")
-                throw OperationError.notAuthenticated
+        // Capture before queueing. The closure keeps this exact attempt alive, so its
+        // ObjectIdentifier cannot be reused while a coalesced task still owns the key.
+        let remoteContext = ILoaderRemoteAuthentication.current
+        let defaultKey = V3AuthSessionCoalescerKey.value(for: identityAtStart.stamp)
+        let coalescerKey = remoteContext.map { defaultKey + ".remoteAttempt.\(ObjectIdentifier($0))" } ?? defaultKey
+        let session = try await TaskChainCoalescer.shared.coalesce(key: coalescerKey) {
+            try await ILoaderRemoteAuthentication.$current.withValue(remoteContext) {
+                // LC_AUTHENTICATED_SESSION_SNAPSHOT_V1
+                let credentialSnapshot: LCEmbeddedAuthenticationSnapshot?
+                do { credentialSnapshot = try Keychain.shared.authenticationSnapshot() }
+                catch { throw Keychain.shared.embeddedAuthenticationFailure(error) }
+                guard let adsid = credentialSnapshot?.appleIDAdsid,
+                      let xcodeToken = credentialSnapshot?.appleIDXcodeToken else {
+                    debugLog("[AuthManager] No stored tokens found.")
+                    throw OperationError.notAuthenticated
+                }
+                let anisetteData: ALTAnisetteData
+                let xcodeVersion: String
+                if remoteContext != nil {
+                    // The coalescer task is unstructured. Acquire last so revocation while
+                    // resolving the version cannot publish a session from an ended attempt.
+                    xcodeVersion = await AnisetteConfigManager.shared.resolvedXcodeVersion()
+                    anisetteData = try await AnisetteProvider.fetch()
+                } else {
+                    // Keep the default route's acquisition order and behavior unchanged.
+                    anisetteData = try await AnisetteProvider.fetch()   // one time pass
+                    xcodeVersion = await AnisetteConfigManager.shared.resolvedXcodeVersion()
+                }
+                let credentialSnapshotAfter: LCEmbeddedAuthenticationSnapshot?
+                do { credentialSnapshotAfter = try Keychain.shared.authenticationSnapshot() }
+                catch { throw Keychain.shared.embeddedAuthenticationFailure(error) }
+                guard self.v3IdentityIsStable,
+                      self.v3IdentityStamp == identityAtStart.stamp,
+                      credentialSnapshotAfter?.appleIDAdsid == adsid,
+                      credentialSnapshotAfter?.appleIDXcodeToken == xcodeToken else {
+                    throw OperationError.notAuthenticated
+                }
+                
+                let session = ALTAppleAPISession(
+                    dsid: adsid,
+                    authToken: xcodeToken,
+                    anisetteData: anisetteData,
+                    xcodeVersion: xcodeVersion
+                )
+                guard self.v3InstallSessionIfCurrent(session, capturedStamp: identityAtStart.stamp) else {
+                    throw OperationError.notAuthenticated
+                }
+                return session
             }
-            let anisetteData = try await AnisetteProvider.fetch()   // one time pass
-            let xcodeVersion = await AnisetteConfigManager.shared.resolvedXcodeVersion()
-            let credentialSnapshotAfter: LCEmbeddedAuthenticationSnapshot?
-            do { credentialSnapshotAfter = try Keychain.shared.authenticationSnapshot() }
-            catch { throw Keychain.shared.embeddedAuthenticationFailure(error) }
-            guard self.v3IdentityIsStable,
-                  self.v3IdentityStamp == identityAtStart.stamp,
-                  credentialSnapshotAfter?.appleIDAdsid == adsid,
-                  credentialSnapshotAfter?.appleIDXcodeToken == xcodeToken else {
-                throw OperationError.notAuthenticated
-            }
-            
-            let session = ALTAppleAPISession(
-                dsid: adsid,
-                authToken: xcodeToken,
-                anisetteData: anisetteData,
-                xcodeVersion: xcodeVersion
-            )
-            guard self.v3InstallSessionIfCurrent(session, capturedStamp: identityAtStart.stamp) else {
-                throw OperationError.notAuthenticated
-            }
-            return session
         }
+        // A cancelled waiter must not dispatch the unstructured producer's result.
+        if remoteContext != nil { try Task.checkCancellation() }
+        return session
     }
 
     public func getAuthenticatedTeam() async throws -> ALTTeam {

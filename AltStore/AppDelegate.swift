@@ -12050,7 +12050,7 @@ final class V3AuthCenter {
         if let provider = answer["anisetteProvider"] {
             guard provider == "remoteMac",
                   session.prompt?["kind"] as? String == "credentials",
-                  session.prompt?["remoteMacAnisette"] as? String == "submit-v1",
+                  session.prompt?["remoteMacAnisette"] as? String == "submit-v2",
                   session.mode == .interactive else { return nil }
         }
         let disposition = V3HeadlessRuntime.shared.prompts.answer(promptID: promptID, answer: answer)
@@ -12257,7 +12257,7 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
         var promptValue = v3Prompt(kind: kind, title: title, message: message,
                               fields: fields, options: options, destructive: destructive)
         if offersRemoteMacAnisette && kind == "credentials" {
-            promptValue["remoteMacAnisette"] = "submit-v1"
+            promptValue["remoteMacAnisette"] = "submit-v2"
         }
         let prompt = promptValue
         guard let promptID = prompt["id"] as? String else { throw CancellationError() }

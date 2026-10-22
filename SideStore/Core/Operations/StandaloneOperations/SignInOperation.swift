@@ -283,8 +283,11 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                                   session: ALTAppleAPISession,
                                   reportProgress: @escaping @Sendable (Int64) -> Void) async throws -> SignInResult
     {
-        try await v3LoginStage(.provisioning) {
-            try await self.performProvisioningLoop(account: account, session: session, reportProgress: reportProgress)
+        // Continue only this explicitly selected attempt through its onboarding work.
+        try await ILoaderRemoteAuthentication.$current.withValue(self.v3RemoteContextSnapshot()) {
+            try await v3LoginStage(.provisioning) {
+                try await self.performProvisioningLoop(account: account, session: session, reportProgress: reportProgress)
+            }
         }
     }
 
@@ -604,8 +607,11 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     }
 
     private func finalizeAuthentication(result: Result<SignInResult, Error>) async throws {
-        try await v3LoginStage(.accountFinalize) {
-            try await self.performFinalizeAuthentication(result: result)
+        // Final validation may read certificates through the same queued portal path.
+        try await ILoaderRemoteAuthentication.$current.withValue(self.v3RemoteContextSnapshot()) {
+            try await v3LoginStage(.accountFinalize) {
+                try await self.performFinalizeAuthentication(result: result)
+            }
         }
     }
 

@@ -12,6 +12,11 @@ import AnisetteKit
 
 enum AnisetteProvider {
     static func fetch(handler: AnisetteServerHandler? = nil) async throws -> ALTAnisetteData {
+        // A latched attempt is authoritative, including after revocation: never fall back.
+        if let remote = ILoaderRemoteAuthentication.current {
+            _ = AuthenticationDiagnosticTrace.current?.beginProviderObservation(.selectedBranch(onDevice: false))
+            return try await remote.fetch()
+        }
         if UserDefaults.standard.useOnDeviceAnisette {
             _ = AuthenticationDiagnosticTrace.current?.beginProviderObservation(.selectedBranch(onDevice: true))
             debugLog("[AnisetteProvider] Fetching anisette via On-Device Anisette (ODA)...")
