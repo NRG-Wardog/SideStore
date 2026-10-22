@@ -889,6 +889,11 @@ extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorL
     }
     
     func getMappedError(for operation: AppOperation, error: Error) -> Error {
+        // V3_REFRESH_TYPED_FAILURE_MAPPING_V1: title decoration must not bridge
+        // away a refresh failure's finite stage, cause, source, or correlation.
+        if case .refresh = operation, let failure = error as? CombinedFailure {
+            return failure
+        }
         var appName: String!
         if let app = operation.app as? (NSManagedObject & AppProtocol) {
             if let context = app.managedObjectContext {

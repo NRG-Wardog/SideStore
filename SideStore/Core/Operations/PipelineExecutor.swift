@@ -298,6 +298,9 @@ final class PipelineExecutor: @unchecked Sendable {
         } catch {
             result = error
             if error is CancellationError { throw error }
+            // A refresh boundary may already have a complete typed diagnosis.
+            // Bridging it again would erase that evidence before manifest capture.
+            if case .refresh = appOperation, error is CombinedFailure { throw error }
             // LC_STRUCTURED_FAILURE_V1: preserve step responsibility and the underlying error.
             var stage: String
             switch step {
@@ -311,6 +314,9 @@ final class PipelineExecutor: @unchecked Sendable {
             case .verifyCertificate: sourceStep = "certificateValidation"
             case .resignApp: sourceStep = "localCodeSigning"
             default: break
+            }
+            if case .refresh = appOperation, sourceStep == nil {
+                sourceStep = V3RefreshFailureBoundary.pipelineStep(step)?.sourceStep.rawValue
             }
             if let operationError = error as? OperationError, operationError == .notAuthenticated { stage = "authentication" }
             if let portalError = error as? DeveloperPortalError {
@@ -328,6 +334,9 @@ final class PipelineExecutor: @unchecked Sendable {
                 if let certificate = context.targetSigningCertificate {
                     facts["signing_certificate_serial_sha256"] = lcSigningHash(certificate.serialNumber)
                 }
+            }
+            if case .refresh = appOperation {
+                facts.merge(lcRefreshFailureFacts(error)) { existing, _ in existing }
             }
             throw lcStructuredSigningFailure(error, stage: stage, sourceStep: sourceStep, facts: facts)
         }
@@ -348,6 +357,83 @@ final class PipelineExecutor: @unchecked Sendable {
             )
         }
     }
+}
+
+// V3_REFRESH_FAILURE_BOUNDARIES_V1: observe responsibility at the actual
+// instruction, not from a later progress label or a provider description.
+// These diagnostics still need proper testing on a real refresh failure.
+enum V3RefreshFailureBoundary: String, CaseIterable {
+    case certificateSelection, refreshMetadataCache, refreshApplication
+    case provisioningProfileInstallation, refreshRecordUpdate
+
+    var stage: CombinedFailure.Stage {
+        switch self {
+        case .provisioningProfileInstallation: return .installation
+        case .refreshRecordUpdate: return .persistence
+        case .certificateSelection, .refreshMetadataCache, .refreshApplication: return .command
+        }
+    }
+
+    var sourceStep: CombinedFailure.SourceStep {
+        switch self {
+        case .certificateSelection: return .certificateSelection
+        case .refreshMetadataCache: return .refreshMetadataCache
+        case .refreshApplication: return .refreshApplication
+        case .provisioningProfileInstallation: return .provisioningProfileInstallation
+        case .refreshRecordUpdate: return .refreshRecordUpdate
+        }
+    }
+
+    static func pipelineStep(_ step: PipelineStep) -> V3RefreshFailureBoundary? {
+        switch step {
+        case .updateAppCertificate: return .certificateSelection
+        case .cacheResignedMetadata: return .refreshMetadataCache
+        case .refreshApp: return .refreshApplication
+        default: return nil
+        }
+    }
+
+    func preserving(_ error: Error) -> Error {
+        if error is CancellationError || error is CombinedFailure { return error }
+        // Existing finite native stage/source/cause markers take precedence.
+        // The original error stays process-local; only allowlisted scalars are
+        // serialized later by CombinedFailure.capture.
+        return lcStructuredSigningFailure(error, stage: stage.rawValue,
+            sourceStep: sourceStep.rawValue, facts: lcRefreshFailureFacts(error))
+    }
+}
+
+// Capture the Swift enum before NSError bridging erases its case identity.
+// Associated messages, names, file paths, and other payloads are never read.
+func lcRefreshFailureFacts(_ error: Error) -> [String: String] {
+    guard let operation = error as? OperationError else { return [:] }
+    let kind: String
+    switch operation {
+    case .invalidParameters: kind = "invalidParameters"
+    case .invalidOperationContext: kind = "invalidOperationContext"
+    case .notAuthenticated: kind = "notAuthenticated"
+    case .unknownResult: kind = "unknownResult"
+    case .missingAppBundle: kind = "missingAppBundle"
+    case .missingProvisioningProfile: kind = "missingProvisioningProfile"
+    case .certificateExpired: kind = "certificateExpired"
+    case .certificateRevoked: kind = "certificateRevoked"
+    case .customCertificateExpired: kind = "customCertificateExpired"
+    case .customCertificateRevoked: kind = "customCertificateRevoked"
+    case .certificateChanged: kind = "certificateChanged"
+    case .invalidApp: kind = "invalidApp"
+    case .invalidPairingFile: kind = "invalidPairingFile"
+    case .pairingNotComplete: kind = "pairingNotComplete"
+    case .noDevice: kind = "noDevice"
+    case .noConnection: kind = "noConnection"
+    case .noVPN: kind = "noVPN"
+    case .invalidVPN: kind = "invalidVPN"
+    case .notReachable: kind = "notReachable"
+    case .minimuxerNotStarted: kind = "minimuxerNotStarted"
+    case .timedOut: kind = "timedOut"
+    case .unknown: kind = "unknownOperation"
+    default: kind = "otherOperation"
+    }
+    return ["refresh_failure_kind": kind]
 }
 
 import CryptoKit

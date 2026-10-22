@@ -13910,10 +13910,27 @@ enum V3BackendCommands {
         return ALTAccount(appleID: appleID, identifier: appleID, firstName: "", lastName: "")
     }
 
+    @MainActor
+    enum V3CertificatePortalReadBoundary {
+        static func perform<T>(stage: CombinedFailure.Stage, step: CombinedFailure.SourceStep,
+                               operation: () async throws -> T) async throws -> T {
+            do { return try await operation() }
+            catch let failure as CombinedFailure { throw failure }
+            catch is CancellationError { throw CancellationError() }
+            catch { throw lcStructuredSigningFailure(error, stage: stage.rawValue, sourceStep: step.rawValue) }
+        }
+    }
+
     static func portalCertificates() async throws -> [[String: Any]] {
-        _ = try await AuthManager.shared.getAuthenticatedSession()
-        let team = try await AuthManager.shared.getAuthenticatedTeam()
-        let certificates = try await DeveloperPortalProxy.shared.fetchCertificates(team: team)
+        _ = try await V3CertificatePortalReadBoundary.perform(stage: .authentication, step: .authenticate) {
+            try await AuthManager.shared.getAuthenticatedSession()
+        }
+        let team = try await V3CertificatePortalReadBoundary.perform(stage: .authentication, step: .accountLookup) {
+            try await AuthManager.shared.getAuthenticatedTeam()
+        }
+        let certificates = try await V3CertificatePortalReadBoundary.perform(stage: .signing, step: .fetchCertificate) {
+            try await DeveloperPortalProxy.shared.fetchCertificates(team: team)
+        }
         let activeSerial = CertificateManager.shared.activeCertificate?.certificate.serialNumber
         return certificates.map { certificateRow($0, activeSerial: activeSerial) }
     }
@@ -14799,6 +14816,7 @@ public struct CombinedFailure: Error, LocalizedError {
         case provisioningProfileRetrieval, provisioningProfileCreation, provisioningProfileUpdate
         case sourceDownload, manifestParsing, sourceValidation, knownSourcePolicyFetch,
              knownSourcePolicyParsing, catalogRead
+        case certificateSelection, refreshMetadataCache, provisioningProfileInstallation, refreshRecordUpdate, refreshApplication
         var portalUserLabel: String? {
             switch self {
             case .appIDLookup: return "while looking up app identifiers"
@@ -14945,6 +14963,12 @@ public struct CombinedFailure: Error, LocalizedError {
                 let names = text.isEmpty ? [] : text.components(separatedBy: ",")
                 guard names.count <= 32, Set(names).isSubset(of: signingCapabilityNames),
                       Set(names).count == names.count else { return nil }
+            case "refresh_failure_kind":
+                guard ["invalidParameters", "invalidOperationContext", "notAuthenticated", "unknownResult",
+                    "missingAppBundle", "missingProvisioningProfile", "certificateExpired", "certificateRevoked",
+                    "customCertificateExpired", "customCertificateRevoked", "certificateChanged", "invalidApp",
+                    "invalidPairingFile", "pairingNotComplete", "noDevice", "noConnection", "noVPN", "invalidVPN",
+                    "notReachable", "minimuxerNotStarted", "timedOut", "unknownOperation", "otherOperation"].contains(text) else { return nil }
             case "server_code":
                 guard text == "unknown" || (text.utf8.count <= 20 && Int(text).map({ String($0) }) == text) else { return nil }
             case "native_code", "native_subcode", "probe_native_code", "probe_native_subcode":
@@ -17627,6 +17651,11 @@ extension CombinedFailure.SourceStep {
         case .knownSourcePolicyFetch: return "S28"
         case .knownSourcePolicyParsing: return "S29"
         case .catalogRead: return "S30"
+        case .certificateSelection: return "S31"
+        case .refreshMetadataCache: return "S32"
+        case .provisioningProfileInstallation: return "S33"
+        case .refreshRecordUpdate: return "S34"
+        case .refreshApplication: return "S35"
         }
     }
 }
