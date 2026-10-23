@@ -14937,7 +14937,14 @@ public struct CombinedFailure: Error, LocalizedError {
             ? SafeCause.sourceAddBusy : nil
         self.safeCause = safeCause ?? inferredSourceAddBusy
         self.sourceStep = sourceStep
-        self.signingContext = Self.validatedSigningContext(signingContext) ?? [:]
+        var context = Self.validatedSigningContext(signingContext) ?? [:]
+        if normalized != "refresh" || stage != .signing || code != .failed || sourceStep != .provisioningProfileFetch {
+            context.removeValue(forKey: "local_precondition")
+        }
+        if normalized != "refresh" || stage != .command || code != .failed || sourceStep != .refreshReadiness {
+            context.removeValue(forKey: "refresh_readiness_reason")
+        }
+        self.signingContext = context
         self.retryable = retryable ?? self.safeCause?.inferredRetryable
         let launchStages: Set<Stage> = [.extensionDiscovery, .extensionLaunch, .xpcConnection, .serviceReadiness]
         self.launchContext = normalized == "connect" && launchStages.contains(stage) ? launchContext : nil
@@ -14955,8 +14962,32 @@ public struct CombinedFailure: Error, LocalizedError {
         "accessWiFiInformation", "wirelessAccessoryConfiguration", "increasedMemoryLimit",
         "extendedVirtualAddressing", "increasedDebuggingMemoryLimit"
     ]
+    public static func validatedWireSigningContext(_ supplied: Any) -> [String: String]? {
+        guard var fields = supplied as? [String: Any] else { return nil }
+        if fields["refresh_readiness_reason"] != nil && !(fields["refresh_readiness_reason"] is String) {
+            fields.removeValue(forKey: "refresh_readiness_reason")
+        }
+        if fields["local_precondition"] != nil && !(fields["local_precondition"] is String) {
+            fields.removeValue(forKey: "local_precondition")
+        }
+        guard let strings = V3AuthenticationDiagnostics.sanitizingWireContext(fields) else { return nil }
+        return validatedSigningContext(strings)
+    }
     public static func validatedSigningContext(_ value: [String: String]) -> [String: String]? {
         var fields = V3AuthenticationDiagnostics.sanitizingContext(V3TemporaryADIConsumption.sanitizingContext(value))
+        // This optional observation must never replace or invalidate the primary
+        // failure. Admit only the finite local guard vocabulary, with its kind.
+        if let local = fields["local_precondition"],
+           fields["refresh_failure_kind"] != "invalidParameters" ||
+           !["missingTargetAppBundle", "unknownTeamType", "unresolvedAppGroupPlaceholder",
+             "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"].contains(local) || fields.count > 20 {
+            fields.removeValue(forKey: "local_precondition")
+        }
+        if let reason = fields["refresh_readiness_reason"] {
+            let eligible = (reason == "vpnUnavailable" && fields["refresh_failure_kind"] == "noVPN") ||
+                (reason == "peerProbeFailed" && fields["refresh_failure_kind"] == "invalidVPN")
+            if !eligible || fields.count > 20 { fields.removeValue(forKey: "refresh_readiness_reason") }
+        }
         if !V3TemporaryAnisetteTrace.temporaryAnisetteTraceEnabled {
             fields.removeValue(forKey: V3TemporaryAnisetteTrace.contextKey)
         }
@@ -15014,6 +15045,13 @@ public struct CombinedFailure: Error, LocalizedError {
                 let names = text.isEmpty ? [] : text.components(separatedBy: ",")
                 guard names.count <= 32, Set(names).isSubset(of: signingCapabilityNames),
                       Set(names).count == names.count else { return nil }
+            case "refresh_readiness_reason":
+                guard (text == "vpnUnavailable" && fields["refresh_failure_kind"] == "noVPN") ||
+                    (text == "peerProbeFailed" && fields["refresh_failure_kind"] == "invalidVPN") else { return nil }
+            case "local_precondition":
+                guard fields["refresh_failure_kind"] == "invalidParameters",
+                    ["missingTargetAppBundle", "unknownTeamType", "unresolvedAppGroupPlaceholder",
+                     "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"].contains(text) else { return nil }
             case "refresh_failure_kind":
                 guard ["invalidParameters", "invalidOperationContext", "notAuthenticated", "unknownResult",
                     "missingAppBundle", "missingProvisioningProfile", "certificateExpired", "certificateRevoked",
@@ -15164,6 +15202,69 @@ public struct CombinedFailure: Error, LocalizedError {
             return "waiting for SideStore to finish the request"
         }
     }
+    // Local finite observations only. These do not diagnose an Apple rejection,
+    // expired login, or a VPN that is definitely switched off.
+    private var localRefreshPrecondition: String? {
+        guard operation == "refresh", stage == .signing, code == .failed,
+              sourceStep == .provisioningProfileFetch,
+              safeCause == nil || safeCause == .unknownSigningCause,
+              signingContext["refresh_failure_kind"] == "invalidParameters" else { return nil }
+        return signingContext["local_precondition"]
+    }
+    private var refreshReadinessVPNKind: String? {
+        guard operation == "refresh", code == .failed, sourceStep == .refreshReadiness,
+              safeCause == nil, let kind = signingContext["refresh_failure_kind"],
+              ["noVPN", "invalidVPN"].contains(kind) else { return nil }
+        return kind
+    }
+    private var localDevVPNActivationMessage: String? {
+        guard operation == "refresh", stage == .network,
+              safeCause == .localDevVPNUnavailable else { return nil }
+        switch code {
+        case .unavailable:
+            return "LiveContainer could not open LocalDevVPN. Install/open it, enable the connection, then retry."
+        case .timedOut:
+            return "LocalDevVPN did not return before the activation wait ended. Return to LiveContainer and retry after enabling it."
+        default: return nil
+        }
+    }
+    private var localRefreshMessage: String? {
+        switch localRefreshPrecondition {
+        case "missingTargetAppBundle":
+            return "SideStore could not prepare provisioning profiles because the target app bundle was missing from the refresh context."
+        case "unknownTeamType":
+            return "SideStore did not recognize the selected team type while preparing provisioning features."
+        case "unresolvedAppGroupPlaceholder":
+            return "The app's signing entitlements still contain an unresolved app-group placeholder."
+        case "missingProgressWeight":
+            return "The refresh pipeline has no progress entry for provisioning-profile preparation."
+        case "invalidProgressReuse":
+            return "The refresh pipeline has an invalid progress reuse limit for provisioning-profile preparation."
+        case "missingPipelineStepMapping":
+            return "The refresh pipeline could not map the provisioning-profile operation to its step."
+        default: break
+        }
+        if refreshReadinessVPNKind == "noVPN" {
+            return "SideStore's refresh readiness check could not find a usable local VPN connection."
+        }
+        if refreshReadinessVPNKind == "invalidVPN" {
+            return "SideStore's refresh readiness check could not validate the local VPN connection."
+        }
+        return nil
+    }
+    private var localRefreshRecovery: String? {
+        switch localRefreshPrecondition {
+        case "unresolvedAppGroupPlaceholder":
+            return "Check the app's signing entitlements and build configuration. Copy Diagnostics before retrying with a corrected build."
+        case "missingTargetAppBundle", "unknownTeamType", "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping":
+            return "Copy Diagnostics to review the local refresh setup. This observation does not establish an account or provisioning-service failure."
+        default: break
+        }
+        if refreshReadinessVPNKind != nil {
+            return "Check the local VPN connection and its SideStore configuration, then retry."
+        }
+        return nil
+    }
     public var message: String {
         if let message = V3AccountOperationError.remoteIdentityMessage(signingContext["typed_error"]) { return message }
         if signingContext["typed_error"] == "anisetteIdentityStateInvalid" { return LCAnisettePairError.safeMessage }
@@ -15182,7 +15283,9 @@ public struct CombinedFailure: Error, LocalizedError {
         if operation == "catalog", safeCause != .responseEncodingFailed,
            safeCause != .responseTooLarge, let catalog = catalogFailureMessage { return catalog }
         if code == .cancelled { return "The \(operation) request was cancelled. Its result may need reconciliation." }
+        if let activation = localDevVPNActivationMessage { return activation }
         if code == .timedOut { return "SideStore could not \(timeoutAction) in time while \(timeoutContext)." }
+        if let local = localRefreshMessage { return local }
         if let safeCause {            switch safeCause {
             case .networkConnectionLost: return "The network connection was lost during \(operation)."
             case .networkTimedOut: return "The network request timed out during \(operation)."
@@ -15383,6 +15486,7 @@ public struct CombinedFailure: Error, LocalizedError {
     public var recovery: String {
         if let recovery = V3AccountOperationError.remoteIdentityRecovery(signingContext["typed_error"]) { return recovery }
         if signingContext["typed_error"] == "anisetteIdentityStateInvalid" { return LCAnisettePairError.recovery }
+        if let local = localRefreshRecovery { return local }
         // V3_RESPONSE_CLASSIFICATION_CARRIER_V1: the two reply-level causes
         // outrank the catalog recovery for the same reason they outrank its
         // message. Repeating an unencodable request, or the same oversized one,
@@ -15664,8 +15768,7 @@ public struct CombinedFailure: Error, LocalizedError {
         } else { sourceStep = nil }
         let signingContext: [String: String]
         if let raw = value["signingContext"] {
-            guard let fields = V3AuthenticationDiagnostics.sanitizingWireContext(raw),
-                  let validated = Self.validatedSigningContext(fields) else { return nil }
+            guard let validated = Self.validatedWireSigningContext(raw) else { return nil }
             signingContext = validated
         } else { signingContext = [:] }
         if let retry = value["retryable"] {
@@ -15846,8 +15949,8 @@ public struct CombinedFailure: Error, LocalizedError {
                let found = SourceStep(rawValue: name) {
                 sourceStep = found
             }
-            if let fields = cause.userInfo["LCStructuredSigningContextV1"] as? [String: String],
-               let safeFields = Self.validatedSigningContext(fields) {
+            if let fields = cause.userInfo["LCStructuredSigningContextV1"],
+               let safeFields = Self.validatedWireSigningContext(fields) {
                 signingContext.merge(safeFields) { _, deeper in deeper }
             }
             // Domain-specific classification. Only map a numeric code to a

@@ -440,6 +440,6 @@ enum V3RefreshEarlyFailureBoundary {
             stage = .command
         }
         return lcStructuredSigningFailure(error, stage: stage.rawValue,
-            sourceStep: step.rawValue, facts: lcRefreshFailureFacts(error))
+            sourceStep: step.rawValue, facts: lcRefreshFailureFacts(error, sourceStep: step.rawValue))
     }
 }
