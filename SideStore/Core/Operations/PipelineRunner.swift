@@ -373,12 +373,42 @@ final class PipelineRunner: Sendable
                 break
         }
         
+        // The prepared copy belongs only to this operation and outlives every
+        // awaited pipeline step. Cleanup never removes shared caches or the host.
+        var preparedHostRefreshBundle: V3HostRefreshBundlePreparation.Prepared?
+        defer { preparedHostRefreshBundle?.removeOwnedCopy() }
         if let app = operation.app as? InstalledApp {
             context.installedApp = app
             context.appBundleFingerprint = app.appBundleFingerprint
             context.useMainProfile = app.useMainProfile
             context.customBundleIdentifier = app.customBundleIdentifier
             context.targetAppBundle = ALTApplication(fileURL: app.fileURL)
+            // V3_HOST_REFRESH_BUNDLE_PREPARATION_V1: no download occurs in a
+            // refresh pipeline. Recover missing self metadata from the exact
+            // installed host, without changing payload-cache or signing policy.
+            if case .refresh = operation, context.targetAppBundle == nil,
+               app.bundleIdentifier == StoreApp.altstoreAppID {
+                do {
+                    let prepared = try V3HostRefreshBundlePreparation.prepare(
+                        originalBundleID: app.bundleIdentifier,
+                        resignedBundleID: app.resignedBundleIdentifier,
+                        expectedOriginalBundleID: StoreApp.altstoreAppID,
+                        activeBundleID: Bundle.Info.activeBundleIdentifier,
+                        activeBundleURL: Bundle.Info.activeBundleURL,
+                        extensions: app.appExtensions.map {
+                            .init(original: $0.bundleIdentifier, resigned: $0.resignedBundleIdentifier)
+                        }, checkAdmission: {
+                            try Task.checkCancellation()
+                            try V3RemoteRequestLeases.admitted?.check()
+                        })
+                    preparedHostRefreshBundle = prepared
+                    context.targetAppBundle = prepared.appBundle
+                } catch {
+                    if error is CancellationError { throw error }
+                    throw lcStructuredSigningFailure(error, stage: "command", sourceStep: nil,
+                                                     facts: lcRefreshFailureFacts(error))
+                }
+            }
         }
         
         context.beginInstallationHandler = { (installedApp) in
@@ -443,3 +473,99 @@ enum V3RefreshEarlyFailureBoundary {
             sourceStep: step.rawValue, facts: lcRefreshFailureFacts(error, sourceStep: step.rawValue))
     }
 }
+
+// V3_HOST_REFRESH_BUNDLE_PREPARATION_BEGIN
+// The self-app's installable payload cache is optional. A profile-only refresh
+// still needs the exact running host's metadata, never a catalog replacement.
+// Use a request-owned canonical copy, not a global fileURL fallback: no signing
+// or staging operation may accidentally write into the installed application.
+enum V3HostRefreshBundlePreparation {
+    struct ExtensionIdentity {
+        let original: String
+        let resigned: String
+    }
+
+    struct Prepared {
+        let appBundle: ALTApplication
+        let ownedDirectory: URL
+
+        func removeOwnedCopy() {
+            try? FileManager.default.removeItem(at: ownedDirectory)
+        }
+    }
+
+    static func prepare(originalBundleID: String, resignedBundleID: String,
+                        expectedOriginalBundleID: String, activeBundleID: String,
+                        activeBundleURL: URL, extensions: [ExtensionIdentity],
+                        temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+                        checkAdmission: () throws -> Void) throws -> Prepared {
+        try checkAdmission()
+        guard !originalBundleID.isEmpty, originalBundleID == expectedOriginalBundleID,
+              !resignedBundleID.isEmpty, resignedBundleID == activeBundleID,
+              let source = ALTApplication(fileURL: activeBundleURL),
+              source.bundleIdentifier == resignedBundleID,
+              source.provisioningProfile != nil else {
+            throw OperationError.invalidApp(reason: "The running host does not match the self-refresh target.")
+        }
+        var originalByResigned: [String: String] = [:]
+        var originalIDs = Set<String>()
+        for identity in extensions {
+            guard identity.original.hasPrefix(originalBundleID + "."),
+                  identity.resigned.hasPrefix(resignedBundleID + "."),
+                  identity.original.dropFirst(originalBundleID.count) == identity.resigned.dropFirst(resignedBundleID.count),
+                  originalByResigned[identity.resigned] == nil,
+                  originalIDs.insert(identity.original).inserted else {
+                throw OperationError.invalidApp(reason: "The self-refresh extension identities are inconsistent.")
+            }
+            originalByResigned[identity.resigned] = identity.original
+        }
+        let sourceExtensionIDs = source.appExtensions.map { $0.bundleIdentifier }
+        guard Set(sourceExtensionIDs).count == sourceExtensionIDs.count,
+              Set(sourceExtensionIDs) == Set(originalByResigned.keys) else {
+            throw OperationError.invalidApp(reason: "The running host extensions do not match the self-refresh target.")
+        }
+        // Keep the preservation-mode verifier intact. Unsupported entries and
+        // unreadable files must fail before copy, not be omitted or followed.
+        guard let sourceFingerprint = AppBundleFingerprint.compute(for: activeBundleURL) else {
+            throw OperationError.invalidApp(reason: "The running host payload could not be verified for refresh.")
+        }
+        try checkAdmission()
+        let owner = temporaryDirectory.appendingPathComponent("v3-host-refresh-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: owner, withIntermediateDirectories: false)
+        var published = false
+        defer { if !published { try? FileManager.default.removeItem(at: owner) } }
+        let copyURL = owner.appendingPathComponent("App.app", isDirectory: true)
+        try FileManager.default.copyItem(at: activeBundleURL, to: copyURL)
+        try checkAdmission()
+        guard AppBundleFingerprint.compute(for: copyURL) == sourceFingerprint,
+              AppBundleFingerprint.compute(for: activeBundleURL) == sourceFingerprint,
+              let copy = ALTApplication(fileURL: copyURL),
+              copy.bundleIdentifier == resignedBundleID else {
+            throw OperationError.invalidApp(reason: "The running host changed or its refresh copy did not verify.")
+        }
+        // Match DatabaseManager's canonical-cache identifiers. Signed Mach-O
+        // entitlements, embedded profiles, all other files and the live host
+        // stay untouched. The effective/custom ID remains in the context.
+        try copy.updateInfoPlist(with: ["CFBundleIdentifier": originalBundleID])
+        for appExtension in copy.appExtensions {
+            guard let original = originalByResigned[appExtension.bundleIdentifier] else {
+                throw OperationError.invalidApp(reason: "The refresh copy contains an unexpected extension.")
+            }
+            try appExtension.updateInfoPlist(with: ["CFBundleIdentifier": original])
+        }
+        try checkAdmission()
+        guard AppBundleFingerprint.compute(for: activeBundleURL) == sourceFingerprint,
+              AppBundleFingerprint.compute(for: copyURL) != nil,
+              let prepared = ALTApplication(fileURL: copyURL),
+              prepared.bundleIdentifier == originalBundleID,
+              prepared.provisioningProfile != nil,
+              Set(prepared.appExtensions.map { $0.bundleIdentifier }) == originalIDs,
+              prepared.appExtensions.count == extensions.count else {
+            throw OperationError.invalidApp(reason: "The canonical self-refresh bundle could not be verified.")
+        }
+        try checkAdmission()
+        published = true
+        return Prepared(appBundle: prepared, ownedDirectory: owner)
+    }
+}
+// V3_HOST_REFRESH_BUNDLE_PREPARATION_END
