@@ -1,4 +1,9 @@
-"""Owned fake-bundle MODEL tests and Swift SOURCE invariants; not Swift execution."""
+"""Retained strict-cache historical MODEL plus current Swift SOURCE invariants.
+
+The historical publication model is not the experiment's cache behavior.
+Actual compatibility behavior is compiled in tests/cache_compatibility.
+Neither these Python models nor source assertions execute Swift.
+"""
 from pathlib import Path
 import hashlib
 import json
@@ -85,7 +90,7 @@ def publish(bundle, cache, inject=None):
             shutil.rmtree(stage)
 
 
-class CacheModelTests(unittest.TestCase):
+class RetainedStrictCacheModelTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="owned-cache-bundle-fixtures-")
         self.root = Path(self.temp.name)
@@ -186,11 +191,17 @@ class CacheModelTests(unittest.TestCase):
 class SwiftSourceContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.fingerprint_source = SOURCE_FILES["AppBundleFingerprint.swift"].read_text()
+        cls.complete_fingerprint_source = SOURCE_FILES["AppBundleFingerprint.swift"].read_text()
+        marker = "    // ORIGINAL_CACHE_COMPATIBILITY_BEGIN\n"
+        cls.fingerprint_source = cls.complete_fingerprint_source.split(marker, 1)[0].rstrip() + "\n}\n"
         cls.cache_source = SOURCE_FILES["CacheAppOperation.swift"].read_text()
         cls.publication = cls.cache_source.split("static func cachePayload", 1)[1].split("static func pruneUnusedCaches", 1)[0]
 
     def test_versioned_key_and_real_bytes(self):
+        # The complete delivered strict implementation, not merely tokens,
+        # stays unchanged for host self-refresh and maintenance content proofs.
+        self.assertEqual(hashlib.sha256(self.fingerprint_source.encode()).hexdigest(),
+                         "c73ec2bfa43d56be919dac7fb824c0dc62a46f1830569d2b42697b52cd64ff67")
         self.assertIn('contentVersionPrefix = "content-v1-"', self.fingerprint_source)
         self.assertIn("FileHandle(forReadingFrom: url)", self.fingerprint_source)
         self.assertIn("hasher.update(data: chunk)", self.fingerprint_source)
@@ -201,13 +212,15 @@ class SwiftSourceContractTests(unittest.TestCase):
         self.assertIn("guard values.isSymbolicLink != true", self.fingerprint_source)
         self.assertIn("throw FingerprintError.unsupportedEntry", self.fingerprint_source)
 
-    def test_no_published_payload_replacement_or_source_deletion(self):
-        self.assertNotIn("shouldReplace: true", self.publication)
+    def test_missing_payload_copy_no_overwrite_and_source_retention(self):
         self.assertNotIn("replaceItemAt", self.publication)
         self.assertNotIn("removeItem(at: bundleURL)", self.publication)
         self.assertNotIn("removeItem(at: targetFileURL)", self.publication)
-        self.assertIn("copyItem(at: bundleURL, to: staging)", self.publication)
-        self.assertIn("moveItem(at: staging, to: targetFileURL)", self.publication)
+        missing = self.publication.index("if !FileManager.default.fileExists(atPath: targetFileURL.path)")
+        copy = self.publication.index("copyItem(at: bundleURL, to: targetFileURL, shouldReplace: false)")
+        self.assertLess(missing, copy)
+        self.assertNotIn("staging", self.publication)
+        self.assertNotIn("moveItem", self.publication)
 
     def test_shared_payload_pruning_is_disabled(self):
         prune = self.cache_source.split("static func pruneUnusedCaches", 1)[1]
@@ -224,16 +237,26 @@ class SwiftSourceContractTests(unittest.TestCase):
         self.assertIn("return legacy", body)
         self.assertNotIn("removeItem", body)
 
-    def test_existing_target_stage_source_and_publication_verified(self):
-        self.assertGreaterEqual(self.publication.count("AppBundleFingerprint.compute(for: targetFileURL) == signature"), 3)
-        self.assertIn("AppBundleFingerprint.compute(for: staging) == signature", self.publication)
-        self.assertIn("AppBundleFingerprint.compute(for: bundleURL) == signature", self.publication)
+    def test_cache_compatibility_key_and_existing_hit_with_containment(self):
+        self.assertIn("AppBundleFingerprint.computeOriginalCacheKey(for: bundleURL)", self.publication)
+        self.assertNotIn("AppBundleFingerprint.compute(for:", self.publication)
+        containment = self.publication.index("guard targetFileURL.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(rootPath)")
+        missing = self.publication.index("if !FileManager.default.fileExists(atPath: targetFileURL.path)")
+        self.assertLess(containment, missing)
+        existing = self.publication.split("} else {", 1)[1].split("return (signature, targetFileURL)", 1)[0]
+        self.assertNotIn("copyItem", existing)
+        self.assertNotIn("removeItem", existing)
+        self.assertNotIn("compute", existing)
+        legacy = self.complete_fingerprint_source.split("public static func computeOriginalCacheKey", 1)[1]
+        self.assertIn("fileSizeKey", legacy)
+        self.assertIn(".skipsHiddenFiles", legacy)
+
 
 
 if __name__ == "__main__":
     result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromModule(__import__(__name__)))
     report = {
-        "scope": "Owned fake-bundle MODEL + Swift SOURCE contracts only",
+        "scope": "Retained strict-cache historical MODEL + current compatibility/strict-host Swift SOURCE contracts only",
         "not_validated": ["Swift compilation", "Darwin/Foundation concurrent publication", "actual iOS app install/refresh", "CoreData reference commits"],
         "tests_run": result.testsRun,
         "failures": len(result.failures),

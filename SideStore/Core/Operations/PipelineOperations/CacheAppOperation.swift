@@ -35,45 +35,24 @@ final class CacheAppOperation: BasePipelineOperation<InstallAppOperationContext,
 
     @discardableResult
     static func cachePayload(for bundleURL: URL) throws -> (signature: String, targetFileURL: URL) {
-        guard let signature = AppBundleFingerprint.compute(for: bundleURL) else {
-            throw OperationError.invalidApp(reason: "The app payload could not be verified without following unsupported filesystem entries. Existing caches were preserved.")
+        guard let signature = AppBundleFingerprint.computeOriginalCacheKey(for: bundleURL) else {
+            throw OperationError.invalidApp(reason: "Failed to compute app bundle fingerprint for '\(bundleURL.lastPathComponent)'")
         }
-        let fm = FileManager.default
+
         let targetFileURL = InstalledApp.payloadURL(forSignature: signature)
+        // Retain containment and no-overwrite copy boundaries while restoring
+        // upstream cache key/reuse behavior. Caches are not reset or pruned.
         let rootPath = InstalledApp.appsDirectoryURL.resolvingSymlinksInPath().standardizedFileURL.path + "/"
         guard targetFileURL.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(rootPath) else {
             throw OperationError.invalidApp(reason: "The cache destination is outside the app cache. Existing caches were preserved.")
         }
-        if fm.fileExists(atPath: targetFileURL.path) {
-            guard AppBundleFingerprint.compute(for: targetFileURL) == signature else {
-                throw OperationError.invalidApp(reason: "An existing shared payload conflicts with its content key. It was not replaced. Keep the cache for review.")
-            }
-            return (signature, targetFileURL)
+        if !FileManager.default.fileExists(atPath: targetFileURL.path) {
+            let parentDir = targetFileURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true, attributes: nil)
+            try FileManager.default.copyItem(at: bundleURL, to: targetFileURL, shouldReplace: false)
+        } else {
         }
 
-        let parentDir = targetFileURL.deletingLastPathComponent()
-        try fm.createDirectory(at: parentDir, withIntermediateDirectories: true, attributes: nil)
-        let staging = parentDir.appendingPathComponent(".preservation-" + UUID().uuidString)
-        defer { try? fm.removeItem(at: staging) } // Only our unpublished scratch copy.
-        try fm.copyItem(at: bundleURL, to: staging)
-        guard AppBundleFingerprint.compute(for: staging) == signature,
-              AppBundleFingerprint.compute(for: bundleURL) == signature else {
-            throw OperationError.invalidApp(reason: "The app payload changed or could not be copied completely. Original files and existing caches were preserved.")
-        }
-        // Never use shouldReplace here. A concurrent publication must either
-        // verify identically or fail without replacing either writer's payload.
-        // Needs proper iOS concurrent-publication fault testing before release.
-        do {
-            try fm.moveItem(at: staging, to: targetFileURL)
-        } catch {
-            guard fm.fileExists(atPath: targetFileURL.path),
-                  AppBundleFingerprint.compute(for: targetFileURL) == signature else {
-                throw error
-            }
-        }
-        guard AppBundleFingerprint.compute(for: targetFileURL) == signature else {
-            throw OperationError.invalidApp(reason: "The published cache did not verify. Original files were retained; the cache was not replaced.")
-        }
         return (signature, targetFileURL)
     }
 
