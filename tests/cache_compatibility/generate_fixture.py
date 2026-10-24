@@ -27,6 +27,28 @@ ORIGINAL_PINS = {
 CACHE_START = "    @discardableResult\n    static func cachePayload("
 GUARD = '''        // Retain containment and no-overwrite copy boundaries while restoring
         // upstream cache key/reuse behavior. Caches are not reset or pruned.
+        // Resolving a nonexistent App.app may leave an existing symlink ancestor
+        // unresolved. Inspect only the three cache components below Apps, in
+        // order, without following their final entry (including dangling links).
+        let cachePathComponents = [
+            targetFileURL.deletingLastPathComponent().deletingLastPathComponent(),
+            targetFileURL.deletingLastPathComponent(),
+            targetFileURL
+        ]
+        for componentURL in cachePathComponents {
+            var fileStatus = stat()
+            let status = componentURL.path.withCString { lstat($0, &fileStatus) }
+            if status == 0 {
+                guard (fileStatus.st_mode & mode_t(S_IFMT)) != mode_t(S_IFLNK) else {
+                    throw OperationError.invalidApp(reason: "The cache destination contains a symbolic link. Existing caches were preserved.")
+                }
+            } else {
+                let errorCode = errno
+                guard errorCode == ENOENT else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errorCode), userInfo: nil)
+                }
+            }
+        }
         let rootPath = InstalledApp.appsDirectoryURL.resolvingSymlinksInPath().standardizedFileURL.path + "/"
         guard targetFileURL.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(rootPath) else {
             throw OperationError.invalidApp(reason: "The cache destination is outside the app cache. Existing caches were preserved.")
@@ -76,7 +98,8 @@ def main():
     expected_cache = expected_cache.replace("to: targetFileURL, shouldReplace: true)", "to: targetFileURL, shouldReplace: false)")
     assert compatibility_cache.replace(GUARD, "") == expected_cache, "Non-approved cache-flow deviation"
     # Pin everything outside cachePayload, especially execute and disabled payload pruning.
-    untouched_cache = source["cache"].replace(compatibility_cache, "<CACHE_PAYLOAD>")
+    assert source["cache"].count("import Foundation\nimport Darwin\n") == 1, "Production Darwin import missing"
+    untouched_cache = source["cache"].replace("import Foundation\nimport Darwin\n", "import Foundation\n", 1).replace(compatibility_cache, "<CACHE_PAYLOAD>")
     assert digest(untouched_cache.encode()) == "ce90052574e4198c71cae64ee0d93ac76adcf3e3cab561eed3960d8cb21a1f53", "Execute/pruning changed"
     assert "AppBundleFingerprint.computeOriginalCacheKey" not in source["host"]
     assert source["host"].count("AppBundleFingerprint.compute(for:") == 5
@@ -109,7 +132,7 @@ class InstalledApp {
         (HERE / "Cases.swift").read_text(),
     ]) + "\n"
     cases = re.findall(r'^    \("([a-z0-9_]+)", \{', (HERE / "Cases.swift").read_text(), re.M)
-    assert len(cases) == 22 and len(set(cases)) == len(cases), cases
+    assert len(cases) == 25 and len(set(cases)) == len(cases), cases
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "cache-compatibility.swift").write_text(generated)
     receipt = {
@@ -125,6 +148,7 @@ class InstalledApp {
         "execute_and_pruning_byte_identical": True, "original_cache_key_byte_identical_except_symbol": True,
         "original_cache_flow_except_retained_safety_boundaries_symbol_and_logs": True,
         "copy_helper_overwrite_disabled": True,
+        "cache_components_lstat_no_follow": True, "production_darwin_import_present": True,
         "limitations": ["Synthetic real-Foundation macOS fixture, not an iOS/device result.",
                        "Legacy cache reuse intentionally does not establish payload content integrity.",
                        "No concurrency, permission-restriction, storage-exhaustion or real IPA install success claimed."],

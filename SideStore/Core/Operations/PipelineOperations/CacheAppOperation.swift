@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Darwin
 
 final class CacheAppOperation: BasePipelineOperation<InstallAppOperationContext, URL?>, @unchecked Sendable {
 
@@ -42,6 +43,28 @@ final class CacheAppOperation: BasePipelineOperation<InstallAppOperationContext,
         let targetFileURL = InstalledApp.payloadURL(forSignature: signature)
         // Retain containment and no-overwrite copy boundaries while restoring
         // upstream cache key/reuse behavior. Caches are not reset or pruned.
+        // Resolving a nonexistent App.app may leave an existing symlink ancestor
+        // unresolved. Inspect only the three cache components below Apps, in
+        // order, without following their final entry (including dangling links).
+        let cachePathComponents = [
+            targetFileURL.deletingLastPathComponent().deletingLastPathComponent(),
+            targetFileURL.deletingLastPathComponent(),
+            targetFileURL
+        ]
+        for componentURL in cachePathComponents {
+            var fileStatus = stat()
+            let status = componentURL.path.withCString { lstat($0, &fileStatus) }
+            if status == 0 {
+                guard (fileStatus.st_mode & mode_t(S_IFMT)) != mode_t(S_IFLNK) else {
+                    throw OperationError.invalidApp(reason: "The cache destination contains a symbolic link. Existing caches were preserved.")
+                }
+            } else {
+                let errorCode = errno
+                guard errorCode == ENOENT else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errorCode), userInfo: nil)
+                }
+            }
+        }
         let rootPath = InstalledApp.appsDirectoryURL.resolvingSymlinksInPath().standardizedFileURL.path + "/"
         guard targetFileURL.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(rootPath) else {
             throw OperationError.invalidApp(reason: "The cache destination is outside the app cache. Existing caches were preserved.")

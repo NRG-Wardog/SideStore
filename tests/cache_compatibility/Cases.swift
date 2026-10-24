@@ -39,6 +39,14 @@ func cached(_ app: URL, _ root: URL, original: Bool) throws -> (signature: Strin
 func cacheThrows(_ app: URL, _ root: URL, original: Bool) -> Bool {
     do { _ = try cached(app, root, original: original); return false } catch { return true }
 }
+func requireCacheLinkRejection(_ app: URL, _ apps: URL) throws {
+    do {
+        _ = try cached(app, apps, original: false)
+        throw FixtureFailure.assertion("Symbolic cache component accepted")
+    } catch let error as OperationError {
+        try require(error == .invalidApp(reason: "The cache destination contains a symbolic link. Existing caches were preserved."), "Cache link rejection changed")
+    }
+}
 func ignoredChange(_ root: URL, path: String) throws {
     let app = try bundle(root)
     let before = try legacy(app)
@@ -214,13 +222,49 @@ let cases: [(String, (URL) throws -> Void)] = [
             _ = try cached(app, apps, original: false)
             throw FixtureFailure.assertion("Escaping cache path accepted")
         } catch let error as OperationError {
-            try require(error == .invalidApp(reason: "The cache destination is outside the app cache. Existing caches were preserved."), "Containment rejection changed")
+            try require(error == .invalidApp(reason: "The cache destination contains a symbolic link. Existing caches were preserved."), "Containment rejection changed")
         }
         try require(try fm.contentsOfDirectory(atPath: outside.path).isEmpty, "Containment check wrote outside Apps")
         // The retained guard is an intentional difference from original, scoped
         // entirely to this owned synthetic tree, not a system path.
         let original = try cached(app, apps, original: true)
         try require(filesystemPath(original.targetFileURL).hasPrefix(filesystemPath(outside) + "/"), "Escape fixture not exercised")
+    }),
+    ("destination_signature_symlink_rejected", { root in
+        let app = try bundle(root)
+        let apps = root.appendingPathComponent("Apps")
+        let payloads = apps.appendingPathComponent("Payloads")
+        let outside = root.appendingPathComponent("OutsideApps")
+        try fm.createDirectory(at: payloads, withIntermediateDirectories: true)
+        try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+        let key = try legacy(app)
+        try fm.createSymbolicLink(at: payloads.appendingPathComponent(key), withDestinationURL: outside)
+        try requireCacheLinkRejection(app, apps)
+        try require(try fm.contentsOfDirectory(atPath: outside.path).isEmpty, "Signature ancestor wrote outside Apps")
+    }),
+    ("destination_dangling_symlink_rejected", { root in
+        let app = try bundle(root)
+        let apps = root.appendingPathComponent("Apps")
+        let missing = root.appendingPathComponent("MissingOutsideApps")
+        try fm.createDirectory(at: apps, withIntermediateDirectories: true)
+        let link = apps.appendingPathComponent("Payloads")
+        try fm.createSymbolicLink(at: link, withDestinationURL: missing)
+        try requireCacheLinkRejection(app, apps)
+        try require(!fm.fileExists(atPath: missing.path), "Dangling cache link target was created")
+        try require(try fm.destinationOfSymbolicLink(atPath: link.path) == missing.path, "Dangling cache link changed")
+    }),
+    ("destination_existing_symlink_rejected", { root in
+        let app = try bundle(root)
+        let apps = root.appendingPathComponent("Apps")
+        let outside = root.appendingPathComponent("OutsideApps")
+        try write("KEEP", outside.appendingPathComponent("Sentinel"))
+        let before = AppBundleFingerprint.compute(for: outside)
+        InstalledApp.appsDirectoryURL = apps
+        let target = InstalledApp.payloadURL(forSignature: try legacy(app))
+        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: target, withDestinationURL: outside)
+        try requireCacheLinkRejection(app, apps)
+        try require(before != nil && AppBundleFingerprint.compute(for: outside) == before, "Existing target link payload changed")
     }),
     ("copy_helper_refuses_existing_destination", { root in
         let app = try bundle(root)

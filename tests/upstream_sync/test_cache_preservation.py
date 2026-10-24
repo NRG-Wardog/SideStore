@@ -238,12 +238,29 @@ class SwiftSourceContractTests(unittest.TestCase):
         self.assertNotIn("removeItem", body)
 
     def test_cache_compatibility_key_and_existing_hit_with_containment(self):
+        self.assertIn("import Darwin\n", self.cache_source)
         self.assertIn("AppBundleFingerprint.computeOriginalCacheKey(for: bundleURL)", self.publication)
         self.assertNotIn("AppBundleFingerprint.compute(for:", self.publication)
+        components = """let cachePathComponents = [
+            targetFileURL.deletingLastPathComponent().deletingLastPathComponent(),
+            targetFileURL.deletingLastPathComponent(),
+            targetFileURL
+        ]"""
+        self.assertIn(components, self.publication)
+        inspect = self.publication.index("for componentURL in cachePathComponents")
+        no_follow = self.publication.index("componentURL.path.withCString { lstat($0, &fileStatus) }")
+        reject_link = self.publication.index("guard (fileStatus.st_mode & mode_t(S_IFMT)) != mode_t(S_IFLNK)")
+        missing_only = self.publication.index("guard errorCode == ENOENT else")
+        self.assertIn("throw NSError(domain: NSPOSIXErrorDomain, code: Int(errorCode), userInfo: nil)", self.publication)
         containment = self.publication.index("guard targetFileURL.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(rootPath)")
         missing = self.publication.index("if !FileManager.default.fileExists(atPath: targetFileURL.path)")
+        self.assertLess(inspect, no_follow)
+        self.assertLess(no_follow, reject_link)
+        self.assertLess(reject_link, missing_only)
+        self.assertLess(missing_only, containment)
         self.assertLess(containment, missing)
-        existing = self.publication.split("} else {", 1)[1].split("return (signature, targetFileURL)", 1)[0]
+        # Scope the cache-hit branch, not the preceding lstat error branch.
+        existing = self.publication[missing:].split("} else {", 1)[1].split("return (signature, targetFileURL)", 1)[0]
         self.assertNotIn("copyItem", existing)
         self.assertNotIn("removeItem", existing)
         self.assertNotIn("compute", existing)
