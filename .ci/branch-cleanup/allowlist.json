@@ -1,0 +1,977 @@
+{
+  "repository_full_name": "NRG-Wardog/SideStore",
+  "actual_default_branch": "LiveContainerSupport",
+  "audited_default_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+  "execution_revision": 2,
+  "execution_revision_reason": "Corrected the GET-only API route validator to permit exact SHA comparisons while rejecting traversal. Prior SAR verification failed before apply; no deletion occurred.",
+  "reviewed_inventory_sha256": "450891d9f2649e5244368f536489fc66df5d56316bed930bcfdb275e80da57b7",
+  "ancestry_report_sha256": "eafeec489d94886e3ac8a9c02809e9a77611ba831594950334683deaa9fd9eab",
+  "ancestry_run_id": 40138459790,
+  "ancestry_workflow_sha": "aa6223a0e922d8e8455400549bb6947f7deffb79",
+  "source_review_complete": true,
+  "source_review_scope": "Targeted review of current repository-owned workflow acquisitions, .gitmodules, package/build manifests and dependency-rewriting scripts for the exact proposed branch names. This is not an exhaustive application-source or dynamic-ref certification. Fresh runtime exclusions remain required.",
+  "source_review_evidence": {
+    "functional_review_sha256": "0f8b918a3ad6c21d0d929e781f91d1f0db5772469634821f2bd31f0f6a876b67",
+    "reviewed_public_sources": [
+      {
+        "url": "https://github.com/NRG-Wardog/LiveContainer/blob/8f0ad98068ab75298be40b404f1d1a25d8ecbbbf/.gitmodules",
+        "sha256": "2990fa4dabfb0182aa69679ffab5e6444a45476070894efb20928ebb473c1d0a"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/SideStore/blob/c2beadd2c94df6854f83cb53d5b59c3540ec9783/.gitmodules",
+        "sha256": "eeb38935b866879950a482324b4fe03b7791df636cd6da89b5d6c112b7f0ecf5"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/SideSign/blob/483c626d6e5004b45298518352307eb492fe1ccd/Package.swift",
+        "sha256": "dcd3b5c041712503180bda8e2d94bc873b9a38d4ca03e441118a9806070a3c17"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/idevice/blob/774f02a6d29777c85400f4ba7fa69c12b4227fb3/Cargo.toml",
+        "sha256": "c390ce8ae9f2cee08b07d7bf726e928cf6fbcf2fbb9d9d02d9e9c266adcb41bf"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/jktcp/blob/a46594f6af56b66b6d9342ed9f5ee6d1b7fb9cc9/Cargo.toml",
+        "sha256": "e20113e6b83e9621f103916a2e39766801cc7f01947ad53192d3a1a9332bdbd8"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/minimuxer/blob/4ca3af5270de8aa48e8bc100eadf1b3550260ea2/Package.swift",
+        "sha256": "b4849af42725b7176206a3d76b2a9bd60dc6399217deb811963c41e316951aa5"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/AnisetteKit/blob/3e670c2e1b72ff328d3a64353d8de2418df87e73/Package.swift",
+        "sha256": "a8ea2defa17b0f943ef824578146381bda02665a24a61fe00dd28254cf5b4b85"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/idevice/blob/774f02a6d29777c85400f4ba7fa69c12b4227fb3/idevice/Cargo.toml",
+        "sha256": "68417b615ed59fe9b6e22d2c43ee64cc085a19368c668477972e89d3caa1d427"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/idevice/blob/774f02a6d29777c85400f4ba7fa69c12b4227fb3/.gitmodules",
+        "sha256": "af90802a99b765d0ce69bdcaa9fec8b24f7d51989e4ebf92d383db17dd44166b"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/SideStore/blob/c2beadd2c94df6854f83cb53d5b59c3540ec9783/Makefile",
+        "sha256": "39c5ca7ccca829bcf98da32230b14088c702261fdf9352cd6c234c27489c1b5d"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/LiveContainer/blob/8f0ad98068ab75298be40b404f1d1a25d8ecbbbf/.github/build_github.sh",
+        "sha256": "532d833b2c16eb920e29b5ad3d93d65e01c99b5d4ca1d75ffce010de47d48b87"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/minimuxer/blob/4ca3af5270de8aa48e8bc100eadf1b3550260ea2/DeviceGateway/Package.swift",
+        "sha256": "ecb4a9cbd63f68b1b4dd321c300c28148e996c91b149857d558f2d2a02b0e0ed"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/minimuxer/blob/4ca3af5270de8aa48e8bc100eadf1b3550260ea2/Common/Package.swift",
+        "sha256": "09667199d39647e9dbbb787bae442a1c8e8132636f91a26400abdb4acf2ce575"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/SideStore/blob/c2beadd2c94df6854f83cb53d5b59c3540ec9783/AltStore.xcodeproj/project.pbxproj",
+        "sha256": "0690f418830c32b4475f447972c209744f49a44d17fc41251ec33d422375e9c5"
+      },
+      {
+        "url": "https://github.com/NRG-Wardog/SideStore/blob/c2beadd2c94df6854f83cb53d5b59c3540ec9783/AltStore.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
+        "sha256": "e97604f913903659539663f09176a20ee9ca5fe06188a41ff38f54257d076d08"
+      }
+    ],
+    "sar_commit": "aa6223a0e922d8e8455400549bb6947f7deffb79",
+    "sar_current_files": {
+      "build-current.yml": "a703477bc210c30f87011ff6035af6ca80f65927bc20356ab6c74dc676956ad4",
+      "livecontainer-build.yml": "29b31aee8478c1d209b2be0565045b6b1a33681e9ce4d5e4416ffecc99c54d9a",
+      "livecontainer-source-audit.yml": "f44c25cd2f1a09be0448b39323b92da719c41d631a14a55cf95a8469a3bbac6e",
+      "release-dispatch.yml": "6546d7bbba040b1fb2fd8860ba285f645515adac2bdc278e35b1eabda77d45a3",
+      "patch_local_idevice_package.py": "2162242554c544b426bf0d8451830f2873dc69f5577121e2023794525f53f3f9",
+      "patch_coredevice_idevice.py": "f5fb70f227f1a1b094051ea61cddcd05a1f63ae97ebd1ae6f755e2c9815a7b07",
+      "patch_jktcp_reliability.py": "795547f9e817193d9c2a395710a3bcea69b269ae026d5ddc516eecc1a396cef4"
+    },
+    "SideSign_gitmodules": "Absent (404) at 483c626d6e5004b45298518352307eb492fe1ccd.",
+    "remaining_named_ref_findings": "No additional candidate branch references found. The external SideStore/jktcp master literal is outside cleanup scope and replaced by a local path."
+  },
+  "required_runtime_checks": [
+    "actual_default",
+    "branch_heads",
+    "retained_ancestry",
+    "protected_branches",
+    "open_pull_requests",
+    "active_workflow_runs",
+    "release_targets"
+  ],
+  "preserved_branch_names": [
+    "LiveContainerSupport",
+    "backport-sidesign-gsa-5xx",
+    "validation/pr1835-quick"
+  ],
+  "dependency_snapshots": [
+    {
+      "repository_full_name": "NRG-Wardog/sidestore-auto-refresh",
+      "ref": "refs/heads/main",
+      "expected_sha": "aa6223a0e922d8e8455400549bb6947f7deffb79",
+      "kind": "actual_default"
+    },
+    {
+      "repository_full_name": "NRG-Wardog/LiveContainer",
+      "ref": "refs/heads/main",
+      "expected_sha": "8f0ad98068ab75298be40b404f1d1a25d8ecbbbf",
+      "kind": "actual_default"
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "ref": "refs/heads/LiveContainerSupport",
+      "expected_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "kind": "actual_default"
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideSign",
+      "ref": "refs/heads/main",
+      "expected_sha": "483c626d6e5004b45298518352307eb492fe1ccd",
+      "kind": "actual_default"
+    },
+    {
+      "repository_full_name": "NRG-Wardog/AnisetteKit",
+      "ref": "refs/heads/main",
+      "expected_sha": "3e670c2e1b72ff328d3a64353d8de2418df87e73",
+      "kind": "actual_default"
+    },
+    {
+      "repository_full_name": "NRG-Wardog/minimuxer",
+      "ref": "refs/heads/develop",
+      "expected_sha": "4ca3af5270de8aa48e8bc100eadf1b3550260ea2",
+      "kind": "actual_default"
+    },
+    {
+      "repository_full_name": "NRG-Wardog/idevice",
+      "ref": "refs/heads/master",
+      "expected_sha": "774f02a6d29777c85400f4ba7fa69c12b4227fb3",
+      "kind": "actual_default"
+    },
+    {
+      "repository_full_name": "NRG-Wardog/jktcp",
+      "ref": "refs/heads/master",
+      "expected_sha": "a46594f6af56b66b6d9342ed9f5ee6d1b7fb9cc9",
+      "kind": "actual_default"
+    }
+  ],
+  "pr_repositories": [
+    "LiveContainer/LiveContainer",
+    "LiveContainer/SideStore",
+    "NRG-Wardog/AnisetteKit",
+    "NRG-Wardog/LiveContainer",
+    "NRG-Wardog/SideSign",
+    "NRG-Wardog/SideStore",
+    "NRG-Wardog/idevice",
+    "NRG-Wardog/jktcp",
+    "NRG-Wardog/minimuxer",
+    "NRG-Wardog/sidestore-auto-refresh",
+    "SideStore/SideSign",
+    "SideStore/idevice",
+    "SideStore/jktcp",
+    "SideStore/minimuxer",
+    "altstoreio/AltStore",
+    "jkcoxson/idevice",
+    "jkcoxson/jktcp",
+    "jkcoxson/minimuxer",
+    "mahee96/AnisetteKit"
+  ],
+  "candidates": [
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "debug/adi-consumption-decoder",
+      "expected_branch_sha": "1ebc69390f5b570f95cd823ac8df97c3a2f082f9",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "1ebc69390f5b570f95cd823ac8df97c3a2f082f9",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 238,
+        "behind_by": 0,
+        "merge_base_sha": "1ebc69390f5b570f95cd823ac8df97c3a2f082f9"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "debug/adi-staging-order",
+      "expected_branch_sha": "4625e29929aa52fe33327c07076bfae0358a7bf0",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "4625e29929aa52fe33327c07076bfae0358a7bf0",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 235,
+        "behind_by": 0,
+        "merge_base_sha": "4625e29929aa52fe33327c07076bfae0358a7bf0"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "fix/p0-constructor-diagnostics",
+      "expected_branch_sha": "aebf23d8129f831c1c706619a71c936ab73fb6e5",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "aebf23d8129f831c1c706619a71c936ab73fb6e5",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 230,
+        "behind_by": 0,
+        "merge_base_sha": "aebf23d8129f831c1c706619a71c936ab73fb6e5"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "fix/p0-cxx-allocation-runtime",
+      "expected_branch_sha": "59fa3b5cd8c9ea4a88716cbaaa08bacd9f22e218",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "59fa3b5cd8c9ea4a88716cbaaa08bacd9f22e218",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 226,
+        "behind_by": 0,
+        "merge_base_sha": "59fa3b5cd8c9ea4a88716cbaaa08bacd9f22e218"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "fix/p0-elf-metadata-bounds",
+      "expected_branch_sha": "6e9f367d441dd48c3519f3b39d93acdeffd43c1e",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "6e9f367d441dd48c3519f3b39d93acdeffd43c1e",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 228,
+        "behind_by": 0,
+        "merge_base_sha": "6e9f367d441dd48c3519f3b39d93acdeffd43c1e"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "fix/v3.1.0-p0",
+      "expected_branch_sha": "0e6a626ae97401fb671ee12ae88e4f364fc2a31c",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "0e6a626ae97401fb671ee12ae88e4f364fc2a31c",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 233,
+        "behind_by": 0,
+        "merge_base_sha": "0e6a626ae97401fb671ee12ae88e4f364fc2a31c"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "migration/production-dependencies-141776ba",
+      "expected_branch_sha": "dd4f0ca36e8ef1d858548f583c65842a8fc0ced3",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "dd4f0ca36e8ef1d858548f583c65842a8fc0ced3",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 241,
+        "behind_by": 0,
+        "merge_base_sha": "dd4f0ca36e8ef1d858548f583c65842a8fc0ced3"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "migration/runtime-source-141776ba",
+      "expected_branch_sha": "9d8c71ed69684f805325ef440983e74d97113a71",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "9d8c71ed69684f805325ef440983e74d97113a71",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 248,
+        "behind_by": 0,
+        "merge_base_sha": "9d8c71ed69684f805325ef440983e74d97113a71"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/acquisition-diagnostics-20261021",
+      "expected_branch_sha": "5a10a8e725c62b77fe1faf5df80d34db970f006f",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "5a10a8e725c62b77fe1faf5df80d34db970f006f",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 217,
+        "behind_by": 0,
+        "merge_base_sha": "5a10a8e725c62b77fe1faf5df80d34db970f006f"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/android-client-profile-20261021",
+      "expected_branch_sha": "2b734237b6fff38f44090579efff605d31f0fcb2",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "2b734237b6fff38f44090579efff605d31f0fcb2",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 218,
+        "behind_by": 0,
+        "merge_base_sha": "2b734237b6fff38f44090579efff605d31f0fcb2"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/auth-response-diagnostics-20261021",
+      "expected_branch_sha": "7c9bb425633cc4a4d8f5afd8467212a42b12f818",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "7c9bb425633cc4a4d8f5afd8467212a42b12f818",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 214,
+        "behind_by": 0,
+        "merge_base_sha": "7c9bb425633cc4a4d8f5afd8467212a42b12f818"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/cache-compatibility-20261024",
+      "expected_branch_sha": "bd345b75b33bc96d0859c665fb56354404919da5",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "bd345b75b33bc96d0859c665fb56354404919da5",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 7,
+        "behind_by": 0,
+        "merge_base_sha": "bd345b75b33bc96d0859c665fb56354404919da5"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/cold-vpn-activation-20261024",
+      "expected_branch_sha": "73136ff9e20db617ef70d788699b49173fa6f0b9",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "73136ff9e20db617ef70d788699b49173fa6f0b9",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 6,
+        "behind_by": 0,
+        "merge_base_sha": "73136ff9e20db617ef70d788699b49173fa6f0b9"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/comprehensive-diagnostics-20261021",
+      "expected_branch_sha": "98eabac83d4c9156199cb2b454b0fe20d55a1b11",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "98eabac83d4c9156199cb2b454b0fe20d55a1b11",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 27,
+        "behind_by": 0,
+        "merge_base_sha": "98eabac83d4c9156199cb2b454b0fe20d55a1b11"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/host-bundle-repair-20261023",
+      "expected_branch_sha": "7ff41a436cb6d1ee6465110b34b5a1cfded7952d",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "7ff41a436cb6d1ee6465110b34b5a1cfded7952d",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 11,
+        "behind_by": 0,
+        "merge_base_sha": "7ff41a436cb6d1ee6465110b34b5a1cfded7952d"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/iloader-onboarding-20261022",
+      "expected_branch_sha": "08c59413acec566352a68f2d1864a4e3f57dd2c3",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "08c59413acec566352a68f2d1864a4e3f57dd2c3",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 24,
+        "behind_by": 0,
+        "merge_base_sha": "08c59413acec566352a68f2d1864a4e3f57dd2c3"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/iloader-remote-auth-20261022",
+      "expected_branch_sha": "40220d67736f7966eb4526e548909c5aac5910e9",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "40220d67736f7966eb4526e548909c5aac5910e9",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 25,
+        "behind_by": 0,
+        "merge_base_sha": "40220d67736f7966eb4526e548909c5aac5910e9"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/p0-defensive-diagnostic-integrity-20261019",
+      "expected_branch_sha": "9d90c9db20a5b07bd4a34254efb596fbc7c04616",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "9d90c9db20a5b07bd4a34254efb596fbc7c04616",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 222,
+        "behind_by": 0,
+        "merge_base_sha": "9d90c9db20a5b07bd4a34254efb596fbc7c04616"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/p0-fault-consumer-20261019",
+      "expected_branch_sha": "6a784903900c393eac26ec7ca43395e10a63a7a3",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "6a784903900c393eac26ec7ca43395e10a63a7a3",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 221,
+        "behind_by": 0,
+        "merge_base_sha": "6a784903900c393eac26ec7ca43395e10a63a7a3"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/p0-fault-observed-resolver-20261019",
+      "expected_branch_sha": "24a07daf072b8b4cc8101a1275d368fd0968f10b",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "24a07daf072b8b4cc8101a1275d368fd0968f10b",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 220,
+        "behind_by": 0,
+        "merge_base_sha": "24a07daf072b8b4cc8101a1275d368fd0968f10b"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/p0-login-trace-20261018",
+      "expected_branch_sha": "85bf45f65a9c2835c18d2c8e2e9c618177c95b54",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "85bf45f65a9c2835c18d2c8e2e9c618177c95b54",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 225,
+        "behind_by": 0,
+        "merge_base_sha": "85bf45f65a9c2835c18d2c8e2e9c618177c95b54"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/p0-login-trace-app-lock-20261019",
+      "expected_branch_sha": "d507f9e417f12c262b4d7e717c84d4a244c8e625",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "d507f9e417f12c262b4d7e717c84d4a244c8e625",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 223,
+        "behind_by": 0,
+        "merge_base_sha": "d507f9e417f12c262b4d7e717c84d4a244c8e625"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/p0-login-trace-resolved-20261019",
+      "expected_branch_sha": "dc29ce0d79a299f32a340c460e1d61e8190e320c",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "dc29ce0d79a299f32a340c460e1d61e8190e320c",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 224,
+        "behind_by": 0,
+        "merge_base_sha": "dc29ce0d79a299f32a340c460e1d61e8190e320c"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/pairing-finalization-recovery-20261022",
+      "expected_branch_sha": "606707ee6789b8db1dcbddf9ebe52205338f373d",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "606707ee6789b8db1dcbddf9ebe52205338f373d",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 20,
+        "behind_by": 0,
+        "merge_base_sha": "606707ee6789b8db1dcbddf9ebe52205338f373d"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/pairing-setup-deferred-20261022",
+      "expected_branch_sha": "6c8ae29c0a9448a83ca710ea484d91d6b2d143cd",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "6c8ae29c0a9448a83ca710ea484d91d6b2d143cd",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 21,
+        "behind_by": 0,
+        "merge_base_sha": "6c8ae29c0a9448a83ca710ea484d91d6b2d143cd"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/refresh-failure-preservation-20261022",
+      "expected_branch_sha": "638fa62ce2a540efe6c92dd20c282c32ddc0b2e6",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "638fa62ce2a540efe6c92dd20c282c32ddc0b2e6",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 19,
+        "behind_by": 0,
+        "merge_base_sha": "638fa62ce2a540efe6c92dd20c282c32ddc0b2e6"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/registration-diagnostics-20261022",
+      "expected_branch_sha": "9071aa585fb39001c4f0e7357b3b33529cbcea2a",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "9071aa585fb39001c4f0e7357b3b33529cbcea2a",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 22,
+        "behind_by": 0,
+        "merge_base_sha": "9071aa585fb39001c4f0e7357b3b33529cbcea2a"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/setup-state-recovery1-20261022",
+      "expected_branch_sha": "87c121c4487f1a8215f0171b8322e4dcef7f3f4e",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "87c121c4487f1a8215f0171b8322e4dcef7f3f4e",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 17,
+        "behind_by": 0,
+        "merge_base_sha": "87c121c4487f1a8215f0171b8322e4dcef7f3f4e"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/setup-state-recovery2-20261022",
+      "expected_branch_sha": "5ade239d19ad7e2c6969ec33e43b5b063b1b032e",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "5ade239d19ad7e2c6969ec33e43b5b063b1b032e",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 16,
+        "behind_by": 0,
+        "merge_base_sha": "5ade239d19ad7e2c6969ec33e43b5b063b1b032e"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/setup-state-recovery3-20261022",
+      "expected_branch_sha": "95345e487d9374b4eeffaef2bf2087e1c60aee73",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "95345e487d9374b4eeffaef2bf2087e1c60aee73",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 15,
+        "behind_by": 0,
+        "merge_base_sha": "95345e487d9374b4eeffaef2bf2087e1c60aee73"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/setup-state-recovery4-20261022",
+      "expected_branch_sha": "952d8bbb5ece3195054c09ad0705cd2a29e3c93c",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "952d8bbb5ece3195054c09ad0705cd2a29e3c93c",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 14,
+        "behind_by": 0,
+        "merge_base_sha": "952d8bbb5ece3195054c09ad0705cd2a29e3c93c"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/setup-state-recovery7-20261022",
+      "expected_branch_sha": "41be1eee21d909da9fffbb8c36aefee466ceb94a",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "41be1eee21d909da9fffbb8c36aefee466ceb94a",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 13,
+        "behind_by": 0,
+        "merge_base_sha": "41be1eee21d909da9fffbb8c36aefee466ceb94a"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/setup-state-recovery-20261022",
+      "expected_branch_sha": "02fc8d8d43863fa8c5375194a50e187e762479c8",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "02fc8d8d43863fa8c5375194a50e187e762479c8",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 18,
+        "behind_by": 0,
+        "merge_base_sha": "02fc8d8d43863fa8c5375194a50e187e762479c8"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/signin-entry-ui-20261021",
+      "expected_branch_sha": "4d53289bce3968a6b406e43b8faa65fa30a79ab1",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "4d53289bce3968a6b406e43b8faa65fa30a79ab1",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 213,
+        "behind_by": 0,
+        "merge_base_sha": "4d53289bce3968a6b406e43b8faa65fa30a79ab1"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/status-profile-diagnostics-20261023",
+      "expected_branch_sha": "bbe33f395e8971811d6f6b0d6fb3c45c1d3217a7",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "bbe33f395e8971811d6f6b0d6fb3c45c1d3217a7",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 12,
+        "behind_by": 0,
+        "merge_base_sha": "bbe33f395e8971811d6f6b0d6fb3c45c1d3217a7"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/upstream-first-6.0",
+      "expected_branch_sha": "28dd1f873cad2e12e1c07cacb80ac9685560e02c",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "28dd1f873cad2e12e1c07cacb80ac9685560e02c",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 28,
+        "behind_by": 0,
+        "merge_base_sha": "28dd1f873cad2e12e1c07cacb80ac9685560e02c"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/upstream-sync-20261021",
+      "expected_branch_sha": "545ba0b359afd9a0c7a7a1750d9d5148d42d4438",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "545ba0b359afd9a0c7a7a1750d9d5148d42d4438",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 30,
+        "behind_by": 0,
+        "merge_base_sha": "545ba0b359afd9a0c7a7a1750d9d5148d42d4438"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/verified-apple-libraries-20261021",
+      "expected_branch_sha": "0208234c01113e43ddfa92ccae14a697cc607628",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "0208234c01113e43ddfa92ccae14a697cc607628",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 215,
+        "behind_by": 0,
+        "merge_base_sha": "0208234c01113e43ddfa92ccae14a697cc607628"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/vpn-interface-recovery-20261024",
+      "expected_branch_sha": "5afdedc3e50be60082ac1d405a456274920b8eab",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "5afdedc3e50be60082ac1d405a456274920b8eab",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 4,
+        "behind_by": 0,
+        "merge_base_sha": "5afdedc3e50be60082ac1d405a456274920b8eab"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    },
+    {
+      "repository_full_name": "NRG-Wardog/SideStore",
+      "branch_name": "validation/workqueue-abi-20261020",
+      "expected_branch_sha": "4f8414143a08de04282052ca0035d1311bec770d",
+      "protected": false,
+      "retained_anchor_ref": "refs/heads/LiveContainerSupport",
+      "retained_anchor_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "retained_anchor_object_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+      "ancestry": {
+        "base_sha": "4f8414143a08de04282052ca0035d1311bec770d",
+        "head_sha": "c2beadd2c94df6854f83cb53d5b59c3540ec9783",
+        "status": "ahead",
+        "ahead_by": 219,
+        "behind_by": 0,
+        "merge_base_sha": "4f8414143a08de04282052ca0035d1311bec770d"
+      },
+      "actual_default_branch": "LiveContainerSupport",
+      "disposition": "eligible",
+      "functional_dependency_checks_complete": true
+    }
+  ]
+}
