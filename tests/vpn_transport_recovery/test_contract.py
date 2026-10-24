@@ -12,7 +12,7 @@ import sys
 sys.dont_write_bytecode = True
 from generate_fixture import generate_source, declaration, producer_branch, transport_snapshot, INPUTS, HERE
 
-ROOT = Path(os.environ.get('VPN_TRANSPORT_SOURCE_ROOT', str(HERE.parents[2])))
+ROOT = Path(os.environ.get('VPN_TRANSPORT_SOURCE_ROOT', str(HERE.parents[2]))).resolve()
 
 class VPNTransportContract(unittest.TestCase):
     def test_actual_source_extraction(self):

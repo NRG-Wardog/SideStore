@@ -83,7 +83,7 @@ func fixtureReadiness%(suffix)s(modernOS: Bool = true,
 
 
 def generate_source(root, include_operation_classifier=True, include_baseline=True):
-    root = Path(root)
+    root = Path(root).resolve()
     paths = {name: root / relative for name, relative in INPUTS.items()}
     s = {name: path.read_text() for name, path in paths.items()}
     swift = 'import Foundation\n'
