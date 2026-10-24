@@ -21,6 +21,11 @@ func legacy(_ app: URL) throws -> String {
     try require(original != nil && original == compatibility, "Original and compatibility key differ")
     return compatibility!
 }
+// URL equality can include a directory hint that changes after creation.
+// Cache reuse concerns the key, canonical filesystem location and retained bytes.
+func filesystemPath(_ url: URL) -> String {
+    url.resolvingSymlinksInPath().standardizedFileURL.path
+}
 func copied(_ source: URL, _ target: URL) throws {
     let before = AppBundleFingerprint.compute(for: source)
     try require(before != nil, "Synthetic source not strictly readable")
@@ -112,8 +117,11 @@ let cases: [(String, (URL) throws -> Void)] = [
         try write("WXYZ", app.appendingPathComponent("Executable"))
         let originalAgain = try cached(app, originalRoot, original: true)
         let compatibilityAgain = try cached(app, compatibilityRoot, original: false)
-        try require(originalAgain.targetFileURL == original.targetFileURL, "Original cache unexpectedly replaced")
-        try require(compatibilityAgain.targetFileURL == compatibility.targetFileURL, "Legacy cache not reused")
+        try require(originalAgain.signature == original.signature, "Original legacy key changed")
+        try require(compatibilityAgain.signature == compatibility.signature, "Compatibility legacy key changed")
+        try require(originalAgain.signature == compatibilityAgain.signature, "Original and compatibility keys differ")
+        try require(filesystemPath(originalAgain.targetFileURL) == filesystemPath(original.targetFileURL), "Original cache location changed")
+        try require(filesystemPath(compatibilityAgain.targetFileURL) == filesystemPath(compatibility.targetFileURL), "Legacy cache location changed")
         for target in [original.targetFileURL, compatibility.targetFileURL] {
             try require(try Data(contentsOf: target.appendingPathComponent("Executable")) == Data("ABCD".utf8), "Existing bytes replaced")
             try require(AppBundleFingerprint.compute(for: target) != AppBundleFingerprint.compute(for: app), "Collision not exercised")
@@ -128,7 +136,8 @@ let cases: [(String, (URL) throws -> Void)] = [
             let target = InstalledApp.payloadURL(forSignature: key)
             try write("retained", target.appendingPathComponent("PartialSentinel"))
             let result = try cached(app, apps, original: original)
-            try require(result.targetFileURL == target, "Existing partial cache no longer reused")
+            try require(result.signature == key, "Existing partial cache key changed")
+            try require(filesystemPath(result.targetFileURL) == filesystemPath(target), "Existing partial cache location changed")
             try require(!fm.fileExists(atPath: target.appendingPathComponent("Executable").path), "Partial cache replaced")
         }
     }),
@@ -211,7 +220,7 @@ let cases: [(String, (URL) throws -> Void)] = [
         // The retained guard is an intentional difference from original, scoped
         // entirely to this owned synthetic tree, not a system path.
         let original = try cached(app, apps, original: true)
-        try require(original.targetFileURL.resolvingSymlinksInPath().path.hasPrefix(outside.path + "/"), "Escape fixture not exercised")
+        try require(filesystemPath(original.targetFileURL).hasPrefix(filesystemPath(outside) + "/"), "Escape fixture not exercised")
     }),
     ("copy_helper_refuses_existing_destination", { root in
         let app = try bundle(root)
@@ -252,8 +261,10 @@ do {
             try body(root)
             results.append(["name": name, "status": "pass"])
         } catch {
-            results.append(["name": name, "status": "fail"])
-            throw error
+            // Cases own separate roots; report every case, then fail the suite.
+            let failure = String(describing: error)
+            results.append(["name": name, "status": "fail", "failure": failure])
+            if failed == nil { failed = failure }
         }
     }
 } catch { failed = String(describing: error) }
