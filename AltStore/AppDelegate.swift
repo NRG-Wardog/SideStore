@@ -14985,7 +14985,8 @@ public struct CombinedFailure: Error, LocalizedError {
         }
         if let reason = fields["refresh_readiness_reason"] {
             let eligible = (reason == "vpnUnavailable" && fields["refresh_failure_kind"] == "noVPN") ||
-                (reason == "peerProbeFailed" && fields["refresh_failure_kind"] == "invalidVPN")
+                (reason == "peerProbeFailed" && fields["refresh_failure_kind"] == "invalidVPN") ||
+                (reason == "peerAddressUnavailable" && fields["refresh_failure_kind"] == "noDevice")
             if !eligible || fields.count > 20 { fields.removeValue(forKey: "refresh_readiness_reason") }
         }
         if !V3TemporaryAnisetteTrace.temporaryAnisetteTraceEnabled {
@@ -15047,7 +15048,8 @@ public struct CombinedFailure: Error, LocalizedError {
                       Set(names).count == names.count else { return nil }
             case "refresh_readiness_reason":
                 guard (text == "vpnUnavailable" && fields["refresh_failure_kind"] == "noVPN") ||
-                    (text == "peerProbeFailed" && fields["refresh_failure_kind"] == "invalidVPN") else { return nil }
+                    (text == "peerProbeFailed" && fields["refresh_failure_kind"] == "invalidVPN") ||
+                    (text == "peerAddressUnavailable" && fields["refresh_failure_kind"] == "noDevice") else { return nil }
             case "local_precondition":
                 guard fields["refresh_failure_kind"] == "invalidParameters",
                     ["missingTargetAppBundle", "unknownTeamType", "unresolvedAppGroupPlaceholder",

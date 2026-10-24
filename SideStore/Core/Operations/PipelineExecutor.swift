@@ -406,7 +406,8 @@ enum V3RefreshFailureBoundary: String, CaseIterable {
 // Capture the Swift enum before NSError bridging erases its case identity.
 // Only the profile-fetch boundary may compare known local invalidParameters
 // guards. Their associated text never leaves this function; unknown text stays
-// unknown. Other operation payloads are never inspected.
+// unknown. Readiness additionally recognizes only exact local VPN guard text;
+// arbitrary noDevice/backend payloads must never authorize an enable request.
 func lcRefreshFailureFacts(_ error: Error, sourceStep: String? = nil) -> [String: String] {
     guard let operation = error as? OperationError else { return [:] }
     let kind: String
@@ -440,6 +441,15 @@ func lcRefreshFailureFacts(_ error: Error, sourceStep: String? = nil) -> [String
     // or classify arbitrary gateway text as a recoverable VPN condition.
     if sourceStep == "refreshReadiness" {
         if case .noVPN = operation { facts["refresh_readiness_reason"] = "vpnUnavailable" }
+        // V3_COLD_VPN_PEER_ADDRESS_RECOVERY_V1: pinned minimuxer localVPN
+        // endpoint.ip() guard, whose sole throw is deviceEndpointNotInitialized.
+        // A generic utun can bypass host preflight while LocalDevVPN is off.
+        // Keep the original noDevice kind and recognize the full local guard,
+        // not every noDevice, a prefix, or arbitrary native/provider text.
+        if case .noDevice(let message) = operation,
+           message == "VPN tunnel iface is up but tunnel peer IP is not yet reachable — VPN may not be routing device traffic correctly. Cause: DeviceEndpointNotInitialized" {
+            facts["refresh_readiness_reason"] = "peerAddressUnavailable"
+        }
         if case .invalidVPN(let message) = operation {
             let prefix = "VPN tunnel iface is up and tunnel peer IP "
             let suffix = " is known, but TCP port poll failed — device may be unreachable on this interface"
