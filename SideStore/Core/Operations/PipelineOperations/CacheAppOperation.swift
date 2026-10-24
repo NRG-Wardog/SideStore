@@ -40,7 +40,11 @@ final class CacheAppOperation: BasePipelineOperation<InstallAppOperationContext,
             throw OperationError.invalidApp(reason: "Failed to compute app bundle fingerprint for '\(bundleURL.lastPathComponent)'")
         }
 
-        let targetFileURL = InstalledApp.payloadURL(forSignature: signature)
+        // Resolve the trusted, existing Apps root once. A missing descendant
+        // cannot reliably resolve aliases in that root on its own.
+        let appsDirectoryURL = InstalledApp.appsDirectoryURL.resolvingSymlinksInPath().standardizedFileURL
+        let targetFileURL = appsDirectoryURL.appendingPathComponent("Payloads")
+            .appendingPathComponent(signature).appendingPathComponent("App.app")
         // Retain containment and no-overwrite copy boundaries while restoring
         // upstream cache key/reuse behavior. Caches are not reset or pruned.
         // Resolving a nonexistent App.app may leave an existing symlink ancestor
@@ -65,8 +69,8 @@ final class CacheAppOperation: BasePipelineOperation<InstallAppOperationContext,
                 }
             }
         }
-        let rootPath = InstalledApp.appsDirectoryURL.resolvingSymlinksInPath().standardizedFileURL.path + "/"
-        guard targetFileURL.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(rootPath) else {
+        let rootPath = appsDirectoryURL.path + "/"
+        guard targetFileURL.standardizedFileURL.path.hasPrefix(rootPath) else {
             throw OperationError.invalidApp(reason: "The cache destination is outside the app cache. Existing caches were preserved.")
         }
         if !FileManager.default.fileExists(atPath: targetFileURL.path) {

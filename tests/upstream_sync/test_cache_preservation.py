@@ -241,6 +241,15 @@ class SwiftSourceContractTests(unittest.TestCase):
         self.assertIn("import Darwin\n", self.cache_source)
         self.assertIn("AppBundleFingerprint.computeOriginalCacheKey(for: bundleURL)", self.publication)
         self.assertNotIn("AppBundleFingerprint.compute(for:", self.publication)
+        root = self.publication.index("let appsDirectoryURL = InstalledApp.appsDirectoryURL.resolvingSymlinksInPath().standardizedFileURL")
+        target = self.publication.index("let targetFileURL = appsDirectoryURL")
+        self.assertLess(root, target)
+        self.assertEqual(self.publication.count("InstalledApp.appsDirectoryURL"), 1)
+        self.assertEqual(self.publication.count("resolvingSymlinksInPath()"), 1)
+        target_body = self.publication[target:self.publication.index("let cachePathComponents")]
+        for component in ('appendingPathComponent("Payloads")', 'appendingPathComponent(signature)', 'appendingPathComponent("App.app")'):
+            self.assertIn(component, target_body)
+        self.assertIn('let rootPath = appsDirectoryURL.path + "/"', self.publication)
         components = """let cachePathComponents = [
             targetFileURL.deletingLastPathComponent().deletingLastPathComponent(),
             targetFileURL.deletingLastPathComponent(),
@@ -252,7 +261,7 @@ class SwiftSourceContractTests(unittest.TestCase):
         reject_link = self.publication.index("guard (fileStatus.st_mode & mode_t(S_IFMT)) != mode_t(S_IFLNK)")
         missing_only = self.publication.index("guard errorCode == ENOENT else")
         self.assertIn("throw NSError(domain: NSPOSIXErrorDomain, code: Int(errorCode), userInfo: nil)", self.publication)
-        containment = self.publication.index("guard targetFileURL.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(rootPath)")
+        containment = self.publication.index("guard targetFileURL.standardizedFileURL.path.hasPrefix(rootPath)")
         missing = self.publication.index("if !FileManager.default.fileExists(atPath: targetFileURL.path)")
         self.assertLess(inspect, no_follow)
         self.assertLess(no_follow, reject_link)

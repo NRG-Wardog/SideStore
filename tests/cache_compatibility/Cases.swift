@@ -53,6 +53,7 @@ func ignoredChange(_ root: URL, path: String) throws {
     try write("ignored-metadata", app.appendingPathComponent(path))
     try require(try legacy(app) == before, "Upstream ignored metadata changed key")
 }
+var aliasRegressionEvidence: [[String: Any]] = []
 let cases: [(String, (URL) throws -> Void)] = [
     ("original_key_plain_tree", { root in
         let key = try legacy(bundle(root))
@@ -289,6 +290,62 @@ let cases: [(String, (URL) throws -> Void)] = [
         try require(before != nil && AppBundleFingerprint.compute(for: app) == before, "Source changed")
         try copied(app, result.targetFileURL)
     }),
+    ("trusted_root_alias_before_fails_after_passes", { root in
+        let source = try bundle(root)
+        let sourceBefore = AppBundleFingerprint.compute(for: source)
+        let signature = try legacy(source)
+        let previousRoot = InstalledApp.fixtureRootOverride
+        defer { InstalledApp.fixtureRootOverride = previousRoot }
+        for implementation in ["original", "before", "after"] {
+            let realBase = root.appendingPathComponent(implementation + "-real")
+            let aliasBase = root.appendingPathComponent(implementation + "-alias")
+            try fm.createDirectory(at: realBase, withIntermediateDirectories: false)
+            try fm.createSymbolicLink(at: aliasBase, withDestinationURL: realBase)
+            AliasFixtureBoundary.baseDirectoryURL = aliasBase
+            InstalledApp.fixtureRootOverride = nil
+            // This branch executes the exact production Apps getter/mkdir.
+            let apps = InstalledApp.appsDirectoryURL
+            let targetBefore = InstalledApp.payloadURL(forSignature: signature)
+            let payloads = apps.appendingPathComponent("Payloads")
+            let canonicalApps = filesystemPath(apps)
+            let resolvedTargetBefore = filesystemPath(targetBefore)
+            try require(fm.fileExists(atPath: apps.path), "Production getter did not create Apps")
+            try require(apps.standardizedFileURL.path != canonicalApps, "Trusted root alias not exercised")
+            try require(!fm.fileExists(atPath: payloads.path), "Alias Payloads already exists")
+            try require(!resolvedTargetBefore.hasPrefix(canonicalApps + "/"), "Original asymmetric resolution not exercised")
+            for component in [targetBefore.deletingLastPathComponent().deletingLastPathComponent(), targetBefore.deletingLastPathComponent(), targetBefore] {
+                var info = stat()
+                let rc = component.path.withCString { lstat($0, &info) }
+                let code = errno
+                try require(rc == -1 && code == ENOENT, "Alias missing component is not ENOENT")
+            }
+            var evidence: [String: Any] = ["implementation": implementation,
+                "root_lexical": apps.standardizedFileURL.path, "root_canonical": canonicalApps,
+                "target_resolved_before": resolvedTargetBefore, "payloads_exists_before": false]
+            if implementation == "before" {
+                do {
+                    _ = try BeforeCanonicalAnchorCacheAppOperation.cachePayload(for: source)
+                    throw FixtureFailure.assertion("Delivered false rejection was not reproduced")
+                } catch let error as OperationError {
+                    try require(error == .invalidApp(reason: "The cache destination is outside the app cache. Existing caches were preserved."), "Unexpected before-fix failure")
+                }
+                try require(!fm.fileExists(atPath: payloads.path), "Before-fix rejection wrote cache files")
+                evidence["outcome"] = "expected_canonical_root_rejection"
+            } else {
+                let result: (signature: String, targetFileURL: URL)
+                if implementation == "original" { result = try OriginalCacheAppOperation.cachePayload(for: source) }
+                else { result = try CacheAppOperation.cachePayload(for: source) }
+                try require(result.signature == signature, "Alias cache key changed")
+                try require(filesystemPath(result.targetFileURL).hasPrefix(canonicalApps + "/"), "Alias target escaped canonical Apps")
+                try copied(source, result.targetFileURL)
+                try require(try Data(contentsOf: result.targetFileURL.appendingPathComponent("Executable")) == Data("ABCD".utf8), "Alias copied bytes changed")
+                evidence["outcome"] = "success"
+                evidence["target_canonical_after"] = filesystemPath(result.targetFileURL)
+            }
+            try require(sourceBefore != nil && AppBundleFingerprint.compute(for: source) == sourceBefore, "Alias operation changed source")
+            aliasRegressionEvidence.append(evidence)
+        }
+    }),
 ]
 
 let ownedRoot = fm.temporaryDirectory.appendingPathComponent("cache-compatibility-fixture-" + UUID().uuidString)
@@ -317,7 +374,7 @@ var report: [String: Any] = [
     "case_count": results.count, "cases": results.map { $0["name"] as! String },
     "case_results": results, "fake_only": true,
     "network_executed": false, "native_provider_executed": false,
-    "foundation_crypto_real": true,
+    "foundation_crypto_real": true, "root_alias_regression": aliasRegressionEvidence,
 ]
 if let failure = failed { report["failure"] = failure }
 do {

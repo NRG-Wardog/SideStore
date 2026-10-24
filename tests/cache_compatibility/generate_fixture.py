@@ -21,10 +21,17 @@ PINNED = {
 }
 STRICT_FINGERPRINT_SHA256 = "c73ec2bfa43d56be919dac7fb824c0dc62a46f1830569d2b42697b52cd64ff67"
 ORIGINAL_PINS = {
+    "BeforeCanonicalAnchorCacheAppOperation.swift": "c64a34702920a946be4995be713f8c02f929fffcbfc4a196a245be2610b4417b",
     "OriginalAppBundleFingerprint.swift": "215f5c16cd4d2a5ecddd8a1983e22e3a9851908159b1fb272260c1eb8cfed2e6",
     "OriginalCacheAppOperation.swift": "c1b7b1b0c3a08f1c5501461561a299b5dc1570e54c241c3c847c64c992b418da",
 }
 CACHE_START = "    @discardableResult\n    static func cachePayload("
+TARGET_ANCHOR = '''        // Resolve the trusted, existing Apps root once. A missing descendant
+        // cannot reliably resolve aliases in that root on its own.
+        let appsDirectoryURL = InstalledApp.appsDirectoryURL.resolvingSymlinksInPath().standardizedFileURL
+        let targetFileURL = appsDirectoryURL.appendingPathComponent("Payloads")
+            .appendingPathComponent(signature).appendingPathComponent("App.app")
+'''
 GUARD = '''        // Retain containment and no-overwrite copy boundaries while restoring
         // upstream cache key/reuse behavior. Caches are not reset or pruned.
         // Resolving a nonexistent App.app may leave an existing symlink ancestor
@@ -49,8 +56,8 @@ GUARD = '''        // Retain containment and no-overwrite copy boundaries while 
                 }
             }
         }
-        let rootPath = InstalledApp.appsDirectoryURL.resolvingSymlinksInPath().standardizedFileURL.path + "/"
-        guard targetFileURL.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(rootPath) else {
+        let rootPath = appsDirectoryURL.path + "/"
+        guard targetFileURL.standardizedFileURL.path.hasPrefix(rootPath) else {
             throw OperationError.invalidApp(reason: "The cache destination is outside the app cache. Existing caches were preserved.")
         }
 '''
@@ -96,6 +103,9 @@ def main():
     expected_cache = original_cache.replace("AppBundleFingerprint.compute(", "AppBundleFingerprint.computeOriginalCacheKey(")
     expected_cache = "\n".join(line for line in expected_cache.splitlines() if "SideStore.debugLog(" not in line)
     expected_cache = expected_cache.replace("to: targetFileURL, shouldReplace: true)", "to: targetFileURL, shouldReplace: false)")
+    expected_cache = expected_cache.replace("        let targetFileURL = InstalledApp.payloadURL(forSignature: signature)\n", TARGET_ANCHOR)
+    assert compatibility_cache.count("InstalledApp.appsDirectoryURL") == 1
+    assert compatibility_cache.count("resolvingSymlinksInPath()") == 1
     assert compatibility_cache.replace(GUARD, "") == expected_cache, "Non-approved cache-flow deviation"
     # Pin everything outside cachePayload, especially execute and disabled payload pruning.
     assert source["cache"].count("import Foundation\nimport Darwin\n") == 1, "Production Darwin import missing"
@@ -112,6 +122,8 @@ def main():
     copy_method = extract(source["copy"], "    func copyItem(at sourceURL: URL, to destinationURL: URL, shouldReplace: Bool) throws")
     payload_directory = extract(source["installed"], "    class func payloadDirectoryURL(forSignature signature: String) -> URL")
     payload_url = extract(source["installed"], "    class func payloadURL(forSignature signature: String) -> URL")
+    production_root_getter = extract(source["installed"], "    class var appsDirectoryURL: URL")
+    before_cache = extract(references["BeforeCanonicalAnchorCacheAppOperation.swift"], CACHE_START)
     boundary = '''import Foundation
 import CryptoKit
 import Darwin
@@ -119,8 +131,22 @@ import Darwin
 enum OperationError: Error, Equatable { case invalidApp(reason: String) }
 func debugLog(_ message: String) {}
 enum SideStore { static func debugLog(_ message: String) {} }
+enum AliasFixtureBoundary {
+    static var baseDirectoryURL = URL(fileURLWithPath: "/unused-fixture-base")
+}
+extension FileManager {
+    var altstoreSharedDirectory: URL? { AliasFixtureBoundary.baseDirectoryURL }
+    var applicationSupportDirectory: URL { AliasFixtureBoundary.baseDirectoryURL }
+}
+class ProductionShapeInstalledApp {
+''' + production_root_getter + '''
+}
 class InstalledApp {
-    static var appsDirectoryURL = URL(fileURLWithPath: "/unused-fixture-root")
+    static var fixtureRootOverride: URL? = URL(fileURLWithPath: "/unused-fixture-root")
+    class var appsDirectoryURL: URL {
+        get { fixtureRootOverride ?? ProductionShapeInstalledApp.appsDirectoryURL }
+        set { fixtureRootOverride = newValue }
+    }
 '''
     generated = "\n\n".join([
         boundary + payload_directory + "\n" + payload_url + "\n}",
@@ -128,11 +154,12 @@ class InstalledApp {
         source["fingerprint"],
         original_fp.replace("public enum AppBundleFingerprint", "public enum OriginalAppBundleFingerprint", 1),
         "enum CacheAppOperation {\n" + compatibility_cache + "\n}",
+        "enum BeforeCanonicalAnchorCacheAppOperation {\n" + before_cache + "\n}",
         "enum OriginalCacheAppOperation {\n" + original_cache.replace("AppBundleFingerprint.compute(", "OriginalAppBundleFingerprint.compute(") + "\n}",
         (HERE / "Cases.swift").read_text(),
     ]) + "\n"
     cases = re.findall(r'^    \("([a-z0-9_]+)", \{', (HERE / "Cases.swift").read_text(), re.M)
-    assert len(cases) == 25 and len(set(cases)) == len(cases), cases
+    assert len(cases) == 26 and len(set(cases)) == len(cases), cases
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "cache-compatibility.swift").write_text(generated)
     receipt = {
@@ -149,6 +176,9 @@ class InstalledApp {
         "original_cache_flow_except_retained_safety_boundaries_symbol_and_logs": True,
         "copy_helper_overwrite_disabled": True,
         "cache_components_lstat_no_follow": True, "production_darwin_import_present": True,
+        "trusted_apps_root_canonicalized_once": True, "alias_regression_uses_production_getter": True,
+        "alias_before_reference_byte_identical": True,
+        "production_apps_getter_sha256": digest(production_root_getter.encode()),
         "limitations": ["Synthetic real-Foundation macOS fixture, not an iOS/device result.",
                        "Legacy cache reuse intentionally does not establish payload content integrity.",
                        "No concurrency, permission-restriction, storage-exhaustion or real IPA install success claimed."],
