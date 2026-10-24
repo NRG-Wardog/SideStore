@@ -479,13 +479,14 @@ final class WirelessPairViewModel: ObservableObject {
         if isAdvertising {
             stopPairing()
         } else {
-            openServerDialog()
+            // binds to all ie, 0.0.0.0
+            startPairing()
         }
     }
     
     func startPairing() {
-        let pairingFile = pairingFilePath()
-        debugLog("[WirelessPairViewModel] startPairing() starting advertisement with outPath: '\(pairingFile)'")
+        let docsPath = FileManager.default.documentsDirectory.path
+        debugLog("[WirelessPairViewModel] startPairing() starting advertisement with base path: '\(docsPath)'")
         isAdvertising = true
         pinCode = nil
         errorMessage = nil
@@ -494,7 +495,12 @@ final class WirelessPairViewModel: ObservableObject {
         statusText = "Waiting for connection..."
         subStatusText = "Open Remote Pairing on your Apple TV / Vision Pro / host device to discover this server."
         
-        wirelessPairing.start(outPath: pairingFile) { [weak self] (result: Result<MinimuxerPairedDevice, Swift.Error>) in
+        wirelessPairing.start(
+            outPath: docsPath,
+            resolveFileName: { name, model in
+                Self.pairingFileName(for: name, model: model)
+            }
+        ) { [weak self] (result: Result<MinimuxerPairedDevice, Swift.Error>) in
             Task { @MainActor in
                 guard let self = self else { return }
                 debugLog("[WirelessPairViewModel] startPairing() completion received: result=\(result), wasAdvertising=\(self.isAdvertising)")
@@ -541,8 +547,8 @@ final class WirelessPairViewModel: ObservableObject {
         targetName: String? = nil,
         completion: ((Result<MinimuxerPairedDevice, Swift.Error>) -> Void)? = nil
     ) {
-        let pairingFile = pairingFilePath(for: targetName)
-        debugLog("[WirelessPairViewModel] triggerPairing() initiating handshake to \(targetIp):\(targetPort), outPath: '\(pairingFile)'")
+        let docsPath = FileManager.default.documentsDirectory.path
+        debugLog("[WirelessPairViewModel] triggerPairing() initiating handshake to \(targetIp):\(targetPort), base path: '\(docsPath)'")
         isAdvertising = true
         pinCode = nil
         errorMessage = nil
@@ -554,7 +560,10 @@ final class WirelessPairViewModel: ObservableObject {
         wirelessPairing.trigger(
             targetIp: targetIp,
             targetPort: targetPort,
-            outPath: pairingFile
+            outPath: docsPath,
+            resolveFileName: { name, model in
+                Self.pairingFileName(for: name.isEmpty ? targetName : name, model: model)
+            }
         ) { [weak self] (result: Result<MinimuxerPairedDevice, Swift.Error>) in
             Task { @MainActor in
                 guard let self = self else { return }
@@ -583,18 +592,26 @@ final class WirelessPairViewModel: ObservableObject {
         }
     }
     
-    private func pairingFilePath(for deviceName: String? = nil) -> String {
-        let docs = FileManager.default.documentsDirectory
-        if let deviceName = deviceName, !deviceName.isEmpty {
-            let spaceReplaced = deviceName
+    nonisolated static func pairingFileName(for deviceName: String? = nil, model: String? = nil) -> String {
+        let namePart = deviceName ?? ""
+        let modelPart = model ?? ""
+        let combined = [namePart, modelPart].filter { !$0.isEmpty }.joined(separator: "_")
+        if !combined.isEmpty {
+            let spaceReplaced = combined
                 .replacingOccurrences(of: " ", with: "_")
                 .replacingOccurrences(of: "/", with: "_")
                 .replacingOccurrences(of: ":", with: "_")
             let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
             let sanitized = spaceReplaced.unicodeScalars.filter { allowed.contains($0) }.map(String.init).joined()
             let finalName = sanitized.isEmpty ? "device" : sanitized
-            return docs.appendingPathComponent("\(finalName)_rp.plist").path
+            return "\(finalName)\(AppConstants.Minimuxer.rpPairingFileSuffix)"
         }
-        return docs.appendingPathComponent("rp_pairing_file.plist").path
+        return AppConstants.Minimuxer.defaultRPPairingFileName
+    }
+
+    private func pairingFilePath(for deviceName: String? = nil, model: String? = nil) -> String {
+        let docs = FileManager.default.documentsDirectory
+        let fileName = Self.pairingFileName(for: deviceName, model: model)
+        return docs.appendingPathComponent(fileName).path
     }
 }

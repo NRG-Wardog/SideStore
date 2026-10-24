@@ -253,9 +253,11 @@ struct PipelineStepDefinition {
         PipelineExecutionStep(.removeApp,                         2)
     ]
 
+    static let reinstall = install
+
     static func steps(for operation: AppOperation) -> [PipelineExecutionStep] {
         switch operation {
-        case .install, .update:
+        case .install, .update, .reinstall:
             return install
         case .resign:
             return resign
@@ -313,6 +315,7 @@ struct StandaloneStepDefinition {
 
 extension Array where Element == PipelineExecutionStep {
     static var install:              [PipelineExecutionStep] { PipelineStepDefinition.install              }
+    static var reinstall:            [PipelineExecutionStep] { PipelineStepDefinition.reinstall            }
     static var resign:               [PipelineExecutionStep] { PipelineStepDefinition.resign               }
     static var refresh:              [PipelineExecutionStep] { PipelineStepDefinition.refresh              }
     static var activate:             [PipelineExecutionStep] { PipelineStepDefinition.activate             }

@@ -54,7 +54,7 @@ final class PreflightChecksOperation: BasePipelineOperation<StandaloneOperationC
 
             let incomingTargetID: String?
             switch operation {
-                case .install(let app, let customBundleIdentifier), .update(let app, let customBundleIdentifier):
+                case .install(let app, let customBundleIdentifier), .update(let app, let customBundleIdentifier), .reinstall(let app, let customBundleIdentifier):
                     if let customBundleIdentifier = customBundleIdentifier, !customBundleIdentifier.isEmpty {
                         incomingTargetID = customBundleIdentifier
                     } else if !currentTeamID.isEmpty {
@@ -80,7 +80,7 @@ final class PreflightChecksOperation: BasePipelineOperation<StandaloneOperationC
             debugLog("[PreflightChecksOperation] SideStore bundle ID mismatch detected: target='\(targetID)', active='\(activeEffectiveID)'")
 
             switch operation {
-                case .resign, .install:
+                case .resign, .install, .reinstall:
                     guard let handler = self.handler else {
                         throw OperationError.cancelled
                     }

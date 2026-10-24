@@ -59,7 +59,7 @@ public final class BackgroundAudioService: BackgroundService, @unchecked Sendabl
             player?.play()
             return true
         } catch {
-            print("BackgroundAudioService start failed: \(error)")
+            print("BackgroundAudioService start failed.")
             return false
         }
     }
@@ -92,7 +92,7 @@ public final class BackgroundAudioService: BackgroundService, @unchecked Sendabl
                 try AVAudioSession.sharedInstance().setActive(true)
                 player?.play()
             } catch {
-                print("Failed to reactivate audio session: \(error)")
+                print("Failed to reactivate audio session.")
             }
         }
     }

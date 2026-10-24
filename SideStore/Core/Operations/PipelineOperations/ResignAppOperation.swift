@@ -184,7 +184,7 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
         let codeSignatureURL = appBundle.fileURL.appendingPathComponent("_CodeSignature")
         if FileManager.default.fileExists(atPath: codeSignatureURL.path) {
             try FileManager.default.removeItem(at: codeSignatureURL)
-            self.verboseLog("[ResignAppOperation] Removed _CodeSignature folder at \(codeSignatureURL.path)")
+            self.verboseLog("[ResignAppOperation] Removed _CodeSignature folder.")
         }
     }
     

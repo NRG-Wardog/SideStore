@@ -14,6 +14,7 @@ enum AppOperation: CustomStringConvertible
 {
     case install(AppProtocol, customBundleIdentifier: String? = nil)
     case update(AppProtocol, customBundleIdentifier: String? = nil)
+    case reinstall(AppProtocol, customBundleIdentifier: String? = nil)
     case refresh(InstalledApp)
     case activate(InstalledApp)
     case deactivate(InstalledApp)
@@ -29,6 +30,7 @@ enum AppOperation: CustomStringConvertible
         {
         case .install:              return "install"
         case .update:               return "update"
+        case .reinstall:            return "reinstall"
         case .refresh:              return "refresh"
         case .activate:             return "activate"
         case .deactivate:           return "deactivate"
@@ -58,7 +60,7 @@ enum AppOperation: CustomStringConvertible
     var app: AppProtocol {
         switch self
         {
-        case .install(let app, _), .update(let app, _):
+        case .install(let app, _), .update(let app, _), .reinstall(let app, _):
             return app
         case .refresh(let app), .activate(let app), .deactivate(let app), .deleteApp(let app),
              .backup(let app),  .restore(let app),  .resign(let app, _),
@@ -85,7 +87,7 @@ enum AppOperation: CustomStringConvertible
     var loggedErrorOperation: LoggedError.Operation {
         switch self
         {
-        case .install: return .install
+        case .install, .reinstall: return .install
         case .update: return .update
         case .refresh: return .refresh
         case .activate: return .activate

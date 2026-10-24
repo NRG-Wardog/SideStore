@@ -72,7 +72,7 @@ public final class ProfileManager: @unchecked Sendable {
         let profile = try ALTProvisioningProfile(data: data)
         let destinationURL = profilesDirectory.appendingPathComponent("\(profile.uuid.uuidString).mobileprovision")
         try data.write(to: destinationURL, options: .atomic)
-        debugLog("[ProfileManager] Imported provisioning profile '\(profile.name)' (\(profile.uuid)) to \(destinationURL.path)")
+        debugLog("[ProfileManager] Imported provisioning profile.")
         return profile
     }
 
@@ -87,7 +87,7 @@ public final class ProfileManager: @unchecked Sendable {
             assignments.removeValue(forKey: key)
         }
         saveAssignedProfilesDict(assignments)
-        debugLog("[ProfileManager] Deleted provisioning profile \(uuid)")
+        debugLog("[ProfileManager] Deleted provisioning profile.")
     }
 
     public enum CertificateAnalysisResult: Equatable {
@@ -201,10 +201,10 @@ public final class ProfileManager: @unchecked Sendable {
         var assignments = getAssignedProfilesDict()
         if let profile = profile {
             assignments[bundleIdentifier] = profile.uuid.uuidString
-            debugLog("[ProfileManager] Assigned profile '\(profile.name)' (\(profile.uuid)) to app '\(bundleIdentifier)'")
+            debugLog("[ProfileManager] Assigned provisioning profile.")
         } else {
             assignments.removeValue(forKey: bundleIdentifier)
-            debugLog("[ProfileManager] Cleared assigned profile for app '\(bundleIdentifier)'")
+            debugLog("[ProfileManager] Cleared assigned provisioning profile.")
         }
         saveAssignedProfilesDict(assignments)
     }
@@ -213,7 +213,7 @@ public final class ProfileManager: @unchecked Sendable {
         var assignments = getAssignedProfilesDict()
         assignments[bundleIdentifier] = uuid.uuidString
         saveAssignedProfilesDict(assignments)
-        debugLog("[ProfileManager] Assigned profile UUID '\(uuid)' to app '\(bundleIdentifier)'")
+        debugLog("[ProfileManager] Assigned provisioning profile by identifier.")
     }
 
     public func cleanupStaleAssignments() {

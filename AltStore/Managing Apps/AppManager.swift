@@ -12,9 +12,38 @@ import CoreData
 import SideSign
 import UserNotifications
 import MobileCoreServices
-import Intents
 import Combine
 import UniformTypeIdentifiers
+
+// V3_PERSISTED_ERROR_PRIVACY_V1: persistent diagnostics never retain provider text or NSError userInfo.
+enum V3PersistedErrorSanitizer {
+    static let safeDescription = "The operation failed. Detailed error information was omitted to protect privacy."
+
+    private static let safeDomains: Set<String> = [
+        "ALTServerErrorDomain",
+        "SideSignErrorDomain",
+        "NSCocoaErrorDomain",
+        "NSPOSIXErrorDomain",
+        "NSURLErrorDomain",
+        "NSOSStatusErrorDomain",
+        "NSMachErrorDomain",
+        "kCFErrorDomainCFNetwork"
+    ]
+
+    static func sanitize(_ error: NSError) -> NSError {
+        let domainIsSafe = safeDomains.contains(error.domain)
+        return NSError(
+            domain: domainIsSafe ? error.domain : "V3RedactedErrorDomain",
+            code: domainIsSafe ? error.code : 0,
+            userInfo: [NSLocalizedDescriptionKey: safeDescription]
+        )
+    }
+
+    static func refreshHistoryDescription(for error: Error) -> String {
+        _ = error
+        return safeDescription
+    }
+}
 
 extension AppManager
 {
@@ -83,6 +112,10 @@ final class AppManager: ObservableObject, @unchecked Sendable
                 var altStore: InstalledApp?
 
                 #if !targetEnvironment(simulator)
+                if UserDefaults.standard.legacySideloadedApps == nil {
+                    // Preserve old installed records until their custom UTIs have been established.
+                    UserDefaults.standard.legacySideloadedApps = installedApps.map(\.bundleIdentifier)
+                }
                 let legacyApps = Set(UserDefaults.standard.legacySideloadedApps ?? [])
 
                 for app in installedApps {
@@ -96,6 +129,7 @@ final class AppManager: ObservableObject, @unchecked Sendable
                     let isDeclared = UTType(app.installedAppUTI)?.isDeclared ?? false
                     guard !isDeclared, !legacyApps.contains(app.bundleIdentifier) else { continue }
 
+                    // Preservation validation retains cache/certificate originals during automatic reconciliation.
                     dbBackgroundContext.delete(app)
                     if var patched = UserDefaults.standard.patchedApps {
                         patched.removeAll { $0 == app.bundleIdentifier }
@@ -111,7 +145,7 @@ final class AppManager: ObservableObject, @unchecked Sendable
                 #endif
 
                 let active = installedApps.filter { !$0.isDeleted }
-                let ids = Set(active.map(\.resignedBundleIdentifier))
+                let ids = Set(active.flatMap { [$0.bundleIdentifier, $0.resignedBundleIdentifier] })
                 let sigs = Set(active.compactMap(\.appBundleFingerprint))
 
                 return (ids, sigs, altStore)
@@ -119,11 +153,13 @@ final class AppManager: ObservableObject, @unchecked Sendable
 
             await scheduleExpirationWarning(for: altStoreApp, in: dbBackgroundContext)
 
-            CacheAppOperation.pruneUnusedCaches(activeSignatures: activeSignatures, activeBundleIDs: activeBundleIDs) { [weak self] in
-                self?.isActivelyManagingApp(withBundleID: $0) ?? false
-            }
+            // V3_UPSTREAM_SYNC_PRESERVE_STATE_V1: migration can leave verified
+            // source caches or staged payloads awaiting a database commit. Never
+            // infer that an unreferenced cache is disposable during validation.
+            _ = activeBundleIDs
+            _ = activeSignatures
         } catch {
-            debugLog("[AppManager] Error reconciling installed apps: \(error)")
+            debugLog("[AppManager] Reconciliation failed; details omitted.")
         }
     }
 
@@ -135,29 +171,17 @@ final class AppManager: ObservableObject, @unchecked Sendable
             let op = try ScheduleExpirationWarningNotificationOperation(installedApp: altStoreApp, context: opContext)
             try await op.execute()
         } catch {
-            debugLog("[AppManager] Failed to schedule expiration notification: \(error)")
+            debugLog("[AppManager] Expiration notification scheduling failed; details omitted.")
         }
         #endif
     }
     
 
 
-    func appsToDeactivate(for installedApp: InstalledApp) -> [InstalledApp]? {
-        guard !UserDefaults.standard.isAppLimitDisabled,
-              let activeAppsLimit = UserDefaults.standard.activeAppsLimit
-        else { return nil }
+    // V3_HEADLESS_APP_MANAGER_SIGNIN_REMOVED_V1: interactive sign-in is owned by the LiveContainer host.
 
-        let activeApps = InstalledApp.fetchActiveApps(in: DatabaseManager.shared.viewContext)
-            .filter { $0.resignedBundleIdentifier != installedApp.resignedBundleIdentifier }
-            .filter { ($0.team?.type ?? .unknown) == .free }
-            .sorted { ($0.name, $0.refreshedDate) < ($1.name, $1.refreshedDate) }
+    // V3_HEADLESS_APP_MANAGER_DEACTIVATE_APPLIMIT_WRAPPER_REMOVED_V1: app-limit chooser belongs to the excluded My Apps UI; v3 uses PipelineRunner.
 
-        let activeAppsCount = activeApps.map(\.requiredActiveSlots).reduce(0, +)
-        let availableActiveApps = max(activeAppsLimit - activeAppsCount, 0)
-
-        guard installedApp.requiredActiveSlots > availableActiveApps else { return nil }
-        return activeApps.filter { $0.bundleIdentifier != StoreApp.altstoreAppID }
-    }
     
     func clearAppCache(completion: @escaping (Result<Void, Error>) -> Void)
     {
@@ -195,57 +219,109 @@ final class AppManager: ObservableObject, @unchecked Sendable
         }
     }
     
+    // V3_SHARED_CONFIRMED_SOURCE_MUTATIONS_V1: UI confirmation stays at the caller;
+    // persistence and notifications are shared by the UI and headless command paths.
     func add(@AsyncManaged _ source: Source,
              message: String? = NSLocalizedString("Make sure to only add sources that you trust.", comment: ""),
              presentingViewController: UIViewController) async throws
     {
         let (sourceName, sourceURL) = await $source.perform { ($0.name, $0.sourceURL) }
-        
         let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-        async let fetchedSource = try await self.fetchSource(sourceURL: sourceURL, managedObjectContext: context) // Fetch source async while showing alert.
+        async let fetchedSource = try await self.fetchSource(sourceURL: sourceURL, managedObjectContext: context)
 
         let title = String(format: NSLocalizedString("Would you like to add the source “%@”?", comment: ""), sourceName)
         let action = await UIAlertAction(title: NSLocalizedString("Add Source", comment: ""), style: .default)
         try await presentingViewController.presentConfirmationAlert(title: title, message: message ?? "", primaryAction: action)
 
-        // Wait for fetch to finish before saving context to make
-        // sure there isn't already a source with this identifier.
-        let sourceExists = try await fetchedSource.isAdded()
-        
-        // This is just a sanity check, so pass nil for existingSource to keep code simple.
-        guard !sourceExists else { throw SourceError.duplicate(source, existingSource: nil) }
-        
-        try await context.performAsync {
-            try context.save()
+        let fetched = try await fetchedSource
+        let result = try await self.persistConfirmedSource(fetched, in: context, notificationSource: source)
+        guard !result.alreadyAdded else {
+            throw SourceError.duplicate(source, existingSource: nil)
         }
-        
-        NotificationCenter.default.post(name: AppManager.didAddSourceNotification, object: source)
     }
-    
+
+    // Presenter-free entry point used after the LiveContainer host has confirmed.
+    func addConfirmed(sourceURL: URL) async throws -> (identifier: String, alreadyAdded: Bool)
+    {
+        let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+        let fetched = try await self.fetchSource(sourceURL: sourceURL, managedObjectContext: context)
+        return try await self.persistConfirmedSource(fetched, in: context, notificationSource: nil)
+    }
+
+    private func persistConfirmedSource(_ fetchedSource: Source,
+                                        in context: NSManagedObjectContext,
+                                        notificationSource: Source?) async throws -> (identifier: String, alreadyAdded: Bool)
+    {
+        let identifier = await AsyncManaged(wrappedValue: fetchedSource).identifier
+        // Source.isAdded opens an independent persistent-store context. The fetch operation
+        // has already inserted its candidate into `context`, so checking that same context
+        // would incorrectly report every new candidate as a duplicate.
+        guard try await !fetchedSource.isAdded() else { return (identifier, true) }
+
+        try await context.performAsync { try context.save() }
+        let viewContext = DatabaseManager.shared.viewContext
+        let savedSource = try await viewContext.performAsync {
+            Source.first(satisfying: NSPredicate(format: "%K == %@", #keyPath(Source.identifier), identifier), in: viewContext)
+        }
+        guard let eventSource = notificationSource ?? savedSource else {
+            throw OperationError.noSources
+        }
+        await MainActor.run {
+            NotificationCenter.default.post(name: AppManager.didAddSourceNotification,
+                                            object: eventSource)
+        }
+        return (identifier, false)
+    }
+
     func remove(@AsyncManaged _ source: Source, presentingViewController: UIViewController) async throws
     {
         let (sourceName, sourceID) = await $source.perform { ($0.name, $0.identifier) }
         guard sourceID != Source.altStoreIdentifier else {
             throw OperationError.forbidden(failureReason: NSLocalizedString("The default SideStore source cannot be removed.", comment: ""))
         }
-        
         let title = String(format: NSLocalizedString("Are you sure you want to remove the source “%@”?", comment: ""), sourceName)
         let message = NSLocalizedString("Any apps you've installed from this source will remain, but they'll no longer receive any app updates.", comment: "")
         let action = await UIAlertAction(title: NSLocalizedString("Remove Source", comment: ""), style: .destructive)
         try await presentingViewController.presentConfirmationAlert(title: title, message: message, primaryAction: action)
-        
+
+        try await self.removeConfirmed(identifier: sourceID, notificationSource: source)
+    }
+
+    // Presenter-free entry point used after the LiveContainer host has confirmed.
+    func removeConfirmed(identifier: String, notificationSource: Source? = nil) async throws
+    {
+        guard identifier != Source.altStoreIdentifier else {
+            throw OperationError.forbidden(failureReason: NSLocalizedString("The default SideStore source cannot be removed.", comment: ""))
+        }
+        let viewContext = DatabaseManager.shared.viewContext
+        let eventSource: Source?
+        if let notificationSource {
+            eventSource = notificationSource
+        } else {
+            eventSource = try await viewContext.performAsync {
+                Source.first(satisfying: NSPredicate(format: "%K == %@", #keyPath(Source.identifier), identifier), in: viewContext)
+            }
+        }
+
         let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         try await context.performAsync {
-            let predicate = NSPredicate(format: "%K == %@", #keyPath(Source.identifier), sourceID)
-            guard let source = Source.first(satisfying: predicate, in: context) else { return } // Doesn't exist == success.
-            
+            let predicate = NSPredicate(format: "%K == %@", #keyPath(Source.identifier), identifier)
+            guard let source = Source.first(satisfying: predicate, in: context) else { return }
+            guard source.identifier != Source.altStoreIdentifier else {
+                throw OperationError.forbidden(failureReason: NSLocalizedString("The default SideStore source cannot be removed.", comment: ""))
+            }
             context.delete(source)
             try context.save()
         }
-        
-        NotificationCenter.default.post(name: AppManager.didRemoveSourceNotification, object: source)
+
+        if let eventSource = notificationSource ?? eventSource {
+            await MainActor.run {
+                NotificationCenter.default.post(name: AppManager.didRemoveSourceNotification,
+                                                object: eventSource)
+            }
+        }
     }
-    
+
     @discardableResult
     func fetchSource(sourceURL: URL,
                      managedObjectContext: NSManagedObjectContext,
@@ -315,7 +391,7 @@ final class AppManager: ObservableObject, @unchecked Sendable
                         let title = String(format: NSLocalizedString("Unable to Refresh “%@” Source", comment: ""), source.name)
                         let error = nsError.withLocalizedTitle(title)
                         errors[source] = error
-                        source.error = error.sanitizedForSerialization()
+                        source.error = V3PersistedErrorSanitizer.sanitize(error as NSError)
                     }
                 }
                 
@@ -346,14 +422,19 @@ final class AppManager: ObservableObject, @unchecked Sendable
             return
         }
         
+        let admission: V3RemoteRequestAdmission
+        do { admission = try V3RemoteRequestLeases.capture() }
+        catch { completionHandler(.failure(error)); return }
         Task.detached(priority: .utility) {
+            defer { admission.close() }
             do {
-                let managedObjectContext = self.getValidDbContext()
-                let context = StandaloneOperationContext(steps: .syncAppIDs, dbBackgroundContext: managedObjectContext)
-                try await AuthManager.shared.getAuthenticatedSession()
-                
-                let syncAppIDsOperation = try SyncAppIDsOperation(context: context)
-                try await syncAppIDsOperation.execute()
+                try await admission.withScope {
+                    let managedObjectContext = self.getValidDbContext()
+                    let context = StandaloneOperationContext(steps: .syncAppIDs, dbBackgroundContext: managedObjectContext)
+                    try await AuthManager.shared.getAuthenticatedSession()
+                    let syncAppIDsOperation = try SyncAppIDsOperation(context: context)
+                    try await syncAppIDsOperation.execute()
+                }
                 completionHandler(.success(()))
             } catch {
                 completionHandler(.failure(error))
@@ -407,7 +488,7 @@ final class AppManager: ObservableObject, @unchecked Sendable
                 {
                     guard let sourceID = mergeError.sourceID else { throw mergeError }
                     
-                    let sanitizedError = (mergeError as NSError).sanitizedForSerialization()
+                    let sanitizedError = V3PersistedErrorSanitizer.sanitize(mergeError as NSError)
                     DatabaseManager.shared.persistentContainer.performBackgroundTask { context in
                         do
                         {
@@ -456,7 +537,16 @@ final class AppManager: ObservableObject, @unchecked Sendable
             .install(app),
             handler: pipelineHandler,
             dbContext: dbContext,
-            completionHandler: completionHandler
+            completionHandler: { result in
+                if case .success(let installedApp) = result,
+                   UserDefaults.standard.isAutoLaunchAppAfterInstallEnabled,
+                   installedApp.bundleIdentifier != StoreApp.altstoreAppID {
+                    Task { @MainActor in
+                        UIApplication.shared.open(installedApp.openAppURL)
+                    }
+                }
+                completionHandler(result)
+            }
         )
     }
 
@@ -475,7 +565,7 @@ final class AppManager: ObservableObject, @unchecked Sendable
         }
     }
 
-    private static func readAppMetadata(from url: URL, packageType: PackageType) throws -> (bundleIdentifier: String, name: String) {
+    static func readAppMetadata(from url: URL, packageType: PackageType) throws -> (bundleIdentifier: String, name: String) {
         switch packageType {
         case .ipa:
             let reader = try Archive.Reader.open(at: url)
@@ -553,9 +643,19 @@ final class AppManager: ObservableObject, @unchecked Sendable
             actualGroup = RefreshGroup(dbContext: context)
         }
         
+        let queuedAdmission = Result { try V3RemoteRequestLeases.capture() }
         actualGroup.activeTask = Task.detached {
             do {
-                try await self.pipelineRunner.perform(installedApps.map { .refresh($0) }, handler: pipelineHandler, group: actualGroup)
+                let admission = try queuedAdmission.get()
+                defer { admission.close() }
+                try await admission.withScope {
+                    try await self.pipelineRunner.perform(installedApps.map { .refresh($0) }, handler: pipelineHandler, group: actualGroup)
+                }
+                try await MainActor.run {
+                    try admission.check()
+                    admission.close()
+                    actualGroup.completionHandler?(actualGroup.results)
+                }
             } catch {
                 actualGroup.error = error
                 let results = Dictionary(uniqueKeysWithValues: installedApps.map { ($0.bundleIdentifier, Result<InstalledApp, Error>.failure(error)) })
@@ -588,6 +688,17 @@ final class AppManager: ObservableObject, @unchecked Sendable
         let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
         let dbContext = self.getValidDbContext()
         self.pipelineRunner.performSingleOperation(.deleteApp(installedApp), handler: pipelineHandler, dbContext: dbContext, completionHandler: completionHandler)
+    }
+    
+    @discardableResult
+    func reinstall(_ installedApp: InstalledApp,
+                  presentingViewController: UIViewController?,
+                  completionHandler: @escaping (Result<InstalledApp, Error>) -> Void) -> RefreshGroup
+    {
+        debugLog("[AppManager] Reinstall requested; app identity omitted.")
+        let pipelineHandler = self.makePipelineHandler(presentingViewController: presentingViewController)
+        let dbContext = self.getValidDbContext()
+        return self.pipelineRunner.performSingleOperation(.reinstall(installedApp), handler: pipelineHandler, dbContext: dbContext, completionHandler: completionHandler)
     }
     
     @discardableResult
@@ -667,11 +778,12 @@ final class AppManager: ObservableObject, @unchecked Sendable
         let dbBackgroundContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         let context = StandaloneOperationContext(steps: .backgroundRefreshApps, dbBackgroundContext: dbBackgroundContext)
         let backgroundRefreshAppsOperation = try BackgroundRefreshAppsOperation(installedApps: installedApps, context: context)
+        let admission = try V3RemoteRequestLeases.capture()
         Task.detached {
+            defer { admission.close() }
             do {
                 backgroundRefreshAppsOperation.presentsFinishedNotification = presentsNotifications
-                
-                let result = try await backgroundRefreshAppsOperation.execute()
+                let result = try await admission.withScope { try await backgroundRefreshAppsOperation.execute() }
                 completionHandler(.success(result))
             } catch {
                 completionHandler(.failure(error))
@@ -709,12 +821,7 @@ typealias InstallTarget = AppManager.InstallTarget
 extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorLogger {
     
     private func makePipelineHandler(presentingViewController: UIViewController?) -> PipelineExecutionHandler {
-        return PipelineHandler(
-            isResignActive: presentingViewController is ResignAltStoreViewController,
-            presenterProvider: { [weak presentingViewController] in
-                presentingViewController?.presentedViewController ?? presentingViewController
-            }
-        )
+        return PipelineHandler()
     }
 
     private func getValidDbContext(_ context: NSManagedObjectContext? = nil) -> NSManagedObjectContext {
@@ -771,7 +878,7 @@ extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorL
         return self.progressLock.withLock {
             switch operation
             {
-            case .install, .update: 
+            case .install, .update, .reinstall: 
                 return self.installationProgress[bundleID]
             case .refresh, .activate, .deactivate, .deleteApp, .backup, .restore, .resign, .removeApp, .removeDeactivatedApp: 
                 return self.refreshProgress[bundleID]
@@ -788,7 +895,7 @@ extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorL
         self.progressLock.withLock {
             switch operation
             {
-            case .install, .update: 
+            case .install, .update, .reinstall: 
                 self.installationProgress[bundleID] = progress
             case .refresh, .activate, .deactivate, .deleteApp, .backup, .restore, .resign, .removeApp, .removeDeactivatedApp: 
                 self.refreshProgress[bundleID] = progress
@@ -798,6 +905,11 @@ extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorL
     }
     
     func getMappedError(for operation: AppOperation, error: Error) -> Error {
+        // V3_REFRESH_TYPED_FAILURE_MAPPING_V1: title decoration must not bridge
+        // away a refresh failure's finite stage, cause, source, or correlation.
+        if case .refresh = operation, let failure = error as? CombinedFailure {
+            return failure
+        }
         var appName: String!
         if let app = operation.app as? (NSManagedObject & AppProtocol) {
             if let context = app.managedObjectContext {
@@ -815,6 +927,7 @@ extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorL
         switch operation
         {
             case .install:    localizedTitle = String(format: NSLocalizedString("Failed to Install %@",        comment: ""), appName)
+            case .reinstall:  localizedTitle = String(format: NSLocalizedString("Failed to Reinstall %@",      comment: ""), appName)
             case .refresh:    localizedTitle = String(format: NSLocalizedString("Failed to Refresh %@",        comment: ""), appName)
             case .update:     localizedTitle = String(format: NSLocalizedString("Failed to Update %@",         comment: ""), appName)
             case .activate:   localizedTitle = String(format: NSLocalizedString("Failed to Activate %@",       comment: ""), appName)
@@ -826,7 +939,8 @@ extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorL
             case .removeApp, .removeDeactivatedApp: localizedTitle = String(format: NSLocalizedString("Failed to Remove %@", comment: ""), appName)
         }
         
-        let nsError = error as NSError
+        // V3_TYPED_PAIRING_FAILURE_PROPAGATION_V1: keep typed pairing failure context through AppManager mapping.
+        let nsError = V3HeadlessPairingFailure.tagIfInvalidPairing(error) as NSError
         let mappedError = nsError.withLocalizedTitle(localizedTitle)
         return mappedError
     }
@@ -840,8 +954,8 @@ extension AppManager: PipelineProgress, PipelineExecutionContext, PipelineErrorL
             default: break
         }
 
-        // Sanitize NSError on same thread before performing background task.
-        let sanitizedError = (error as NSError).sanitizedForSerialization()
+        // V3_PERSISTED_ERROR_PRIVACY_V1: retain only known-safe domain/code and a fixed message.
+        let sanitizedError = V3PersistedErrorSanitizer.sanitize(error as NSError)
 
         DatabaseManager.shared.persistentContainer.performBackgroundTask { context in
             var app = app

@@ -327,43 +327,46 @@ private extension NewsViewController
     
     func install(_ storeApp: StoreApp, at indexPath: IndexPath, progressUpdateHandler: @escaping (Progress) -> Void)
     {
-        let previousProgress = AppManager.shared.installationProgress(for: storeApp)
-        guard previousProgress == nil else {
-            previousProgress?.cancel()
-            return
-        }
-        
-        if let installedApp = storeApp.installedApp, installedApp.hasUpdate
-        {
-            let progress = AppManager.shared.update(installedApp, presentingViewController: self, completionHandler: finish(_:))
-            progressUpdateHandler(progress)
-        }
-        else
-        {
-            let group = AppManager.shared.install(
-                .app(storeApp),
-                presentingViewController: self,
-                completionHandler: finish(_:)
-            )
-            progressUpdateHandler(group.progress)
-        }
-        
-        func finish(_ result: Result<InstalledApp, Error>) -> Void
-        {
-            DispatchQueue.main.async {
-                switch result
-                {
-                case .failure(let error) where error is CancellationError: break // Ignore
-                case .failure(let error):
-                    let toastView = ToastView(error: error)
-                    toastView.opensErrorLog = true
-                    toastView.show(in: self)
+        InstallAppDialog.present(storeApp: storeApp, from: self) { [weak self] in
+            guard let self else { return }
+            let previousProgress = AppManager.shared.installationProgress(for: storeApp)
+            guard previousProgress == nil else {
+                previousProgress?.cancel()
+                return
+            }
+            
+            if let installedApp = storeApp.installedApp, installedApp.hasUpdate
+            {
+                let progress = AppManager.shared.update(installedApp, presentingViewController: self, completionHandler: finish(_:))
+                progressUpdateHandler(progress)
+            }
+            else
+            {
+                let group = AppManager.shared.install(
+                    .app(storeApp),
+                    presentingViewController: self,
+                    completionHandler: finish(_:)
+                )
+                progressUpdateHandler(group.progress)
+            }
+            
+            func finish(_ result: Result<InstalledApp, Error>) -> Void
+            {
+                DispatchQueue.main.async {
+                    switch result
+                    {
+                    case .failure(let error) where error is CancellationError: break // Ignore
+                    case .failure(let error):
+                        let toastView = ToastView(error: error)
+                        toastView.opensErrorLog = true
+                        toastView.show(in: self)
 
-                case .success: debugLog("Installed app: \(storeApp.bundleIdentifier)")
-                }
-                
-                UIView.performWithoutAnimation {
-                    self.collectionView.reloadSections(IndexSet(integer: indexPath.section))
+                    case .success: debugLog("Installed app: \(storeApp.bundleIdentifier)")
+                    }
+                    
+                    UIView.performWithoutAnimation {
+                        self.collectionView.reloadSections(IndexSet(integer: indexPath.section))
+                    }
                 }
             }
         }

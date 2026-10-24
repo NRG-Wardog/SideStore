@@ -97,7 +97,7 @@ public final class CellularRefreshManager: @unchecked Sendable {
     private func turnOffData() async -> Bool {
         let name = turnOffDataShortcutName
         let url = shortcutURL(for: name, fallback: AppConstants.Shortcuts.defaultTurnOffDataShortcutName)
-        debugLog("[CellularRefreshManager] Executing TurnOffData shortcut '\(name)' (URL: \(url.absoluteString))...")
+        debugLog("[CellularRefreshManager] Executing TurnOffData shortcut.")
         let success = await openShortcut(url: url)
         debugLog("[CellularRefreshManager] TurnOffData shortcut finished execution.")
         return success
@@ -107,7 +107,7 @@ public final class CellularRefreshManager: @unchecked Sendable {
     private func turnOnData() async -> Bool {
         let name = turnOnDataShortcutName
         let url = shortcutURL(for: name, fallback: AppConstants.Shortcuts.defaultTurnOnDataShortcutName)
-        debugLog("[CellularRefreshManager] Executing turnOnData shortcut '\(name)' (URL: \(url.absoluteString))...")
+        debugLog("[CellularRefreshManager] Executing turnOnData shortcut.")
         let success = await openShortcut(url: url)
         debugLog("[CellularRefreshManager] turnOnData shortcut finished execution.")
         return success

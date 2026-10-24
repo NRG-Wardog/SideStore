@@ -117,15 +117,46 @@ final class LaunchViewController: UIViewController {
 
     @MainActor
     func handleLaunchError(_ error: Error, retryCallback: (() async -> Void)? = nil) {
-        do { throw error } catch let error as NSError {
-            let title = error.userInfo[NSLocalizedFailureErrorKey] as? String ?? NSLocalizedString("Unable to Launch SideStore", comment: "")
-            let desc = ([error.debugDescription] + error.underlyingErrors.map { ($0 as NSError).debugDescription }).joined(separator: "\n\n")
-            let alert = UIAlertController(title: title, message: desc, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: NSLocalizedString("Retry", comment: ""), style: .default) { _ in
-                Task { await retryCallback?() }
-            })
-            present(alert, animated: true)
+        let (title, message, extraActions) = self.parseLaunchErrorDetails(error, retryCallback: retryCallback)
+
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        extraActions.forEach { alert.addAction($0) }
+        alert.addAction(UIAlertAction(title: NSLocalizedString("Retry", comment: ""), style: .default) { _ in
+            Task { await retryCallback?() }
+        })
+        present(alert, animated: true)
+    }
+
+    @MainActor
+    private func parseLaunchErrorDetails(_ error: Error, retryCallback: (() async -> Void)?) -> (title: String, message: String, extraActions: [UIAlertAction]) {
+        if let dbError = error as? DatabaseError {
+            switch dbError {
+            case .databaseDowngradeDetected(let reason):
+                let resetAction = UIAlertAction(title: NSLocalizedString("Reset Database", comment: ""), style: .destructive) { [weak self] _ in
+                    DatabaseManager.recreateDatabase()
+                    Task {
+                        await MainActor.run { self?.retries = 0 }
+                        await retryCallback?()
+                    }
+                }
+                return (
+                    title: dbError.errorDescription ?? NSLocalizedString("Database Downgrade Detected", comment: ""),
+                    message: reason,
+                    extraActions: [resetAction]
+                )
+            case .missingAppGroup(let reason), .migrationFailed(let reason):
+                return (
+                    title: dbError.errorDescription ?? NSLocalizedString("Database Error", comment: ""),
+                    message: reason,
+                    extraActions: []
+                )
+            }
         }
+
+        let nsError = error as NSError
+        let title = nsError.userInfo[NSLocalizedFailureErrorKey] as? String ?? NSLocalizedString("Unable to Launch SideStore", comment: "")
+        let desc = ([nsError.debugDescription] + nsError.underlyingErrors.map { ($0 as NSError).debugDescription }).joined(separator: "\n\n")
+        return (title: title, message: desc, extraActions: [])
     }
 
     @MainActor

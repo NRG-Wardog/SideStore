@@ -28,6 +28,10 @@ struct UserCustomizationsView: View {
     @State private var customizeAppIcon: Bool = UserDefaults.standard.customizeAppIcon
     @State private var customizeProvisioningProfile: Bool = UserDefaults.standard.customizeProvisioningProfile
     @State private var customizeAppExtensions: AppExtensionCustomization = UserDefaults.standard.customizeAppExtensions
+    @State private var appImportSourceMode: AppImportSourceMode = UserDefaults.standard.appImportSourceMode
+    @State private var isInstallConfirmationEnabled: Bool = UserDefaults.standard.isInstallConfirmationEnabled
+    @State private var isClearCustomizationsOnUninstallEnabled: Bool = UserDefaults.standard.isClearCustomizationsOnUninstallEnabled
+    @State private var isAutoLaunchAppAfterInstallEnabled: Bool = UserDefaults.standard.isAutoLaunchAppAfterInstallEnabled
     @State private var autoFixAppGroupIDs: Bool = UserDefaults.standard.autoFixAppGroupIDs
     @State private var preferResignedIPA: Bool = UserDefaults.standard.preferResignedIPA
     @State private var pendingPreferIPAOngoing: Bool = false
@@ -347,8 +351,12 @@ struct UserCustomizationsView: View {
                         ForEach(GatewayBackend.allCases, id: \.self) { backend in
                             SwiftUI.Button(action: {
                                 if selectedBackend != backend {
-                                    pendingBackendOption = backend
-                                    showBackendRestartConfirmation = true
+                                    if UserDefaults.standard.isMinimuxerBackendHotswapEnabled {
+                                        applyBackendChange(backend, restartRequired: false)
+                                    } else {
+                                        pendingBackendOption = backend
+                                        showBackendRestartConfirmation = true
+                                    }
                                 }
                             }) {
                                 HStack {
@@ -463,11 +471,7 @@ struct UserCustomizationsView: View {
         .alert("Restart Required", isPresented: $showBackendRestartConfirmation) {
             SwiftUI.Button("Restart Now", role: .destructive) {
                 if let newBackend = pendingBackendOption {
-                    selectedBackend = newBackend
-                    selectedGatewayBackendCache = newBackend
-                    UserDefaults.standard.minimuxerGatewayBackend = newBackend.rawValue
-                    UserDefaults.standard.synchronize()
-                    exit(0)
+                    applyBackendChange(newBackend, restartRequired: true)
                 }
             }
             SwiftUI.Button("Cancel", role: .cancel) {
@@ -763,6 +767,16 @@ struct UserCustomizationsView: View {
         )
     }
 
+    private var appImportSourceModeBinding: Binding<AppImportSourceMode> {
+        Binding<AppImportSourceMode>(
+            get: { appImportSourceMode },
+            set: { newValue in
+                appImportSourceMode = newValue
+                UserDefaults.standard.appImportSourceMode = newValue
+            }
+        )
+    }
+
     @ViewBuilder
     private var generalSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -810,6 +824,67 @@ struct UserCustomizationsView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
                 .frame(minHeight: 50)
+                
+                divider
+                
+                HStack {
+                    Text("Default Import Mode")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundColor(.white)
+                    Spacer()
+                    Picker("", selection: appImportSourceModeBinding) {
+                        ForEach(AppImportSourceMode.allCases) { (option: AppImportSourceMode) in
+                            Text(option.displayName).tag(option)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(Color.white.opacity(0.7))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .frame(minHeight: 50)
+                
+                divider
+
+                toggleRow(
+                    title: "Confirm App Installation",
+                    subtitle: "Prompt for confirmation before installing or importing an app",
+                    isOn: Binding(
+                        get: { isInstallConfirmationEnabled },
+                        set: { newValue in
+                            isInstallConfirmationEnabled = newValue
+                            UserDefaults.standard.isInstallConfirmationEnabled = newValue
+                        }
+                    )
+                )
+                
+                divider
+
+                toggleRow(
+                    title: "Clear Customizations on Uninstall",
+                    subtitle: "Reset assigned profiles, custom certificates, and metadata when an app is deleted",
+                    isOn: Binding(
+                        get: { isClearCustomizationsOnUninstallEnabled },
+                        set: { newValue in
+                            isClearCustomizationsOnUninstallEnabled = newValue
+                            UserDefaults.standard.isClearCustomizationsOnUninstallEnabled = newValue
+                        }
+                    )
+                )
+                
+                divider
+
+                toggleRow(
+                    title: "Auto-Launch App After Install",
+                    subtitle: "Automatically open apps after installation completes",
+                    isOn: Binding(
+                        get: { isAutoLaunchAppAfterInstallEnabled },
+                        set: { newValue in
+                            isAutoLaunchAppAfterInstallEnabled = newValue
+                            UserDefaults.standard.isAutoLaunchAppAfterInstallEnabled = newValue
+                        }
+                    )
+                )
                 
                 divider
                 
@@ -987,5 +1062,17 @@ struct UserCustomizationsView: View {
         alertController.addAction(cancelAction)
         alertController.addAction(resetAction)
         top.present(alertController, animated: true, completion: nil)
+    }
+
+    private func applyBackendChange(_ newBackend: GatewayBackend, restartRequired: Bool) {
+        selectedBackend = newBackend
+        selectedGatewayBackendCache = newBackend
+        UserDefaults.standard.minimuxerGatewayBackend = newBackend.rawValue
+        UserDefaults.standard.synchronize()
+        if restartRequired {
+            exit(0)
+        } else {
+            syncMinimuxerBackendFromUserDefaults()
+        }
     }
 }

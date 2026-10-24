@@ -44,10 +44,44 @@ public enum OperationError: LocalizedError, CustomNSError, Sendable, Equatable {
     case SideJITIssue(error: String)
     case unknownUDID(reason: String)
 
+    // Legacy typed cases remain part of the embedded host's privacy-safe mapping.
+    case unknown(failureReason: String? = nil, file: String = #fileID, line: UInt = #line)
+    case appNotFound(name: String? = nil)
+    case invalidOperationContext(String? = nil)
+    case maximumAppIDLimitReached(appName: String, requiredAppIDs: Int, availableAppIDs: Int, expirationDate: Date)
+    case sourceNotAdded(name: String)
+    case serverNotFound
+    case connectionFailed
+    case provisioningError(result: String, message: String? = nil)
+    case certificateChanged(appName: String)
+
     public static var cancelled: CancellationError { CancellationError() }
 
     public var rawDescription: String {
         switch self {
+        case .unknown(let failureReason, let file, let line):
+            let base = failureReason ?? "An unknown error occurred."
+            return "\(base) (\(file) line \(line))"
+        case .appNotFound(let name):
+            let app = name ?? "The app"
+            return "\(app) could not be found."
+        case .invalidOperationContext(let msg):
+            let suffix = msg.map { ": \n\($0)" } ?? "."
+            return "Invalid Operation Context\(suffix)"
+        case .maximumAppIDLimitReached:
+            return "Cannot register more than 10 App IDs within a 7 day period."
+        case .sourceNotAdded(let name):
+            return "The source “\(name)” is not added to SideStore."
+        case .serverNotFound:
+            return "AltServer could not be found."
+        case .connectionFailed:
+            return "A connection to AltServer could not be established."
+        case .provisioningError(let result, let message):
+            let combined = (message?.isEmpty ?? true) ? result : "\(result) \(message!)"
+            let trimmed = combined.trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+            return "An error occurred while provisioning: \(trimmed). Please try again. If the issue persists, report it on GitHub Issues!"
+        case .certificateChanged(let appName):
+            return "The signing certificate used to install “\(appName)” differs from your active signing certificate. Please re-sign or reinstall the app."
         case .noInstalledApps:
             return "There are no active sideloaded apps to refresh."
         case .noSources:
@@ -78,7 +112,7 @@ public enum OperationError: LocalizedError, CustomNSError, Sendable, Equatable {
         case .invalidApp(let reason):
             return "The app is in an invalid format: \(reason)"
         case .invalidPairingFile(let reason):
-            return "The current pairing file is invalid or missing. Reason: \(reason)\n\nPlease make sure to input a valid pairing file! If the issue persists, replace your pairing with iloader."
+            return "The current pairing file is invalid. Reason: \(reason)\n\nPlease make sure to input a valid pairing file! If the issue persists, replace your pairing with iloader or idevice_pair."
         case .invalidParameters(let msg):
             return "Invalid parameters: \n\(msg)"
         case .invalidResponse(let reason):
@@ -114,7 +148,7 @@ public enum OperationError: LocalizedError, CustomNSError, Sendable, Equatable {
         case .SideJITIssue(let error):
             return "An error occurred while using SideJIT: \(error)"
         case .unknownUDID(let reason):
-            return "SideStore could not determine this device's UDID: \(reason)\n\nPlease replace your pairing using iloader."
+            return "SideStore could not determine this device's UDID: \(reason)\n\nPlease replace your pairing using iloader or idevice_pair."
         }
     }
 

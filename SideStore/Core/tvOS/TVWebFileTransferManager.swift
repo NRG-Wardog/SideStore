@@ -21,7 +21,7 @@ public final class TVWebFileTransferManager: @unchecked Sendable {
     private var activeAlert: UIAlertController?
 
     private enum Mode {
-        case `import`(title: String, acceptedExtensions: [String], completion: (URL?) -> Void)
+        case fileImport(title: String, acceptedExtensions: [String], completion: (URL?) -> Void)
         case export(fileURL: URL, title: String, completion: (() -> Void)?)
     }
     private var currentMode: Mode?
@@ -49,7 +49,7 @@ public final class TVWebFileTransferManager: @unchecked Sendable {
             extensions = ["ipa", "sideconf", "json", "mobiledevicepairing", "plist", "zip"]
         }
 
-        self.currentMode = .import(title: title, acceptedExtensions: extensions, completion: completion)
+        self.currentMode = .fileImport(title: title, acceptedExtensions: extensions, completion: completion)
 
         guard let serverURL = self.startListener() else {
             debugLog("[TVWebFileTransferManager] Failed to start listener for import")
@@ -223,7 +223,7 @@ public final class TVWebFileTransferManager: @unchecked Sendable {
 
     private func handleGETRequest(connection: NWConnection) {
         switch self.currentMode {
-        case .import(let title, let acceptedExtensions, _):
+        case .fileImport(let title, let acceptedExtensions, _):
             let acceptAttr = acceptedExtensions.map { ".\($0)" }.joined(separator: ",")
             self.sendHTMLResponse(connection: connection, body: self.makeUploadHTMLPage(title: title, acceptAttr: acceptAttr))
         case .export(let fileURL, let title, _):
@@ -256,7 +256,7 @@ public final class TVWebFileTransferManager: @unchecked Sendable {
     }
 
     private func processUploadedBody(bodyData: Data, connection: NWConnection) {
-        guard case .import(_, _, let completion) = self.currentMode else {
+        guard case .fileImport(_, _, let completion) = self.currentMode else {
             self.sendHTMLResponse(connection: connection, body: self.makeErrorHTMLPage("No active import session."))
             return
         }

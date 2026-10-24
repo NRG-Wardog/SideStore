@@ -1,0 +1,2362 @@
+{
+  "integration_baseline": "141776ba6ba38fc04a5e77f68b0cfc4e6c8842ee",
+  "source_commits": {
+    "integration_baseline": "141776ba6ba38fc04a5e77f68b0cfc4e6c8842ee",
+    "upstream_base": "ff25922e5c13ccfafd83bda5092910d848ebd409",
+    "commits": [
+      {
+        "order": 1,
+        "commit": "698714b07871018282b850c94d449de88a16e288",
+        "subject": "auth: maintain frozen SignIn and two-factor runtime",
+        "files": [
+          "SideStore/Core/Auth/AuthManager.swift",
+          "SideStore/Core/Auth/DeveloperPortalProxy.swift",
+          "SideStore/Core/Operations/StandaloneOperations/SignInOperation.swift"
+        ],
+        "app_delegate_segments": [
+          {
+            "group": 1,
+            "start_line": 381,
+            "end_line": 405,
+            "sha256": "029069290134fde1e7658e7e04cf6ee10ca3b74f2aebefe10c8b36e930fa6359"
+          },
+          {
+            "group": 1,
+            "start_line": 1551,
+            "end_line": 1606,
+            "sha256": "6aef3ef160a51f4f1d76f76e3dac4864649f931d5ca4f3c3867fb8717bff9eca"
+          },
+          {
+            "group": 1,
+            "start_line": 1992,
+            "end_line": 2091,
+            "sha256": "fe211b8ee6cdde1de998fb23b14014cad7adc8e288bc80cada1e58583f64a380"
+          },
+          {
+            "group": 1,
+            "start_line": 2825,
+            "end_line": 2948,
+            "sha256": "f36edbe6b9b9086ca2f903fea4fc5d3c9a59afd974cadfbccbf3e93c1830573f"
+          },
+          {
+            "group": 1,
+            "start_line": 3793,
+            "end_line": 3846,
+            "sha256": "b3ab5443abc4ddf48575e2540bce374eb8fb1a8747f9aad348bc3a148e62e807"
+          },
+          {
+            "group": 1,
+            "start_line": 5258,
+            "end_line": 6424,
+            "sha256": "dd25074eb332c7f7b88724851cc0537167f65938c3e981c90f7a421c5ed0129a"
+          },
+          {
+            "group": 1,
+            "start_line": 11062,
+            "end_line": 11275,
+            "sha256": "8225509fa0a2db32d91c2e9ebce135e1e7bac244112333a57784b22e225fac08"
+          },
+          {
+            "group": 1,
+            "start_line": 11480,
+            "end_line": 12410,
+            "sha256": "2488c5c3658c5222ad1207d7e5c43f9cb1994414eb618ef29311add5d5dcebe0"
+          },
+          {
+            "group": 1,
+            "start_line": 15506,
+            "end_line": 15522,
+            "sha256": "6404bfb76f2637e059adc4cc0842a77e795c877835eb28ad7ff7fd1d76fa1215"
+          },
+          {
+            "group": 1,
+            "start_line": 15860,
+            "end_line": 15980,
+            "sha256": "f14207440fffb30a52a29e60a36067be3a2fef1c92533ea038c486e12e78677c"
+          }
+        ]
+      },
+      {
+        "order": 2,
+        "commit": "0602d3dd954f13948e3661839d68f555ca6ac71e",
+        "subject": "keychain: maintain shared identity and transaction storage",
+        "files": [
+          "AltStore/Core/Components/Keychain.swift",
+          "SideStore/Utils/importexport/ImportExport.swift"
+        ],
+        "app_delegate_segments": [
+          {
+            "group": 2,
+            "start_line": 6735,
+            "end_line": 7916,
+            "sha256": "edebd653b649d811fc7132e197b368d7cfe0b39dcfd679609b9012b6735a56d3"
+          },
+          {
+            "group": 2,
+            "start_line": 15496,
+            "end_line": 15505,
+            "sha256": "ce000ae9711a041c312b3acaab672eaf99a887512817f6d57ceed159cc893acf"
+          }
+        ]
+      },
+      {
+        "order": 3,
+        "commit": "8405b17a35e6dd0fa565e49468e1e6f4b7e5ef81",
+        "subject": "anisette: maintain frozen provider adapters and trace",
+        "files": [
+          "SideStore/Core/Anisette/AnisetteConfigManager.swift",
+          "SideStore/Core/Anisette/AnisetteProvider.swift",
+          "SideStore/Core/Anisette/OnDeviceAnisetteManager.swift",
+          "AltStore/Settings/AnisetteServerModels.swift"
+        ],
+        "app_delegate_segments": [
+          {
+            "group": 3,
+            "start_line": 15523,
+            "end_line": 15859,
+            "sha256": "8156ad756fe967e5678f4b51294ab76e18afa69ab600dcb828b7d59b1c6bf3bb"
+          },
+          {
+            "group": 3,
+            "start_line": 16087,
+            "end_line": 16159,
+            "sha256": "7d2f952c2692a982262ad3eeda8eda89ee0ccc0559b3b69234617a014c948a05"
+          }
+        ]
+      },
+      {
+        "order": 4,
+        "commit": "0fc149a859313c97ab64a90569c7971693bd2845",
+        "subject": "service: maintain headless runtime and IPC ownership",
+        "files": [
+          "AltStore/Core/Model/DatabaseManager/DatabaseManager.swift",
+          "AltStore/SceneDelegate.swift",
+          "SideBackup/SideBackupApp.swift",
+          "SideStore/AppBootManager.swift",
+          "SideStore/Core/Logging/OperationLogging.swift",
+          "SideStore/Core/Logging/SideStoreLogging.swift",
+          "SideStore/Core/Operations/PipelineOperations/PerformBackupRestoreOperation.swift",
+          "SideStore/Core/Operations/PipelineOperations/UninstallAppOperation.swift",
+          "SideStore/Core/Operations/StandaloneOperations/ClearAppCacheOperation.swift",
+          "SideStore/DeepLinks/URLHandler.swift",
+          "SideStore/Handlers/PipelineHandler.swift"
+        ],
+        "app_delegate_segments": [
+          {
+            "group": 4,
+            "start_line": 376,
+            "end_line": 380,
+            "sha256": "d9cfe2008abeb095c2bf77d660a9ae021f813e4bd207e617337fa476fa7405ab"
+          },
+          {
+            "group": 4,
+            "start_line": 406,
+            "end_line": 1550,
+            "sha256": "bc042d8a997dff6e24398852511c6372a0814281ac730a42dba340267e9abdda"
+          },
+          {
+            "group": 4,
+            "start_line": 1607,
+            "end_line": 1991,
+            "sha256": "ed35b49abb86b9e3a1fc5c4595b79d3534161a802b521bd141e5ea4f63bc0fd9"
+          },
+          {
+            "group": 4,
+            "start_line": 2092,
+            "end_line": 2824,
+            "sha256": "a20ebef5f3e9ea4209fd7484f2c679891513ac8e40755f40e8ec6f1b33daefb2"
+          },
+          {
+            "group": 4,
+            "start_line": 2949,
+            "end_line": 3308,
+            "sha256": "eb51b5fdf9c8aa2b1d8f3d9cd6aa896ab88a7cf266ed72c515e1747815843831"
+          },
+          {
+            "group": 4,
+            "start_line": 3657,
+            "end_line": 3792,
+            "sha256": "a111a9181f1d6ca8345032cfaa63b7d84be05178868c93405b27bbf97162b8d1"
+          },
+          {
+            "group": 4,
+            "start_line": 3847,
+            "end_line": 5257,
+            "sha256": "5745386e1efb33d9341a3bc59bd513725479f81e450e9186be18187f4cc56cc6"
+          },
+          {
+            "group": 4,
+            "start_line": 6425,
+            "end_line": 6565,
+            "sha256": "c61ed830378cc46042e1cef78672e9a5790bfc92710002292c11121ff4ace857"
+          },
+          {
+            "group": 4,
+            "start_line": 6641,
+            "end_line": 6734,
+            "sha256": "1899f0d24e48b68085b4bbfc4887c490fde388e80b94e670f5ad834d4bc9907d"
+          },
+          {
+            "group": 4,
+            "start_line": 7917,
+            "end_line": 8293,
+            "sha256": "3a4a4afdb6a913386011e9695ce5d492b12168f1bf52945e07973593bf292629"
+          },
+          {
+            "group": 4,
+            "start_line": 8341,
+            "end_line": 11061,
+            "sha256": "accf78cda316daee1be430442a7a761adbbb9d51a988e3166ae3233b4bfe6f89"
+          },
+          {
+            "group": 4,
+            "start_line": 12411,
+            "end_line": 14025,
+            "sha256": "590e77fcf16330292ae714b8431442a82c8e09673b05ef5b88a9a9d664bf08b0"
+          },
+          {
+            "group": 4,
+            "start_line": 14173,
+            "end_line": 15495,
+            "sha256": "0abf964a5fe3a4c7a9fcab9a6731119268cee21754fbb7fba89e5ce3914cc905"
+          },
+          {
+            "group": 4,
+            "start_line": 16016,
+            "end_line": 16086,
+            "sha256": "c501322c2e8db2c399ff3fa06ab25ba5c8e7fc168a96898f3c388e8e16f9ebdc"
+          },
+          {
+            "group": 4,
+            "start_line": 16160,
+            "end_line": 16555,
+            "sha256": "89be8e613de9d65bf05f8c069bfb5007ba5ba4040483a2551a2b46a8d9e0c437"
+          }
+        ]
+      },
+      {
+        "order": 5,
+        "commit": "18ed27d8a52b68a46d33d467ebf96ff3becda84a",
+        "subject": "signing: maintain certificate and provisioning contracts",
+        "files": [
+          "SideStore/Core/Certificates/CertificateManager.swift",
+          "SideStore/Core/Certificates/CodeSignValidator.swift",
+          "SideStore/Core/Certificates/OCSPValidator.swift",
+          "SideStore/Core/Operations/PipelineOperations/FetchProvisioningProfilesOperation.swift",
+          "SideStore/Core/Operations/PipelineOperations/UpdateAppCertificateOperation.swift",
+          "SideStore/Core/Operations/PipelineOperations/VerifyCertificateOperation.swift"
+        ],
+        "app_delegate_segments": [
+          {
+            "group": 5,
+            "start_line": 8294,
+            "end_line": 8340,
+            "sha256": "993a95d812e5b17710eef76c85af7aab9e1f45b2a556b57af2f92e338a983b91"
+          },
+          {
+            "group": 5,
+            "start_line": 11276,
+            "end_line": 11479,
+            "sha256": "95b62ba78a5b7142405f6762c1e9f366fe7b43d67687f85da91c1d7d10ab1761"
+          }
+        ]
+      },
+      {
+        "order": 6,
+        "commit": "b911235f3b39bbe60069135670871da8088295c7",
+        "subject": "refresh: maintain background and persistence behavior",
+        "files": [
+          ".combined-refresh-contract.json",
+          "AltStore/Core/Model/RefreshAttempt.swift",
+          "AltStore/Intents/App Intents/AppShortcuts.swift",
+          "AltStore/Intents/App Intents/RefreshAllAppsIntent.swift",
+          "AltStore/Intents/App Intents/RefreshAllAppsWidgetIntent.swift",
+          "AltStore/Managing Apps/AppManager.swift",
+          "SideStore/Core/Operations/PipelineExecutor.swift",
+          "SideStore/Core/Operations/StandaloneOperations/BackgroundRefreshAppsOperation.swift",
+          "SideStore/Utils/iostreams/ConsoleLog.swift"
+        ],
+        "app_delegate_segments": [
+          {
+            "group": 6,
+            "start_line": 3309,
+            "end_line": 3656,
+            "sha256": "211a165d4955e34c54e50607c07349a29fa004d380714a17c741203671ce4e82"
+          },
+          {
+            "group": 6,
+            "start_line": 6566,
+            "end_line": 6640,
+            "sha256": "4e864b01293ceb8e914a0a120abc384d68754a01fea4850f0484ddb6699bda27"
+          },
+          {
+            "group": 6,
+            "start_line": 14026,
+            "end_line": 14172,
+            "sha256": "b5d119f17cf3b202257c6d094884284620fb4c058188c8bd4a03a5d75ccac9e1"
+          },
+          {
+            "group": 6,
+            "start_line": 15981,
+            "end_line": 16015,
+            "sha256": "20ca73b670f6d3f79d20674ac1c252d5cd7c7d064eae424b315dad392d0a447a"
+          }
+        ]
+      },
+      {
+        "order": 7,
+        "commit": "ea47b44a47dd0fbb3ee4838e17c86dbb7315937d",
+        "subject": "transport: maintain combined minimuxer integration",
+        "files": [
+          "SideStore/Core/DeviceApi/ConnectionConfig.swift",
+          "SideStore/Core/DeviceApi/MinimuxerWrapper.swift",
+          "SideStore/Core/JIT/SideJITManager.swift",
+          "SideStore/Core/Pairing/PairingFileManager.swift",
+          "SideStore/Core/Operations/PipelineOperations/SendAppOperation.swift",
+          "SideStore/Core/Operations/PipelineRunner.swift"
+        ],
+        "app_delegate_segments": []
+      },
+      {
+        "order": 8,
+        "commit": "1d816883b9248e2023245ccce5010da82063a14f",
+        "subject": "project: maintain headless UI membership and package lock",
+        "files": [
+          "AltStore.xcodeproj/project.pbxproj",
+          "AltStore.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
+          "AltStore/Info.plist",
+          "AltStore/My Apps/MyAppsViewController.swift",
+          "SideStore/Views/Settings/Advanced/Connection/ConnectionConfig.swift",
+          "SideStore/Views/Settings/TechyThings/HealthCheck/HealthCheckView.swift",
+          "SideStore/Views/Settings/TechyThings/HealthCheck/HealthCheckViewModel.swift"
+        ],
+        "app_delegate_segments": []
+      }
+    ],
+    "app_delegate_note": "Exact in-place final byte ranges. Shared cross-subsystem policy declarations remain service-owned; no new independent contract copy is introduced.",
+    "region_review": [
+      {
+        "subsystem": 1,
+        "start_line": 381,
+        "end_line": 405,
+        "subject": "V3AuthServiceSnapshot"
+      },
+      {
+        "subsystem": 1,
+        "start_line": 1551,
+        "end_line": 1606,
+        "subject": "identity stamp synchronization"
+      },
+      {
+        "subsystem": 1,
+        "start_line": 1992,
+        "end_line": 2091,
+        "subject": "two-factor terminal and retry policies"
+      },
+      {
+        "subsystem": 1,
+        "start_line": 2825,
+        "end_line": 2948,
+        "subject": "auth prompt and cancellation policies"
+      },
+      {
+        "subsystem": 1,
+        "start_line": 3793,
+        "end_line": 3846,
+        "subject": "authoritative sign-out postconditions"
+      },
+      {
+        "subsystem": 1,
+        "start_line": 5258,
+        "end_line": 6424,
+        "subject": "auth ownership, identity and provisioning resume policies"
+      },
+      {
+        "subsystem": 1,
+        "start_line": 11062,
+        "end_line": 11275,
+        "subject": "typed authentication failure classification"
+      },
+      {
+        "subsystem": 1,
+        "start_line": 11480,
+        "end_line": 12410,
+        "subject": "auth state machine and headless 2FA handler"
+      },
+      {
+        "subsystem": 1,
+        "start_line": 15506,
+        "end_line": 15522,
+        "subject": "authentication phase evidence"
+      },
+      {
+        "subsystem": 1,
+        "start_line": 15860,
+        "end_line": 15980,
+        "subject": "account diagnostics and database recovery"
+      },
+      {
+        "subsystem": 2,
+        "start_line": 6735,
+        "end_line": 7916,
+        "subject": "Keychain access group, App Group and secret handoff"
+      },
+      {
+        "subsystem": 2,
+        "start_line": 15496,
+        "end_line": 15505,
+        "subject": "identifier/blob pair failure"
+      },
+      {
+        "subsystem": 3,
+        "start_line": 15523,
+        "end_line": 15859,
+        "subject": "finite temporary Anisette trace and native evidence"
+      },
+      {
+        "subsystem": 3,
+        "start_line": 16087,
+        "end_line": 16159,
+        "subject": "Anisette sync failure classification"
+      },
+      {
+        "subsystem": 5,
+        "start_line": 8294,
+        "end_line": 8340,
+        "subject": "certificate creation and active export adapters"
+      },
+      {
+        "subsystem": 5,
+        "start_line": 11276,
+        "end_line": 11479,
+        "subject": "typed provisioning guidance"
+      },
+      {
+        "subsystem": 6,
+        "start_line": 3309,
+        "end_line": 3656,
+        "subject": "refresh completion verification policies"
+      },
+      {
+        "subsystem": 6,
+        "start_line": 6566,
+        "end_line": 6640,
+        "subject": "refresh admission lease"
+      },
+      {
+        "subsystem": 6,
+        "start_line": 14026,
+        "end_line": 14172,
+        "subject": "combined refresh target and verification policies"
+      },
+      {
+        "subsystem": 6,
+        "start_line": 15981,
+        "end_line": 16015,
+        "subject": "post-mutation persistence contract"
+      }
+    ]
+  },
+  "changed_files": [
+    {
+      "file": "SideStore:.combined-refresh-contract.json",
+      "before": null,
+      "after": {
+        "sha256": "8e839ee8f86d325672f2dc1f4f683294368e07ce03197c11ef09b9982866baa0",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 6,
+      "pipelines": [
+        "patch_combined_refresh_contract.py "
+      ]
+    },
+    {
+      "file": "SideStore:AltStore.xcodeproj/project.pbxproj",
+      "before": {
+        "sha256": "fd62b77b6be0a63590b46b6b42b75fea1c7e8c0350a57ae3372955a50313238b",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "0a21d1c86d22c16af2d877b571fccc674f5a110cc0ccf9bd4bc6204d511ee33f",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 8,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:AltStore.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
+      "before": {
+        "sha256": "92710a8c8d97cf6e241d6ebf1b72f5b77ea2eeaa5d7d29bfe4dcf9c659c2f2ee",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "5c8c4df054a2f76dc9648bef4a88ef25a716e1f0a5115e0a763e57d20c60ce50",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 8,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/AppDelegate.swift",
+      "before": {
+        "sha256": "df87efbdc6a384d6feadb2ccbe5b9d63c73ff11e893bf624ec6e7e54f72d274f",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "814a7bc654f611cc6c56f686eb1578bd381b9d8e7d372cd9e59589c187f85a2e",
+        "mode": "0o644"
+      },
+      "primary_subsystem": "in-place-region-map",
+      "pipelines": [
+        "patch_v3_unified_shell.py",
+        "patch_v3_service.py",
+        "patch_combined_service_startup.py v3"
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/Core/Components/Keychain.swift",
+      "before": {
+        "sha256": "0fe4aed68f9c92f8c1fc3fd9e5bf8b49ce021787d6d989276944f15951247628",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "8af40c8b3e425c599f7d2a4848b694ae2ee18abcfad39cf95c3ad66babd0df8f",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 2,
+      "pipelines": [
+        "patch_combined_refresh_contract.py "
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/Core/Model/DatabaseManager/DatabaseManager.swift",
+      "before": {
+        "sha256": "81a594c730d402ab06785d3e4c391999fb4e010e7063711c43879dc0a71c3360",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "7d7766473f213c9cd6be60134633f7b6655e450804679ad231758d37d76dc90b",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 4,
+      "pipelines": [
+        "patch_embedded_sidestore_startup.py",
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/Core/Model/RefreshAttempt.swift",
+      "before": {
+        "sha256": "905d646cc8b5e11164d2c42e0ae213107085295cdccb5a3d4e9677ce2726a374",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "cb6f60d1b8322bcee10e77cdaece48ad9c241ecd78b40cd105dca88e6e217ab9",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 6,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/Info.plist",
+      "before": {
+        "sha256": "3d3dba0282cc4330c8585d49738ff82c032d0db5edb1a6ad53943779e24712eb",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "74001aeb34539917dc8ac99ee82fe4d6a93da3c429a04d9cf727e0f286102edd",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 8,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/Intents/App Intents/AppShortcuts.swift",
+      "before": {
+        "sha256": "ae4c07a686fa32f27667827b4df5315acd5d3678b3d4e2c29b9d679450fbb3b5",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "1ad60dd46aecce02f2926ca3336a4930422096403725db75a1e96fd11e6239a4",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 6,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/Intents/App Intents/RefreshAllAppsIntent.swift",
+      "before": {
+        "sha256": "f0f0e83c6cc45ba9dfff2a0061aca26a13618b568934c7ea7639220b1a073dc3",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "f1bbc0093e1349be884bd33785f204b529a63e5c7e509e8a9806990c877fd055",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 6,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/Intents/App Intents/RefreshAllAppsWidgetIntent.swift",
+      "before": {
+        "sha256": "383428e5839a127df929898bc61067c3d8bc07e7c45fdfe5418705c00a6ee100",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "b0f0bf81a5e9a0bb7452b1c04ce213adb67c32457689ddedf358c3515d4ee97d",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 6,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/Managing Apps/AppManager.swift",
+      "before": {
+        "sha256": "62632f6f3fc1e2c3566ebb0eb542c24dc60bc582a6e42da1f691406766f9baee",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "9c6ae18ab82b3a794ba57c1ee3bf42acb042be64dc4c46855dab39d3b7bd19db",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 6,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/My Apps/MyAppsViewController.swift",
+      "before": {
+        "sha256": "340af742eb12c0386a724d06941d30ff8103ad5977a2c57b35f63cea1872ba0a",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "79c89adaffb724e9da8904049eca204947cf292f3d4ee96de1fa0fba9243b2d0",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 8,
+      "pipelines": [
+        "patch_combined_transport.py "
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/SceneDelegate.swift",
+      "before": {
+        "sha256": "528284c8513b14772a339cb543964db9a10408c7c0ea3f93a291f2526e33cb69",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "a3ed92b0dcbe56b665ebb1205e507691c7f9aedebe2c69741f4b2c4197766606",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 4,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:AltStore/Settings/AnisetteServerModels.swift",
+      "before": null,
+      "after": {
+        "sha256": "733f538750924b7953ec8ad77ee4287c3f2ac722f913414d9f3377e61f39ef8f",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 3,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideBackup/SideBackupApp.swift",
+      "before": {
+        "sha256": "92a0f4584cc8ff97b5beac303b9be8a62d6eed6b81297699502d48884fe4883b",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "5b1817519c5fefc56729a1b8b5606967c3b7052a31dd2f82f1e3cce181ab40ac",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 4,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/AppBootManager.swift",
+      "before": {
+        "sha256": "b52a13228cbf4d86cdc3578a21346ef5362e5a056586bf358ba19ff5c806e2bb",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "fcea3d8499eb56ee87ab429294ba5436b1d7a1a2ffa0f898ff914a8fbaef6f7d",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 4,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Anisette/AnisetteConfigManager.swift",
+      "before": {
+        "sha256": "2ae21182755709599a281d9d545044cbd6bbfa1d9ced013f2e735767d02e1cb2",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "94f73d7cc4b334b28a2debbd7cc7658dfaebbb31ce36960123b7067e53e10fdd",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 3,
+      "pipelines": [
+        "patch_combined_refresh_contract.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Anisette/AnisetteProvider.swift",
+      "before": {
+        "sha256": "da88ba1573ffe454f7eac5719c3a8cf373ef70e0d0af31c7eb57770e505c4229",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "7a3ac0f470c6f02ad30a6943b643e31bc02a512d24c2ae6b191850bb81b79425",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 3,
+      "pipelines": [
+        "patch_combined_refresh_contract.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Anisette/OnDeviceAnisetteManager.swift",
+      "before": {
+        "sha256": "7e877ea77e5be087d3c365df0af5d98ba4121536ecef9e9d5b99af33ebb14fcc",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "6d00c3d089a66a883c3b0f56bff6a8a62f3a290c9434aec65f28aa73985186b5",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 3,
+      "pipelines": [
+        "patch_combined_refresh_contract.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Auth/AuthManager.swift",
+      "before": {
+        "sha256": "2fb0c6dc4608430dcf1377d6f07c709a418db1475245a4c5dfa19aa1088dfe1c",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "aadcd5c8387edc751e2e83ccf28e1925ea2c42df89c9edcddcc3cb47b355e701",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 1,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Auth/DeveloperPortalProxy.swift",
+      "before": {
+        "sha256": "77a2469a6270b78a889d470e7ac79aff523f96bc2d4949d014cbd72cbb716ca2",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "c128d7f78514371494f9f3474a3a5b52ecef964d856af5b6e315d88ea86462e5",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 1,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Certificates/CertificateManager.swift",
+      "before": {
+        "sha256": "aa01de91ecbb1b8d19d737e6063d85f5ec8da58f81d97ef2b185abe77a2612c6",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "8956afd05a11bd0f0a4aa68bbcc9eba044320906ce463e70716995f550e42c3e",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 5,
+      "pipelines": [
+        "patch_v3_service.py",
+        "patch_combined_refresh_contract.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Certificates/CodeSignValidator.swift",
+      "before": {
+        "sha256": "215d284d5a2da916c496ef87706d711999ed7b8dbef34603285f25682b01f5c7",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "01a2562e62b83b2cfbe2ef5251598022bc999229b95b21218e7416f8964d840f",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 5,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Certificates/OCSPValidator.swift",
+      "before": {
+        "sha256": "2158a992890f0a10b839ea7fb7dde0185eeaddb567ca6935449d36514644cb6b",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "3deba4778be7a3ff7fcdafea0b85da4b3740f27826f88dc16e6ccedb6e8e3887",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 5,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/DeviceApi/ConnectionConfig.swift",
+      "before": null,
+      "after": {
+        "sha256": "8623a183a22c1587f4452cfa2f9aa87f494e682587ac214ff2d11277c7e1671d",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 7,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/DeviceApi/MinimuxerWrapper.swift",
+      "before": {
+        "sha256": "706e5ba9975b30149e229efb46c68750135c7c99cee1e29d099bb27612530224",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "072bf04bd5e0255681dae3e27e6fd5350e7277ce981cd821c63a0e76fb08b062",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 7,
+      "pipelines": [
+        "patch_v3_service.py",
+        "patch_combined_transport.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/JIT/SideJITManager.swift",
+      "before": {
+        "sha256": "db7000b59dfcefcbf3f936399d7b1ed245b96eadb9b5ae85a5f85eb33cc2d53f",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "317ceba2b5b6c4176270b6065f83650a060fd9359e1eb50d9041c37ae0971ef0",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 7,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Logging/OperationLogging.swift",
+      "before": {
+        "sha256": "7e0fca060cb14be03195db67588f6c63b2ebd067315ab54e14ab649077bfac03",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "069ce4440923fe5b45967a21d587a0f17a691141718678ae4e09581bbef320ba",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 4,
+      "pipelines": [
+        "patch_sidesign_privacy.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Logging/SideStoreLogging.swift",
+      "before": {
+        "sha256": "53fe284424dea93619cebd5542449e226cec68aec8160cc3290351e2c7ec5d66",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "f111e2ef5f312145ae97082affefc75763218662d96104da3a95b8f6cddcdfdb",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 4,
+      "pipelines": [
+        "patch_v3_service.py",
+        "patch_sidesign_privacy.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Operations/PipelineExecutor.swift",
+      "before": {
+        "sha256": "d923eb7d2208df5ca82141828b84d5e226b8beeffdabe6b316cc6e1355ab344c",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "e9753d0053d6c96a7bbb38b714d690e0486ba730d712c74076818abbbfaf8d08",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 6,
+      "pipelines": [
+        "patch_combined_service_startup.py v3"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Operations/PipelineOperations/FetchProvisioningProfilesOperation.swift",
+      "before": {
+        "sha256": "ffc478d71d154c034a00ad3c1c04264b74029789ee9c32f63204cc600c5ce00c",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "27fdc85ca84d1b5cc6a7dbe9443ac86ee8f4a5c3dfd2860140c1e4f163e444e0",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 5,
+      "pipelines": [
+        "patch_combined_service_startup.py v3"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Operations/PipelineOperations/PerformBackupRestoreOperation.swift",
+      "before": {
+        "sha256": "1bb091df82e18432dfa32fbd596cf5c955d873d6508a9ab11dfdaa1a65ebbe8f",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "164da3396d12577c576e2bbcf7bfec4ed271bcc9c528e9a0197262a7174ae656",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 4,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Operations/PipelineOperations/SendAppOperation.swift",
+      "before": {
+        "sha256": "fa99e105d2e351a03b379e2ab0af5f8c6c4c382772900f3c8faf534564895230",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "64c0c347792547da49ea81971ace103ffa1bb21022e73696f49bc298db8b63e3",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 7,
+      "pipelines": [
+        "patch_combined_transport.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Operations/PipelineOperations/UninstallAppOperation.swift",
+      "before": {
+        "sha256": "566caed4b7c363bdf3acc3c5ec19d423d90e79b0cfd19f374975c270df30dc56",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "b26e21c60ab153809fd6694e7e3e137b3762ff723c7e1b4a1611428940247a44",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 4,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Operations/PipelineOperations/UpdateAppCertificateOperation.swift",
+      "before": {
+        "sha256": "31c0407f34bdb83291652c3ec0370551529658e7fbab2843b1ea4f7c4cec333a",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "df59412a1b83ca24f00c23c8de38aebfddbaf528ab10c4735d6954cb512be23e",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 5,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Operations/PipelineOperations/VerifyCertificateOperation.swift",
+      "before": {
+        "sha256": "b7cf4d3a201b59fe5c1a8499c994162d108ef10ee3627f7463c1af135342cae7",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "9c07ea666adaa5dd09f537e3a8d807ab8db8e8c8f15e7d158dbb1574afcc60b0",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 5,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Operations/PipelineRunner.swift",
+      "before": {
+        "sha256": "d70e19a447341bac2cae1c525b2a97396df4096213538fa3bf1a1d21bffc1599",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "6180419cad4470fca4794996e4999d8c1f897376c38874712edc5aabc558ce63",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 7,
+      "pipelines": [
+        "patch_v3_service.py",
+        "patch_combined_service_startup.py v3",
+        "patch_combined_transport.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Operations/StandaloneOperations/BackgroundRefreshAppsOperation.swift",
+      "before": {
+        "sha256": "5964668cace2b97c34fc394e6960584a14520d3c60b271daf83f3a886471ca2d",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "edf762e46b242e9210545adc67c04003f34050dfc769ed743c8aea42eae4165c",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 6,
+      "pipelines": [
+        "patch_background_automation.py:patch_background_operation+patch_console_log",
+        "patch_combined_refresh_contract.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Operations/StandaloneOperations/ClearAppCacheOperation.swift",
+      "before": {
+        "sha256": "5f83b87ad7ce862549b621717330298fdef4b2d3b5faa20ff59416a210d0cb4c",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "9cda54be3d9a06b35ffd15d88e3595cafc2a2894d41cd0d43a25d291fe3603cb",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 4,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Operations/StandaloneOperations/SignInOperation.swift",
+      "before": {
+        "sha256": "3f3f2be26918e3b3ce6b47922600522711e4631ff029815f543ffbe8487128f7",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "55ce7ec780c9027b61d8aaae607f0cc1b83ed719a1c020a12ada3abd7013d2cd",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 1,
+      "pipelines": [
+        "patch_v3_service.py",
+        "patch_combined_refresh_contract.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Core/Pairing/PairingFileManager.swift",
+      "before": {
+        "sha256": "a0998d8ab84104d9c369b2a7841f08a3895bb3cf57a836299e3cd7a956db62a7",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "33dec1892ee8a5a4991270021cc8f060ab4bbea26a5ccb6447619d9a17b8b8d4",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 7,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/DeepLinks/URLHandler.swift",
+      "before": {
+        "sha256": "fbb3d9bc34e44757435f7a22d459e756f1e2a366fae8d1b41b7d6b3aad613d60",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "1c34c621e6033e0bc5f944f4410c53a8a58be430f0dacbf520d534cf6934e595",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 4,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Handlers/PipelineHandler.swift",
+      "before": {
+        "sha256": "992bfcd02603ea5199ada97bc09df162f44697efd310bd9512d72a5bd9c82047",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "822a9828665dc480d983773836b4ae6fd1a4176c7a8c3d920563f0eb740a21c4",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 4,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Utils/importexport/ImportExport.swift",
+      "before": {
+        "sha256": "d269222ec23608b8e07d29f8d2ab4903e2bd1765fa68a3f40e4e1664e72fbeb5",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "49ab19457750261cea78b2c8fa6a1f145cccd89346051d1295bba60cedfef337",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 2,
+      "pipelines": [
+        "patch_combined_refresh_contract.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Utils/iostreams/ConsoleLog.swift",
+      "before": {
+        "sha256": "e80b5af0af8cdad21ff798c0937b6d007fe587fb3d3683630caf71ec8f1c563e",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "dec8bb0a19e8159939455bc684256db35e66c2fb1fd7447f4798fbd454267797",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 6,
+      "pipelines": [
+        "patch_background_automation.py:patch_background_operation+patch_console_log"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Views/Settings/Advanced/Connection/ConnectionConfig.swift",
+      "before": {
+        "sha256": "16db97c3e122d157e4769c6be04746dc427aad1771d0da2e6657c03f66d68506",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "07588de035caecc5226cf80ac3b5e679221deebfa6f2706e5bcf23f06a87ec5b",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 8,
+      "pipelines": [
+        "patch_v3_service.py"
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Views/Settings/TechyThings/HealthCheck/HealthCheckView.swift",
+      "before": {
+        "sha256": "693a3becb5122f89f9e2afe495769594560a25562a7542539df59bd135bd2904",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "65f52e9a58c812295659b1ba9bc9a4d9aa7dab09353206d15e3f8438231da3a3",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 8,
+      "pipelines": [
+        "patch_combined_transport.py "
+      ]
+    },
+    {
+      "file": "SideStore:SideStore/Views/Settings/TechyThings/HealthCheck/HealthCheckViewModel.swift",
+      "before": {
+        "sha256": "f1f533e2ac09b60aaddd255ed0242765f980f87e0da6e7f0f85e59037416e774",
+        "mode": "0o644"
+      },
+      "after": {
+        "sha256": "51dbb7729295a83586f728070c5a7cf6f7dcf09f39f02b5eccf184af0772bdbb",
+        "mode": "0o644"
+      },
+      "primary_subsystem": 8,
+      "pipelines": [
+        "patch_combined_transport.py "
+      ]
+    }
+  ],
+  "pipeline_steps": [
+    {
+      "script": "patch_embedded_sidestore_startup.py",
+      "idempotent_replay": true,
+      "observed_writes": [
+        {
+          "file": "SideStore:AltStore/Core/Model/DatabaseManager/DatabaseManager.swift",
+          "before": {
+            "sha256": "81a594c730d402ab06785d3e4c391999fb4e010e7063711c43879dc0a71c3360",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "3083678f90a55b513aad326085baf43fa0a81ef7fb998cb6dd46ce1a6e30d7f2",
+            "mode": "0o644"
+          }
+        }
+      ]
+    },
+    {
+      "script": "patch_v3_unified_shell.py",
+      "idempotent_replay": true,
+      "observed_writes": [
+        {
+          "file": "SideStore:AltStore/AppDelegate.swift",
+          "before": {
+            "sha256": "df87efbdc6a384d6feadb2ccbe5b9d63c73ff11e893bf624ec6e7e54f72d274f",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "36adad29881db9bdc1b349ff13b491098b0dd12b6011fc6929449e60ed8a12ba",
+            "mode": "0o644"
+          }
+        }
+      ]
+    },
+    {
+      "script": "patch_v3_service.py",
+      "idempotent_replay": true,
+      "observed_writes": [
+        {
+          "file": "SideStore:AltStore.xcodeproj/project.pbxproj",
+          "before": {
+            "sha256": "fd62b77b6be0a63590b46b6b42b75fea1c7e8c0350a57ae3372955a50313238b",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "0a21d1c86d22c16af2d877b571fccc674f5a110cc0ccf9bd4bc6204d511ee33f",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
+          "before": {
+            "sha256": "92710a8c8d97cf6e241d6ebf1b72f5b77ea2eeaa5d7d29bfe4dcf9c659c2f2ee",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "5c8c4df054a2f76dc9648bef4a88ef25a716e1f0a5115e0a763e57d20c60ce50",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore/AppDelegate.swift",
+          "before": {
+            "sha256": "36adad29881db9bdc1b349ff13b491098b0dd12b6011fc6929449e60ed8a12ba",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "2d44498cd866c0745989eff77594ac5f3d50f92414792df4cd4cab40455a6e86",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore/Core/Model/DatabaseManager/DatabaseManager.swift",
+          "before": {
+            "sha256": "3083678f90a55b513aad326085baf43fa0a81ef7fb998cb6dd46ce1a6e30d7f2",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "7d7766473f213c9cd6be60134633f7b6655e450804679ad231758d37d76dc90b",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore/Core/Model/RefreshAttempt.swift",
+          "before": {
+            "sha256": "905d646cc8b5e11164d2c42e0ae213107085295cdccb5a3d4e9677ce2726a374",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "cb6f60d1b8322bcee10e77cdaece48ad9c241ecd78b40cd105dca88e6e217ab9",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore/Info.plist",
+          "before": {
+            "sha256": "3d3dba0282cc4330c8585d49738ff82c032d0db5edb1a6ad53943779e24712eb",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "74001aeb34539917dc8ac99ee82fe4d6a93da3c429a04d9cf727e0f286102edd",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore/Intents/App Intents/AppShortcuts.swift",
+          "before": {
+            "sha256": "ae4c07a686fa32f27667827b4df5315acd5d3678b3d4e2c29b9d679450fbb3b5",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "1ad60dd46aecce02f2926ca3336a4930422096403725db75a1e96fd11e6239a4",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore/Intents/App Intents/RefreshAllAppsIntent.swift",
+          "before": {
+            "sha256": "f0f0e83c6cc45ba9dfff2a0061aca26a13618b568934c7ea7639220b1a073dc3",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "f1bbc0093e1349be884bd33785f204b529a63e5c7e509e8a9806990c877fd055",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore/Intents/App Intents/RefreshAllAppsWidgetIntent.swift",
+          "before": {
+            "sha256": "383428e5839a127df929898bc61067c3d8bc07e7c45fdfe5418705c00a6ee100",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "b0f0bf81a5e9a0bb7452b1c04ce213adb67c32457689ddedf358c3515d4ee97d",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore/Managing Apps/AppManager.swift",
+          "before": {
+            "sha256": "62632f6f3fc1e2c3566ebb0eb542c24dc60bc582a6e42da1f691406766f9baee",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "9c6ae18ab82b3a794ba57c1ee3bf42acb042be64dc4c46855dab39d3b7bd19db",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore/SceneDelegate.swift",
+          "before": {
+            "sha256": "528284c8513b14772a339cb543964db9a10408c7c0ea3f93a291f2526e33cb69",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "a3ed92b0dcbe56b665ebb1205e507691c7f9aedebe2c69741f4b2c4197766606",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore/Settings/AnisetteServerModels.swift",
+          "before": null,
+          "after": {
+            "sha256": "733f538750924b7953ec8ad77ee4287c3f2ac722f913414d9f3377e61f39ef8f",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideBackup/SideBackupApp.swift",
+          "before": {
+            "sha256": "92a0f4584cc8ff97b5beac303b9be8a62d6eed6b81297699502d48884fe4883b",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "5b1817519c5fefc56729a1b8b5606967c3b7052a31dd2f82f1e3cce181ab40ac",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/AppBootManager.swift",
+          "before": {
+            "sha256": "b52a13228cbf4d86cdc3578a21346ef5362e5a056586bf358ba19ff5c806e2bb",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "fcea3d8499eb56ee87ab429294ba5436b1d7a1a2ffa0f898ff914a8fbaef6f7d",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Auth/AuthManager.swift",
+          "before": {
+            "sha256": "2fb0c6dc4608430dcf1377d6f07c709a418db1475245a4c5dfa19aa1088dfe1c",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "aadcd5c8387edc751e2e83ccf28e1925ea2c42df89c9edcddcc3cb47b355e701",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Auth/DeveloperPortalProxy.swift",
+          "before": {
+            "sha256": "77a2469a6270b78a889d470e7ac79aff523f96bc2d4949d014cbd72cbb716ca2",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "c128d7f78514371494f9f3474a3a5b52ecef964d856af5b6e315d88ea86462e5",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Certificates/CertificateManager.swift",
+          "before": {
+            "sha256": "aa01de91ecbb1b8d19d737e6063d85f5ec8da58f81d97ef2b185abe77a2612c6",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "4364fd79356570b61c5cfb85360e7a4556905e4c3976c75555dcbc8acb5c9fe0",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Certificates/CodeSignValidator.swift",
+          "before": {
+            "sha256": "215d284d5a2da916c496ef87706d711999ed7b8dbef34603285f25682b01f5c7",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "01a2562e62b83b2cfbe2ef5251598022bc999229b95b21218e7416f8964d840f",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Certificates/OCSPValidator.swift",
+          "before": {
+            "sha256": "2158a992890f0a10b839ea7fb7dde0185eeaddb567ca6935449d36514644cb6b",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "3deba4778be7a3ff7fcdafea0b85da4b3740f27826f88dc16e6ccedb6e8e3887",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/DeviceApi/ConnectionConfig.swift",
+          "before": null,
+          "after": {
+            "sha256": "8623a183a22c1587f4452cfa2f9aa87f494e682587ac214ff2d11277c7e1671d",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/DeviceApi/MinimuxerWrapper.swift",
+          "before": {
+            "sha256": "706e5ba9975b30149e229efb46c68750135c7c99cee1e29d099bb27612530224",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "b66a24a07daa4171dffcff89f86789d22a12cf31c1223af682a4cbd920fd20ca",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/JIT/SideJITManager.swift",
+          "before": {
+            "sha256": "db7000b59dfcefcbf3f936399d7b1ed245b96eadb9b5ae85a5f85eb33cc2d53f",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "317ceba2b5b6c4176270b6065f83650a060fd9359e1eb50d9041c37ae0971ef0",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Logging/SideStoreLogging.swift",
+          "before": {
+            "sha256": "53fe284424dea93619cebd5542449e226cec68aec8160cc3290351e2c7ec5d66",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "732feb92b5adbf283f39c8fe3b9208bf885f99146ea047989ec54d8eed1a477b",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/PipelineOperations/PerformBackupRestoreOperation.swift",
+          "before": {
+            "sha256": "1bb091df82e18432dfa32fbd596cf5c955d873d6508a9ab11dfdaa1a65ebbe8f",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "164da3396d12577c576e2bbcf7bfec4ed271bcc9c528e9a0197262a7174ae656",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/PipelineOperations/UninstallAppOperation.swift",
+          "before": {
+            "sha256": "566caed4b7c363bdf3acc3c5ec19d423d90e79b0cfd19f374975c270df30dc56",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "b26e21c60ab153809fd6694e7e3e137b3762ff723c7e1b4a1611428940247a44",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/PipelineOperations/UpdateAppCertificateOperation.swift",
+          "before": {
+            "sha256": "31c0407f34bdb83291652c3ec0370551529658e7fbab2843b1ea4f7c4cec333a",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "df59412a1b83ca24f00c23c8de38aebfddbaf528ab10c4735d6954cb512be23e",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/PipelineOperations/VerifyCertificateOperation.swift",
+          "before": {
+            "sha256": "b7cf4d3a201b59fe5c1a8499c994162d108ef10ee3627f7463c1af135342cae7",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "9c07ea666adaa5dd09f537e3a8d807ab8db8e8c8f15e7d158dbb1574afcc60b0",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/PipelineRunner.swift",
+          "before": {
+            "sha256": "d70e19a447341bac2cae1c525b2a97396df4096213538fa3bf1a1d21bffc1599",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "afd742585a85b24ec9546ff4bf5affc6beb78db866f209228edfa94d8d889770",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/StandaloneOperations/ClearAppCacheOperation.swift",
+          "before": {
+            "sha256": "5f83b87ad7ce862549b621717330298fdef4b2d3b5faa20ff59416a210d0cb4c",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "9cda54be3d9a06b35ffd15d88e3595cafc2a2894d41cd0d43a25d291fe3603cb",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/StandaloneOperations/SignInOperation.swift",
+          "before": {
+            "sha256": "3f3f2be26918e3b3ce6b47922600522711e4631ff029815f543ffbe8487128f7",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "8708bf1d1200e23bf6834110bb7f04daa9942e81c5c4e2812e534abba98058ee",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Pairing/PairingFileManager.swift",
+          "before": {
+            "sha256": "a0998d8ab84104d9c369b2a7841f08a3895bb3cf57a836299e3cd7a956db62a7",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "33dec1892ee8a5a4991270021cc8f060ab4bbea26a5ccb6447619d9a17b8b8d4",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/DeepLinks/URLHandler.swift",
+          "before": {
+            "sha256": "fbb3d9bc34e44757435f7a22d459e756f1e2a366fae8d1b41b7d6b3aad613d60",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "1c34c621e6033e0bc5f944f4410c53a8a58be430f0dacbf520d534cf6934e595",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Handlers/PipelineHandler.swift",
+          "before": {
+            "sha256": "992bfcd02603ea5199ada97bc09df162f44697efd310bd9512d72a5bd9c82047",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "822a9828665dc480d983773836b4ae6fd1a4176c7a8c3d920563f0eb740a21c4",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Views/Settings/Advanced/Connection/ConnectionConfig.swift",
+          "before": {
+            "sha256": "16db97c3e122d157e4769c6be04746dc427aad1771d0da2e6657c03f66d68506",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "07588de035caecc5226cf80ac3b5e679221deebfa6f2706e5bcf23f06a87ec5b",
+            "mode": "0o644"
+          }
+        }
+      ]
+    },
+    {
+      "script": "patch_background_automation.py:patch_background_operation+patch_console_log",
+      "idempotent_replay": true,
+      "observed_writes": [
+        {
+          "file": "SideStore:SideStore/Core/Operations/StandaloneOperations/BackgroundRefreshAppsOperation.swift",
+          "before": {
+            "sha256": "5964668cace2b97c34fc394e6960584a14520d3c60b271daf83f3a886471ca2d",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "8fd4c58eeb4656be86f9046547a4f9282b657fac31df004c02fc285e929e9140",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Utils/iostreams/ConsoleLog.swift",
+          "before": {
+            "sha256": "e80b5af0af8cdad21ff798c0937b6d007fe587fb3d3683630caf71ec8f1c563e",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "dec8bb0a19e8159939455bc684256db35e66c2fb1fd7447f4798fbd454267797",
+            "mode": "0o644"
+          }
+        }
+      ]
+    },
+    {
+      "script": "patch_combined_refresh_contract.py ",
+      "idempotent_replay": true,
+      "observed_writes": [
+        {
+          "file": "SideStore:.combined-refresh-contract.json",
+          "before": null,
+          "after": {
+            "sha256": "8e839ee8f86d325672f2dc1f4f683294368e07ce03197c11ef09b9982866baa0",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:AltStore/Core/Components/Keychain.swift",
+          "before": {
+            "sha256": "0fe4aed68f9c92f8c1fc3fd9e5bf8b49ce021787d6d989276944f15951247628",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "8af40c8b3e425c599f7d2a4848b694ae2ee18abcfad39cf95c3ad66babd0df8f",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Anisette/AnisetteConfigManager.swift",
+          "before": {
+            "sha256": "2ae21182755709599a281d9d545044cbd6bbfa1d9ced013f2e735767d02e1cb2",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "94f73d7cc4b334b28a2debbd7cc7658dfaebbb31ce36960123b7067e53e10fdd",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Anisette/AnisetteProvider.swift",
+          "before": {
+            "sha256": "da88ba1573ffe454f7eac5719c3a8cf373ef70e0d0af31c7eb57770e505c4229",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "7a3ac0f470c6f02ad30a6943b643e31bc02a512d24c2ae6b191850bb81b79425",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Anisette/OnDeviceAnisetteManager.swift",
+          "before": {
+            "sha256": "7e877ea77e5be087d3c365df0af5d98ba4121536ecef9e9d5b99af33ebb14fcc",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "6d00c3d089a66a883c3b0f56bff6a8a62f3a290c9434aec65f28aa73985186b5",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Certificates/CertificateManager.swift",
+          "before": {
+            "sha256": "4364fd79356570b61c5cfb85360e7a4556905e4c3976c75555dcbc8acb5c9fe0",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "8956afd05a11bd0f0a4aa68bbcc9eba044320906ce463e70716995f550e42c3e",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/StandaloneOperations/BackgroundRefreshAppsOperation.swift",
+          "before": {
+            "sha256": "8fd4c58eeb4656be86f9046547a4f9282b657fac31df004c02fc285e929e9140",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "edf762e46b242e9210545adc67c04003f34050dfc769ed743c8aea42eae4165c",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/StandaloneOperations/SignInOperation.swift",
+          "before": {
+            "sha256": "8708bf1d1200e23bf6834110bb7f04daa9942e81c5c4e2812e534abba98058ee",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "55ce7ec780c9027b61d8aaae607f0cc1b83ed719a1c020a12ada3abd7013d2cd",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Utils/importexport/ImportExport.swift",
+          "before": {
+            "sha256": "d269222ec23608b8e07d29f8d2ab4903e2bd1765fa68a3f40e4e1664e72fbeb5",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "49ab19457750261cea78b2c8fa6a1f145cccd89346051d1295bba60cedfef337",
+            "mode": "0o644"
+          }
+        }
+      ]
+    },
+    {
+      "script": "patch_combined_service_startup.py v3",
+      "idempotent_replay": true,
+      "observed_writes": [
+        {
+          "file": "SideStore:AltStore/AppDelegate.swift",
+          "before": {
+            "sha256": "2d44498cd866c0745989eff77594ac5f3d50f92414792df4cd4cab40455a6e86",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "814a7bc654f611cc6c56f686eb1578bd381b9d8e7d372cd9e59589c187f85a2e",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/PipelineExecutor.swift",
+          "before": {
+            "sha256": "d923eb7d2208df5ca82141828b84d5e226b8beeffdabe6b316cc6e1355ab344c",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "e9753d0053d6c96a7bbb38b714d690e0486ba730d712c74076818abbbfaf8d08",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/PipelineOperations/FetchProvisioningProfilesOperation.swift",
+          "before": {
+            "sha256": "ffc478d71d154c034a00ad3c1c04264b74029789ee9c32f63204cc600c5ce00c",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "27fdc85ca84d1b5cc6a7dbe9443ac86ee8f4a5c3dfd2860140c1e4f163e444e0",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/PipelineRunner.swift",
+          "before": {
+            "sha256": "afd742585a85b24ec9546ff4bf5affc6beb78db866f209228edfa94d8d889770",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "9447a307b1b9e904d7612436832a0332b68cd03a1dadc8a3b33bdf7fe6c69a99",
+            "mode": "0o644"
+          }
+        }
+      ]
+    },
+    {
+      "script": "patch_sidesign_privacy.py ",
+      "idempotent_replay": true,
+      "observed_writes": [
+        {
+          "file": "SideStore:SideStore/Core/Logging/OperationLogging.swift",
+          "before": {
+            "sha256": "7e0fca060cb14be03195db67588f6c63b2ebd067315ab54e14ab649077bfac03",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "069ce4440923fe5b45967a21d587a0f17a691141718678ae4e09581bbef320ba",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Logging/SideStoreLogging.swift",
+          "before": {
+            "sha256": "732feb92b5adbf283f39c8fe3b9208bf885f99146ea047989ec54d8eed1a477b",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "f111e2ef5f312145ae97082affefc75763218662d96104da3a95b8f6cddcdfdb",
+            "mode": "0o644"
+          }
+        }
+      ]
+    },
+    {
+      "script": "patch_combined_transport.py ",
+      "idempotent_replay": true,
+      "observed_writes": [
+        {
+          "file": "SideStore:AltStore/My Apps/MyAppsViewController.swift",
+          "before": {
+            "sha256": "340af742eb12c0386a724d06941d30ff8103ad5977a2c57b35f63cea1872ba0a",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "79c89adaffb724e9da8904049eca204947cf292f3d4ee96de1fa0fba9243b2d0",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/DeviceApi/MinimuxerWrapper.swift",
+          "before": {
+            "sha256": "b66a24a07daa4171dffcff89f86789d22a12cf31c1223af682a4cbd920fd20ca",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "072bf04bd5e0255681dae3e27e6fd5350e7277ce981cd821c63a0e76fb08b062",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/PipelineOperations/SendAppOperation.swift",
+          "before": {
+            "sha256": "fa99e105d2e351a03b379e2ab0af5f8c6c4c382772900f3c8faf534564895230",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "64c0c347792547da49ea81971ace103ffa1bb21022e73696f49bc298db8b63e3",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Core/Operations/PipelineRunner.swift",
+          "before": {
+            "sha256": "9447a307b1b9e904d7612436832a0332b68cd03a1dadc8a3b33bdf7fe6c69a99",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "6180419cad4470fca4794996e4999d8c1f897376c38874712edc5aabc558ce63",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Views/Settings/TechyThings/HealthCheck/HealthCheckView.swift",
+          "before": {
+            "sha256": "693a3becb5122f89f9e2afe495769594560a25562a7542539df59bd135bd2904",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "65f52e9a58c812295659b1ba9bc9a4d9aa7dab09353206d15e3f8438231da3a3",
+            "mode": "0o644"
+          }
+        },
+        {
+          "file": "SideStore:SideStore/Views/Settings/TechyThings/HealthCheck/HealthCheckViewModel.swift",
+          "before": {
+            "sha256": "f1f533e2ac09b60aaddd255ed0242765f980f87e0da6e7f0f85e59037416e774",
+            "mode": "0o644"
+          },
+          "after": {
+            "sha256": "51dbb7729295a83586f728070c5a7cf6f7dcf09f39f02b5eccf184af0772bdbb",
+            "mode": "0o644"
+          }
+        }
+      ]
+    }
+  ],
+  "patch_source_hashes": [
+    {
+      "path": "scripts/patch_background_automation.py",
+      "sha256": "e283b7bcbe8daac4bc0585e73c13270b4ee20ea55c03edbd2a11cac0b0431e68",
+      "dependencies": []
+    },
+    {
+      "path": "scripts/patch_combined_refresh_contract.py",
+      "sha256": "b9159ced9d7d732b7790ca6c6459e6b59e59988cbe555e006481bf565f6e3447",
+      "dependencies": [
+        "scripts/patch_embedded_keychain.py"
+      ]
+    },
+    {
+      "path": "scripts/patch_combined_service_startup.py",
+      "sha256": "15cb5ac671b5efe867f0ca0fa9de493cfbe5a7b64c742019ef19bfd7962852d6",
+      "dependencies": []
+    },
+    {
+      "path": "scripts/patch_combined_transport.py",
+      "sha256": "9ad8a5c5e10e780ccce91aa512c5d0547301dee22aa578bc130ea1988865922d",
+      "dependencies": [
+        "scripts/patch_sidestore_integration.py"
+      ]
+    },
+    {
+      "path": "scripts/patch_embedded_keychain.py",
+      "sha256": "9ba4097e1175d3896bac7f0b3f9ef0cd7e8ef8f3ec036bf0f5d8d4abf7269998",
+      "dependencies": []
+    },
+    {
+      "path": "scripts/patch_embedded_sidestore_startup.py",
+      "sha256": "4390f270514b3e24966f08c2426e697af23abbc77ace0d1e2c86cc46bffa1e19",
+      "dependencies": [
+        "scripts/patch_cf_bundle_scan.py"
+      ]
+    },
+    {
+      "path": "scripts/patch_sidesign_privacy.py",
+      "sha256": "94bbacc2ddcf527a9e2116ff8227fca30324a168b2ac58088b52335c8c4d741e",
+      "dependencies": []
+    },
+    {
+      "path": "scripts/patch_v3_service.py",
+      "sha256": "3023983fdbf53f407240149ba8d6830266c04f6b6b903cd2af77ec9ad6c88edc",
+      "dependencies": [
+        "scripts/patch_embedded_keychain.py"
+      ]
+    },
+    {
+      "path": "scripts/patch_v3_unified_shell.py",
+      "sha256": "22e5be520682258b4858303841d3847ea617f60034ddaed774ed50a3fb53b9c9",
+      "dependencies": [
+        "scripts/patch_v3_service.py"
+      ]
+    }
+  ],
+  "template_provenance": [
+    {
+      "path": "scripts/templates/anisette_legacy_recovery.swift",
+      "sha256": "1f65a3b5bbd4399a081ff112d2c59736b05e91aa9473fff25eb8d3c136828870",
+      "line_count": 193,
+      "producers": [
+        {
+          "script": "scripts/patch_combined_refresh_contract.py",
+          "owner": "SideStore",
+          "destinations": [
+            "SideStore/Core/Anisette/OnDeviceAnisetteManager.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Isolated OTP-only current-pair control and legacy identity proof; only proof-valid stable snapshot can commit recovery; temporary directory cleanup and typed diagnostic trace preserve failure/cancellation semantics.",
+          "source_reference": {
+            "path": "scripts/patch_embedded_keychain.py",
+            "line_start": 542,
+            "line_end": 618
+          }
+        },
+        {
+          "script": "scripts/patch_embedded_keychain.py",
+          "owner": "SideStore",
+          "destinations": [
+            "SideStore/Core/Anisette/OnDeviceAnisetteManager.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Isolated OTP-only current-pair control and legacy identity proof; only proof-valid stable snapshot can commit recovery; temporary directory cleanup and typed diagnostic trace preserve failure/cancellation semantics.",
+          "source_reference": {
+            "path": "scripts/patch_embedded_keychain.py",
+            "line_start": 542,
+            "line_end": 618
+          }
+        }
+      ],
+      "migration_status": "retained_template_at_baseline",
+      "destination_owners": [
+        "SideStore"
+      ]
+    },
+    {
+      "path": "scripts/templates/combined_failure.swift",
+      "sha256": "91eb30bdefee35c0dc9b36ae7d64257a6b8c99dd7c7943997ad6a4c520a78287",
+      "line_count": 2533,
+      "producers": [
+        {
+          "script": "scripts/patch_anisette_isolated_otp.py",
+          "owner": "AnisetteKit",
+          "destinations": [
+            "Native/anisette_core_uc.cpp",
+            "Sources/AnisetteDataProvider.swift"
+          ],
+          "role": "trace_boolean_configuration_only"
+        },
+        {
+          "script": "scripts/patch_combined_service_startup.py",
+          "owner": "LiveContainer",
+          "destinations": [
+            "SideStoreSupport/SideStore.swift"
+          ],
+          "role": "source_text"
+        },
+        {
+          "script": "scripts/patch_combined_service_startup.py",
+          "owner": "SideStore",
+          "destinations": [
+            "AltStore/AppDelegate.swift"
+          ],
+          "role": "source_text"
+        }
+      ],
+      "migration_status": "retained_template_at_baseline",
+      "destination_owners": [
+        "LiveContainer",
+        "SideStore"
+      ]
+    },
+    {
+      "path": "scripts/templates/embedded_shared_keychain.swift",
+      "sha256": "971e3ad383c4ca02c4d18787af64b1ffc286ae0e699300078f7e3174e713a06f",
+      "line_count": 1443,
+      "producers": [
+        {
+          "script": "scripts/patch_combined_refresh_contract.py",
+          "owner": "SideStore",
+          "destinations": [
+            "AltStore/Core/Components/Keychain.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Explicit already-entitled Keychain namespace and App Group flock; authenticated candidate/snapshot and certificate transactions, legacy migration, safe error classification, journals/reconciliation, Anisette pair integrity/proof recovery, and sign-out tombstones.",
+          "source_reference": {
+            "path": "scripts/patch_embedded_keychain.py",
+            "line_start": 22,
+            "line_end": 22
+          }
+        },
+        {
+          "script": "scripts/patch_embedded_keychain.py",
+          "owner": "SideStore",
+          "destinations": [
+            "AltStore/Core/Components/Keychain.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Explicit already-entitled Keychain namespace and App Group flock; authenticated candidate/snapshot and certificate transactions, legacy migration, safe error classification, journals/reconciliation, Anisette pair integrity/proof recovery, and sign-out tombstones.",
+          "source_reference": {
+            "path": "scripts/patch_embedded_keychain.py",
+            "line_start": 22,
+            "line_end": 22
+          }
+        }
+      ],
+      "migration_status": "retained_template_at_baseline",
+      "destination_owners": [
+        "SideStore"
+      ]
+    },
+    {
+      "path": "scripts/templates/v3_behavioral_primitives.swift",
+      "sha256": "3c1ee7d9f7daa6a783d1e0ddd217ec94437054a16b06b5bc0e5a38426300263a",
+      "line_count": 5689,
+      "producers": [
+        {
+          "script": "scripts/patch_v3_service.py",
+          "owner": "LiveContainer",
+          "destinations": [
+            "SideStoreSupport/SideStore.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Shared pure runtime policies and state machines for status-write authority, setup, source persistence, operation/session lifecycle, authentication and 2FA, identity binding/provisioning recovery, refresh/run evidence, host signing, typed privacy-safe failures and one-shot backup callback/admission semantics.",
+          "source_reference": {
+            "path": "scripts/patch_v3_service.py",
+            "line_start": 2931,
+            "line_end": 2931
+          }
+        },
+        {
+          "script": "scripts/patch_v3_service.py",
+          "owner": "SideStore",
+          "destinations": [
+            "AltStore/AppDelegate.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Shared pure runtime policies and state machines for status-write authority, setup, source persistence, operation/session lifecycle, authentication and 2FA, identity binding/provisioning recovery, refresh/run evidence, host signing, typed privacy-safe failures and one-shot backup callback/admission semantics.",
+          "source_reference": {
+            "path": "scripts/patch_v3_service.py",
+            "line_start": 893,
+            "line_end": 893
+          }
+        },
+        {
+          "script": "scripts/patch_v3_unified_shell.py",
+          "owner": "LiveContainer",
+          "destinations": [
+            "LiveContainerSwiftUI/Views/V3UnifiedShell.swift"
+          ],
+          "role": "source_text"
+        }
+      ],
+      "migration_status": "retained_template_at_baseline",
+      "destination_owners": [
+        "LiveContainer",
+        "SideStore"
+      ]
+    },
+    {
+      "path": "scripts/templates/v3_headless_runtime.swift",
+      "sha256": "9bd3231fc0a31b5b2f13bb11f009dbd16b650728c08a67f93e5a8640556d1a09",
+      "line_count": 3246,
+      "producers": [
+        {
+          "script": "scripts/patch_v3_service.py",
+          "owner": "SideStore",
+          "destinations": [
+            "AltStore/AppDelegate.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Headless prompt/auth/operation centers, typed pairing/account errors, SignInHandler and PipelineExecutionHandler implementations; runs canonical backend operations while host renders prompts; handles session ownership/cancellation, provisioning reconciliation and host signing observation.",
+          "source_reference": {
+            "path": "scripts/patch_v3_service.py",
+            "line_start": 893,
+            "line_end": 893
+          }
+        }
+      ],
+      "migration_status": "retained_template_at_baseline",
+      "destination_owners": [
+        "SideStore"
+      ]
+    },
+    {
+      "path": "scripts/templates/v3_headless_url_handler.swift",
+      "sha256": "1c34c621e6033e0bc5f944f4410c53a8a58be430f0dacbf520d534cf6934e595",
+      "line_count": 15,
+      "producers": [
+        {
+          "script": "scripts/patch_v3_service.py",
+          "owner": "SideStore",
+          "destinations": [
+            "SideStore/DeepLinks/URLHandler.swift"
+          ],
+          "role": "source_text",
+          "integration": "replace_entire_file",
+          "summary": "Validates backup callback target and dispatches only through the live one-shot operation callback owner.",
+          "source_reference": {
+            "path": "scripts/patch_v3_service.py",
+            "line_start": 985,
+            "line_end": 985
+          }
+        }
+      ],
+      "migration_status": "retained_template_at_baseline",
+      "destination_owners": [
+        "SideStore"
+      ]
+    },
+    {
+      "path": "scripts/templates/v3_ipa_staging.swift",
+      "sha256": "c43da49d70d9debf1642a65a45e4c495293a81c1f1773c3e1a57558e3384c288",
+      "line_count": 370,
+      "producers": [
+        {
+          "script": "scripts/patch_v3_service.py",
+          "owner": "SideStore",
+          "destinations": [
+            "AltStore/AppDelegate.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Private App Group IPA staging by canonical UUID token, validated file records and leases/cleanup rather than accepting arbitrary paths through XPC.",
+          "source_reference": {
+            "path": "scripts/patch_v3_service.py",
+            "line_start": 893,
+            "line_end": 893
+          }
+        },
+        {
+          "script": "scripts/patch_v3_unified_shell.py",
+          "owner": "LiveContainer",
+          "destinations": [
+            "LiveContainerSwiftUI/Views/V3UnifiedShell.swift"
+          ],
+          "role": "source_text"
+        }
+      ],
+      "migration_status": "retained_template_at_baseline",
+      "destination_owners": [
+        "LiveContainer",
+        "SideStore"
+      ]
+    },
+    {
+      "path": "scripts/templates/v3_secret_handoff.swift",
+      "sha256": "773035e80e5721307792f8067681f9f834e4f61c44a33eb47b5070cd385d8391",
+      "line_count": 951,
+      "producers": [
+        {
+          "script": "scripts/patch_v3_service.py",
+          "owner": "SideStore",
+          "destinations": [
+            "AltStore/AppDelegate.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Process-shared flock and entitlement-checked one-shot Keychain secret handoff plus bounded shared-file input records; keeps secret values out of ordinary command payloads and prevents cross-role replay.",
+          "source_reference": {
+            "path": "scripts/patch_v3_service.py",
+            "line_start": 893,
+            "line_end": 893
+          }
+        },
+        {
+          "script": "scripts/patch_v3_unified_shell.py",
+          "owner": "LiveContainer",
+          "destinations": [
+            "LiveContainerSwiftUI/Views/V3UnifiedShell.swift"
+          ],
+          "role": "source_text"
+        }
+      ],
+      "migration_status": "retained_template_at_baseline",
+      "destination_owners": [
+        "LiveContainer",
+        "SideStore"
+      ]
+    },
+    {
+      "path": "scripts/templates/v3_shared_app_group.swift",
+      "sha256": "5df142bd417b4c8065d688ef5ab49f58c6670ce858e91fee03bd4ac81b1e71cf",
+      "line_count": 218,
+      "producers": [
+        {
+          "script": "scripts/patch_combined_service_startup.py",
+          "owner": "LiveContainer",
+          "destinations": [
+            "SideStoreSupport/SideStore.swift"
+          ],
+          "role": "source_text"
+        },
+        {
+          "script": "scripts/patch_livecontainer_autorefresh.py",
+          "owner": "LiveContainer",
+          "destinations": [
+            "LiveContainerSwiftUI/Utilities/V3SharedAppGroup.swift"
+          ],
+          "role": "source_text"
+        },
+        {
+          "script": "scripts/patch_refresh_result_bridge.py",
+          "owner": "LiveContainer",
+          "destinations": [
+            "SideStoreSupport/XPCClient.m"
+          ],
+          "role": "runtime_environment_key_configuration_only"
+        },
+        {
+          "script": "scripts/patch_v3_service.py",
+          "owner": "SideStore",
+          "destinations": [
+            "AltStore/AppDelegate.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Resolves and publishes the single authoritative runtime App Group; supplies fail-closed shared defaults and container identity for staging, keychain locking, refresh and recovery.",
+          "source_reference": {
+            "path": "scripts/patch_v3_service.py",
+            "line_start": 893,
+            "line_end": 893
+          }
+        }
+      ],
+      "migration_status": "retained_template_at_baseline",
+      "destination_owners": [
+        "LiveContainer",
+        "SideStore"
+      ]
+    },
+    {
+      "path": "scripts/templates/v3_sidestore_service.swift",
+      "sha256": "d1d98c1128073d483a273d3a52601ff76e30b5c5e5cdec093e44482e788328d7",
+      "line_count": 2488,
+      "producers": [
+        {
+          "script": "scripts/patch_v3_service.py",
+          "owner": "SideStore",
+          "destinations": [
+            "AltStore/AppDelegate.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "SideStore command gate, durable mutation/recovery journal, request replay/cancellation/readiness and mutation admission, snapshots/catalog/health/settings/source/developer/certificate operations, bounded active-certificate export and forwarding to owned auth/operation sessions.",
+          "source_reference": {
+            "path": "scripts/patch_v3_service.py",
+            "line_start": 893,
+            "line_end": 893
+          }
+        }
+      ],
+      "migration_status": "retained_template_at_baseline",
+      "destination_owners": [
+        "SideStore"
+      ]
+    },
+    {
+      "path": "scripts/templates/v3_wire_contract.swift",
+      "sha256": "9c87ac15b2289e59e88ef5569cfdbfbc3ef7460cbab64ea1e88640e8cd125a7d",
+      "line_count": 682,
+      "producers": [
+        {
+          "script": "scripts/patch_v3_service.py",
+          "owner": "LiveContainer",
+          "destinations": [
+            "SideStoreSupport/SideStore.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Strict bounded property-list request/response envelope, allowlisted operation/payload/target schemas, auth/readiness snapshots, replay/cancellation and reply-cache policy shared independently across host and service.",
+          "source_reference": {
+            "path": "scripts/patch_v3_service.py",
+            "line_start": 2931,
+            "line_end": 2931
+          }
+        },
+        {
+          "script": "scripts/patch_v3_service.py",
+          "owner": "SideStore",
+          "destinations": [
+            "AltStore/AppDelegate.swift"
+          ],
+          "role": "source_text",
+          "integration": "append",
+          "summary": "Strict bounded property-list request/response envelope, allowlisted operation/payload/target schemas, auth/readiness snapshots, replay/cancellation and reply-cache policy shared independently across host and service.",
+          "source_reference": {
+            "path": "scripts/patch_v3_service.py",
+            "line_start": 893,
+            "line_end": 893
+          }
+        }
+      ],
+      "migration_status": "retained_template_at_baseline",
+      "destination_owners": [
+        "LiveContainer",
+        "SideStore"
+      ]
+    }
+  ],
+  "exact_original_mit_notice_sha256": "e077ca1ff2b74fe48505960c130eab948af406649438473dd99ffcd71bcd80e9",
+  "shared_contract_ownership": "AppDelegate retains the exact preexisting host/service wire, behavioral, App Group and handoff contract implementations. A pinned cross-owner parity check must guard both owners before coordinated activation; no new variant is introduced in this slice.",
+  "excluded_preparation_evidence": [
+    ".combined-refresh-contract.json"
+  ]
+}

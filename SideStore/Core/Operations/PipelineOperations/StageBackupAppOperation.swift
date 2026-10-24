@@ -56,12 +56,12 @@ final class StageBackupAppOperation: BasePipelineOperation<InstallAppOperationCo
         debugLog("[StageBackupAppOperation] Unzipped SideBackup app bundle to \(unzippedAppBundleURL.path)")
         
         guard let sideBackupBundle = ALTApplication(fileURL: unzippedAppBundleURL) else {
-            debugLog("[StageBackupAppOperation] Error: Failed to instantiate ALTApplication at \(unzippedAppBundleURL.path)")
+            debugLog("[StageBackupAppOperation] Error: Failed to instantiate backup app bundle.")
             throw OperationError.missingAppBundle(reason: "Unzipped bundle directory could not be located at '\(unzippedAppBundleURL.lastPathComponent)'")
         }
 
         self.setProgress(70)
-        debugLog("[StageBackupAppOperation] Updating Info.plist: CFBundleDisplayName='\(targetApp.name)', CFBundleIdentifier='\(context.targetBundleIdentifier)'")
+        debugLog("[StageBackupAppOperation] Updating backup Info.plist.")
         var updates: [String: any Sendable] = [
             "CFBundleDisplayName": targetApp.name,
             kCFBundleIdentifierKey as String: context.targetBundleIdentifier
@@ -94,7 +94,7 @@ final class StageBackupAppOperation: BasePipelineOperation<InstallAppOperationCo
             let iconFileURL = unzippedAppBundleURL.appendingPathComponent("AppIcon.png")
             try? iconData.write(to: iconFileURL, options: .atomic)
             updates["CFBundleIcons"] = ["CFBundlePrimaryIcon": ["CFBundleIconFiles": [iconFileURL.lastPathComponent]]]
-            debugLog("[StageBackupAppOperation] Saved resized app icon to \(iconFileURL.path)")
+            debugLog("[StageBackupAppOperation] Saved resized backup app icon.")
         }
 
         try sideBackupBundle.updateInfoPlist(with: updates)
@@ -102,11 +102,11 @@ final class StageBackupAppOperation: BasePipelineOperation<InstallAppOperationCo
 
         self.setProgress(90)
         guard let updatedBundle = ALTApplication(fileURL: unzippedAppBundleURL) else {
-            debugLog("[StageBackupAppOperation] Error: Failed to reload ALTApplication for staged backup app at \(unzippedAppBundleURL.path)")
+            debugLog("[StageBackupAppOperation] Error: Failed to reload staged backup app bundle.")
             throw OperationError.missingAppBundle(reason: "Failed to reload ALTApplication for staged backup app at '\(unzippedAppBundleURL.lastPathComponent)'")
         }
         context.targetAppBundle = updatedBundle
-        debugLog("[StageBackupAppOperation] Successfully set context.appBundle to staged SideBackup app ('\(updatedBundle.bundleIdentifier)')")
+        debugLog("[StageBackupAppOperation] Successfully set context.appBundle to staged SideBackup app.")
         self.setProgress(100)
         return targetApp
     }

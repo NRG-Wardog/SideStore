@@ -1,11 +1,8 @@
-#sidestore dependencies
+# Maintained dependencies are selected by committed gitlinks.
 
 [submodule "Dependencies/minimuxer"]
     path = Dependencies/minimuxer
-    url = https://github.com/SideStore/minimuxer
-    branch = develop
+    url = https://github.com/NRG-Wardog/minimuxer.git
 [submodule "Dependencies/SideSign"]
-	path = Dependencies/SideSign
-	url = https://github.com/SideStore/SideSign
-	branch = main
-
+    path = Dependencies/SideSign
+    url = https://github.com/NRG-Wardog/SideSign.git

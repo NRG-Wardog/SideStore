@@ -20,20 +20,20 @@ public actor SideSignConfigManager {
     public func loadConfig() -> SideSignHeaders {
         if let data = try? Data(contentsOf: configFileURL),
            let config = try? Foundation.JSONDecoder().decode(SideSignHeaders.self, from: data) {
-            DeveloperPortal.shared.customHeaders = config
+            DeveloperPortal.shared.setCustomHeaders(config, diagnosticSource: .file)
             return config
         }
         let defaultConfig = SideSignHeaders()
-        DeveloperPortal.shared.customHeaders = defaultConfig
+        DeveloperPortal.shared.setCustomHeaders(defaultConfig, diagnosticSource: .defaultValue)
         return defaultConfig
     }
     
     public nonisolated func applyConfigToDeveloperPortal() {
         if let data = try? Data(contentsOf: configFileURL),
            let config = try? Foundation.JSONDecoder().decode(SideSignHeaders.self, from: data) {
-            DeveloperPortal.shared.customHeaders = config
+            DeveloperPortal.shared.setCustomHeaders(config, diagnosticSource: .file)
         } else {
-            DeveloperPortal.shared.customHeaders = SideSignHeaders()
+            DeveloperPortal.shared.setCustomHeaders(SideSignHeaders(), diagnosticSource: .defaultValue)
         }
     }
     
@@ -43,7 +43,8 @@ public actor SideSignConfigManager {
         if let data = try? encoder.encode(config) {
             try? data.write(to: configFileURL, options: .atomic)
         }
-        DeveloperPortal.shared.customHeaders = config
+        // The caller supplied the active value, even when persistence fails.
+        DeveloperPortal.shared.setCustomHeaders(config, diagnosticSource: .caller)
     }
     
     public func importFromFile(url: URL) throws -> SideSignHeaders {
@@ -64,7 +65,7 @@ public actor SideSignConfigManager {
     public nonisolated func resetToDefaults() -> SideSignHeaders {
         deleteConfigFile()
         let defaultConfig = SideSignHeaders()
-        DeveloperPortal.shared.customHeaders = defaultConfig
+        DeveloperPortal.shared.setCustomHeaders(defaultConfig, diagnosticSource: .defaultValue)
         return defaultConfig
     }
     

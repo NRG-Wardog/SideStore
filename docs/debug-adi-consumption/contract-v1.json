@@ -1,0 +1,78 @@
+{
+  "contract": "debug-temporary-adi-consumption-v1",
+  "variant": "diagnostic-only-not-migration-parity",
+  "producer_commit": "e530b84687ebea2e7d1115119e1a6d18372de14b",
+  "producer_header_sha256": "2d30b0fd6e7edf99a29f8b2f36ddbbee07fab639e27887ac235d563d7f0d740c",
+  "producer_swift_sha256": "0dfc00fff5f0455ae73ae3df2e9294c6170f4679ebab075d7d720c52b1fc97e8",
+  "maximum_events": 32,
+  "maximum_encoded_bytes": 2048,
+  "maximum_failure_plist_bytes": 4096,
+  "fields": [
+    "phase",
+    "operation",
+    "target",
+    "result",
+    "errno",
+    "requested",
+    "returned",
+    "guest_copy"
+  ],
+  "ranges": [
+    [
+      0,
+      5
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      4
+    ],
+    [
+      -1,
+      1
+    ],
+    [
+      0,
+      4095
+    ],
+    [
+      0,
+      1048577
+    ],
+    [
+      0,
+      1048577
+    ],
+    [
+      -1,
+      32
+    ]
+  ],
+  "target_untracked": 4,
+  "context_key": "debug_temporary_adi_consumption",
+  "suffix": " [DEBUG_TEMPORARY_ADI_CONSUMPTION:",
+  "owner_bases": {
+    "SideStore": "dd4f0ca36e8ef1d858548f583c65842a8fc0ced3",
+    "LiveContainer": "47db163356dc419d2b6a894fdc5dbeb9d011dc69"
+  },
+  "publication": "held until independent native compile, coordinated decoder review and migration checkpoint",
+  "integration_checkpoint": "a939e4c077a51734a73a86805d051b578cce3fa7",
+  "frozen_registry_sha256": "5cd17d665d9d13fde7bdc58abe3c44050b4b1618df89efbdf9815a39736d76be",
+  "production_graph": {
+    "LiveContainer": "47db163356dc419d2b6a894fdc5dbeb9d011dc69",
+    "SideStore": "dd4f0ca36e8ef1d858548f583c65842a8fc0ced3",
+    "AnisetteKit": "62ce85c8798d8eab8e29752aba7dc9f1f6a5b80d",
+    "SideSign": "06351a87d44ff8faa7d5a2e8c7ed3096fff73d2c",
+    "minimuxer": "efbcab05d7d636aa37c6bf6c7f364d122c5610f6",
+    "idevice": "803f9368e6b27a43d8a9f22dc0ec281c87883113",
+    "jktcp": "32c0210f286b4fd16efe05be4f57167a9d94459b"
+  },
+  "retention": {
+    "setup_first": 16,
+    "otp_last": 16,
+    "overflow": "explicit truncated bit; retained order preserved"
+  }
+}

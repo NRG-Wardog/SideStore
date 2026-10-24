@@ -1,0 +1,19 @@
+{
+  "minimuxer_commit": "1d033920660c6f50b8f30c4c333f025867cd9e96",
+  "policy_git_blob": "06725555f630fa44648d5d01c3d266032f6c7867",
+  "producer_sha256": "3d5cab382c0bb262110b767a925222c4beaec6748766dd8b3168ed61fa7fec55",
+  "extracts": {
+    "OriginalRefreshTransportPolicy.swift": {
+      "sha256": "1ddc3d112d8a218db2c8017947595782fbe625dcdf7fef1fc6d4495f8b8b15d0",
+      "bytes": 2028
+    },
+    "OriginalReadinessUnavailable.swift": {
+      "sha256": "a3bf89d405f004ea09d43f65911285ab7c0ed7cef01d56d3426ebc8e94341bb6",
+      "bytes": 115
+    },
+    "OriginalTransportSnapshot.swift": {
+      "sha256": "99b3af43544a4163b0e7bdfe19afe2da29163c175bc39cce02da4be76e6e5663",
+      "bytes": 321
+    }
+  }
+}

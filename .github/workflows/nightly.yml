@@ -20,6 +20,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.repository != 'NRG-Wardog/SideStore' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     env:
       DEPLOY_KEY: ${{ secrets.CROSS_REPO_PUSH_KEY }}

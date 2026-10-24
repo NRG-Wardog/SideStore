@@ -7,30 +7,23 @@
 //
 
 import Foundation
-import UIKit
 import Minimuxer
 
 public final class AppBootManager {
     public static let shared = AppBootManager()
     
-    private let lock = NSLock()
-    
-    private var cachedNeedsPairingPrompt = false
-    public var needsPairingPrompt: Bool {
-        get { lock.withLock { cachedNeedsPairingPrompt } }
-        set { lock.withLock { cachedNeedsPairingPrompt = newValue } }
-    }
-    
-    private var cachedNeedsSideJITPrompt = false
-    public var needsSideJITPrompt: Bool {
-        get { lock.withLock { cachedNeedsSideJITPrompt } }
-        set { lock.withLock { cachedNeedsSideJITPrompt = newValue } }
-    }
-    
+    // V3_HEADLESS_BOOT_UI_STATE_REMOVED_V1: prompt state belongs to the excluded launch controller.
+
     private init() {}
     
 
     public nonisolated func startMinimuxer(pairingFile: String) async throws {
+        try await V3PairingActivationGate.withExclusiveAccess {
+            try await self.startMinimuxerUnlocked(pairingFile: pairingFile)
+        }
+    }
+
+    private nonisolated func startMinimuxerUnlocked(pairingFile: String, verifyLiveIdentity: Bool = true) async throws {
         debugLog("[AppBootManager] startMinimuxer() entered")
         defer { debugLog("[AppBootManager] startMinimuxer() exited") }
         
@@ -39,18 +32,19 @@ public final class AppBootManager {
             try await startEMProxy()
         }
 
-        try await minimuxerStart(pairingFile, mountPath: FileManager.default.documentsDirectory.absoluteString)
+        try await minimuxerStart(pairingFile, preferred: PairingFileManager.shared.preferredProtocol)
         
+        // Placement labels readiness with a direct query, without persisting
+        // cached identity here. Ordinary boot retains its original behavior.
+        guard verifyLiveIdentity else { return }
         // Validate the pairing by trying to fetch the UDID
         do {
             debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection starting...")
-            let deviceUDID = try await fetchUDID(forceLive: true)
-            debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection test SUCCEEDED. UDID: \(deviceUDID)")
-            self.needsPairingPrompt = false
+            _ = try await fetchUDID(forceLive: true)
+            debugLog("[AppBootManager] Live device identity check succeeded; identifier omitted.")
         } catch {
             if case MinimuxerError.invalidPairing = error {
                 debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection test FAILED. \(error)")
-                self.needsPairingPrompt = true
                 throw error
             } else {
                 debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection test FAILED but PAIRING FILE IS VALID. \(error)")
@@ -59,36 +53,56 @@ public final class AppBootManager {
     }
     
     @MainActor
-    public func promptForPairing(on vc: UIViewController) async {
-        var isRetry = false
-        while true {
-            guard let selectedURL = await withCheckedContinuation({ (continuation: CheckedContinuation<URL?, Never>) in
-                PairingFileManager.shared.presentPairingFileAlert(on: vc, isRetry: isRetry) { selectedURL in
-                    debugLog("[AppBootManager] promptForPairing: alert completed with selectedURL: \(selectedURL?.path ?? "nil")")
-                    continuation.resume(returning: selectedURL)
-                }
-            }) else {
-                debugLog("[AppBootManager] promptForPairing: user skipped or cancelled pairing prompt")
-                break
+    func usePlacedPairingFile(validateOperation: @MainActor () throws -> Void) async throws -> V3PlacedPairingOutcome {
+        return try await V3PairingActivationGate.withExclusiveAccess {
+            let manager = PairingFileManager.shared
+            let plan = try manager.preparePlacedImport()
+            try validateOperation()
+            try manager.validatePlacedImport(plan)
+            let transportTicket = minimuxerPairingProtocol() == plan.mode
+                ? V3PairingTransportReceipt.shared.ticket(contents: plan.content, mode: plan.mode) : nil
+            if plan.isCurrentSelection {
+                // Explicit retry owns startup even when no file write is needed.
+                V3PairingActivationGate.placementOwnsStartup = true
             }
-            
-            debugLog("[AppBootManager] promptForPairing: fetching pairing file at selectedURL: \(selectedURL.path)")
-            guard let pairingString = PairingFileManager.shared.fetchPairingFile() else {
-                debugLog("[AppBootManager] promptForPairing: failed to read saved pairing file from disk")
-                isRetry = true
-                continue
-            }
-            
-            do {
-                try await startMinimuxer(pairingFile: pairingString)
-                self.needsPairingPrompt = false
-                break
-            } catch {
-                debugLog("[AppBootManager] startMinimuxer failed with pairing file: \(error)")
-                isRetry = true
-            }
+            return try await V3PlacedPairingLifecycle.run(
+                alreadySelected: plan.isCurrentSelection,
+                mayReuseTransport: transportTicket != nil,
+                validateReusableTransport: {
+                    guard let transportTicket,
+                          minimuxerPairingProtocol() == plan.mode,
+                          V3PairingTransportReceipt.shared.ticket(contents: plan.content, mode: plan.mode) == transportTicket else {
+                        throw V3PlacedPairingError.stale
+                    }
+                },
+                validateOperation: validateOperation,
+                validate: { try manager.validatePlacedImport(plan) },
+                validateCommitted: { try manager.validateCommittedPlacedImport(plan) },
+                start: {
+                    // start() alone does not prove an old transport was retired.
+                    try await minimuxerStop()
+                    try await self.startMinimuxerUnlocked(pairingFile: plan.content, verifyLiveIdentity: false)
+                },
+                verify: { try await V3PlacedPairingReadiness.verify(expectedUDID: plan.expectedUDID) },
+                commit: {
+                    try manager.commitPlacedImport(plan)
+                    V3PairingActivationGate.placementOwnsStartup = true
+                },
+                rollback: {
+                    // Retire provisional transport even when the request task
+                    // was cancelled. Never leave new identity active on failure.
+                    var stopped = true
+                    do { try await minimuxerStop() } catch { stopped = false }
+                    if UserDefaults.standard.enableEMPforWireguard {
+                        do { try await stopEMProxy() } catch { stopped = false }
+                    }
+                    return stopped
+                })
         }
     }
+
+    // V3_HEADLESS_BOOT_PAIRING_PROMPT_REMOVED_V1
+
     
     public nonisolated func performBootSequence() async {
         debugLog("[AppBootManager] performBootSequence() entered")
@@ -102,15 +116,8 @@ public final class AppBootManager {
             defer {
                 debugLog("[AppBootManager] performBootSequence(): JIT check completed")
             }
-            if #available(iOS 17, *), !UserDefaults.standard.isSideJITServerEnabled {
-                do {
-                    try await SideJITManager.shared.isSideJITServerDetected()
-                    self.needsSideJITPrompt = true
-                } catch {
-                    debugLog("[AppBootManager] Cannot find sideJITServer")
-                }
-            }
-            
+            // V3_HEADLESS_BOOT_SIDEJIT_DETECTION_REMOVED_V1: configured SideJIT network requests remain below.
+
             if #available(iOS 17, *), UserDefaults.standard.isSideJITServerEnabled {
                 await SideJITManager.shared.askForNetwork()
                 debugLog("[AppBootManager] SideJITServer Enabled")
@@ -130,19 +137,137 @@ public final class AppBootManager {
                 debugLog("[AppBootManager] Failed to start minimuxer: \(error)")
             }
             #else
-            if let pf = PairingFileManager.shared.fetchPairingFile() {
-                do {
-                    try await self.startMinimuxer(pairingFile: pf)
-                } catch {
-                    debugLog("[AppBootManager] Failed to start minimuxer: \(error)")
+            do {
+                try await V3PairingActivationGate.runBootIfNeeded {
+                    // Read only after acquiring ownership: a queued boot must
+                    // not restart an obsolete file after explicit placement.
+                    if let pf = PairingFileManager.shared.fetchPairingFile() {
+                        try await self.startMinimuxerUnlocked(pairingFile: pf)
+                    }
                 }
-            } else {
-                self.needsPairingPrompt = true
+            } catch {
+                debugLog("[AppBootManager] Failed to start minimuxer: \(error)")
             }
             #endif
         }()
         
         // Await both concurrently (Structured Concurrency awaits them in parallel)
         _ = await (jitCheck, minimuxerCheck)
+    }
+}
+
+// Shared only by boot/startup and explicit placement. No protocol default or
+// reset policy is changed. The body retains ownership across suspension.
+@MainActor
+enum V3PairingActivationGate {
+    private static var occupied = false
+    static var placementOwnsStartup = false
+
+    static func runBootIfNeeded(_ body: @MainActor () async throws -> Void) async throws {
+        try await withExclusiveAccess {
+            // A queued boot must not undo explicit activation's cleanup or
+            // retry readiness after the user cancelled. New processes start false.
+            guard !placementOwnsStartup else { return }
+            try await body()
+        }
+    }
+
+    static func withExclusiveAccess<T>(_ body: @MainActor () async throws -> T) async throws -> T {
+        while occupied { try await Task.sleep(nanoseconds: 20_000_000) }
+        try Task.checkCancellation()
+        occupied = true
+        defer { occupied = false }
+        return try await body()
+    }
+}
+
+// V3_PLACED_PAIRING_LIFECYCLE_V1: test the actual ordered transaction with fake
+// transport boundaries. Native/device testing is still required before release.
+enum V3PlacedPairingOutcome: String {
+    case ready = "adoptedReady"
+    case connectionNotReady = "adoptedConnectionNotReady"
+    case cleanupUncertain = "adoptedCleanupUncertain"
+}
+
+@MainActor
+enum V3PlacedPairingReadiness {
+    static func verify(expectedUDID: String?) async throws {
+        await minimuxer.core.beginTransportBatch()
+        do {
+            try await ensureMinimuxerReady()
+            // fetchUDID may return a cached pairing ID in some backends. Only
+            // a fresh lockdown query can label this activation live-ready.
+            let live = try await minimuxer.gateway.getLockdownValue(key: "UniqueDeviceID")
+            guard !live.isEmpty, live != "XXXXX-XXXX-XXXXX-XXXX",
+                  expectedUDID == nil || expectedUDID == live else {
+                throw V3PlacedPairingError.startupFailed
+            }
+            await minimuxer.core.endTransportBatch()
+        } catch {
+            await minimuxer.core.endTransportBatch()
+            throw error
+        }
+    }
+}
+
+@MainActor
+enum V3PlacedPairingLifecycle {
+    static func run(alreadySelected: Bool = false,
+                    mayReuseTransport: Bool = false,
+                    validateReusableTransport: @MainActor () throws -> Void = {},
+                    validateOperation: @MainActor () throws -> Void = {},
+                    validate: @MainActor () throws -> Void,
+                    validateCommitted: @MainActor () throws -> Void,
+                    start: @MainActor () async throws -> Void,
+                    verify: @MainActor () async throws -> Void,
+                    commit: @MainActor () throws -> Void,
+                    rollback: @escaping @MainActor () async -> Bool) async throws -> V3PlacedPairingOutcome {
+        try Task.checkCancellation()
+        try validate()
+        try validateOperation()
+        if alreadySelected && mayReuseTransport {
+            try validateCommitted()
+            try validateReusableTransport()
+            var connectionVerified = false
+            do {
+                try await verify()
+                connectionVerified = true
+            } catch {
+                // The same explicit action remains a connection retry when
+                // the live check fails. Do not relabel its cause as VPN.
+            }
+            // A fresh live reply is not authority over a reset, replacement,
+            // cancellation, or recovery-owner change during the await.
+            try Task.checkCancellation()
+            try validateOperation()
+            try validate()
+            try validateCommitted()
+            try validateReusableTransport()
+            if connectionVerified { return .ready }
+        }
+        if !alreadySelected {
+            // Explicit file adoption is the linearization point, like manual
+            // import. A connection problem must not turn it back into "missing".
+            try commit()
+        }
+        do {
+            try Task.checkCancellation()
+            try validateOperation()
+            try validateCommitted()
+            try await start()
+            try Task.checkCancellation()
+            try validateOperation()
+            try validateCommitted()
+            try await verify()
+            try Task.checkCancellation()
+            try validateOperation()
+            try validateCommitted()
+            return .ready
+        } catch {
+            // The file is already committed. Cancellation/failure retires only
+            // provisional transport; it does not pretend to undo that import.
+            let stopped = await Task { @MainActor in await rollback() }.value
+            return stopped ? .connectionNotReady : .cleanupUncertain
+        }
     }
 }

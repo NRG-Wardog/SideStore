@@ -8,7 +8,21 @@
 
 import Foundation
 
-import Nuke
+// V3_LEGACY_IMAGE_CACHE_CLEANUP_V1: clear the former SideStore screen cache without Nuke.
+enum V3LegacyImageCacheCleanup {
+    static let directoryName = "io.sidestore.Nuke"
+
+    static func clear(cachesDirectory: URL?, fileManager: FileManager = .default) throws {
+        guard let cachesDirectory else { return }
+        let root = cachesDirectory.standardizedFileURL
+        let cache = root.appendingPathComponent(directoryName, isDirectory: true).standardizedFileURL
+        guard cache.deletingLastPathComponent() == root else {
+            throw NSError(domain: "com.SideStore.Cache", code: 1)
+        }
+        guard fileManager.fileExists(atPath: cache.path) else { return }
+        try fileManager.removeItem(at: cache)
+    }
+}
 
 struct BatchError: ALTLocalizedError {
 
@@ -76,8 +90,12 @@ class ClearAppCacheOperation: BaseStandaloneOperation<StandaloneOperationContext
     }
     
     private func clearNukeCache() {
-        guard let dataCache = ImagePipeline.shared.configuration.dataCache as? DataCache else { return }
-        dataCache.removeAll()
+        do {
+            try V3LegacyImageCacheCleanup.clear(cachesDirectory:
+                FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first)
+        } catch {
+            self.debugLog("[ClearAppCacheOperation] legacy image-cache removal failed")
+        }
     }
     
     private func clearTemporaryDirectory() async throws {
@@ -138,8 +156,7 @@ class ClearAppCacheOperation: BaseStandaloneOperation<StandaloneOperationContext
     private func removeBackupDirItems(at url: URL, installedBundleIDs: Set<String>, coordinatorError: Error?) throws {
         if let coordinatorError { throw coordinatorError }
         
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+        guard let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey]), resourceValues.isDirectory == true else {
             self.setProgress(90)
             return
         }

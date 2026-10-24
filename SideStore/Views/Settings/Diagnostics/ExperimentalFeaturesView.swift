@@ -14,6 +14,8 @@ private extension Color {
 }
 
 struct ExperimentalFeaturesView: View {
+    @State private var isMinimuxerBackendHotswapEnabled: Bool = UserDefaults.standard.isMinimuxerBackendHotswapEnabled
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -56,22 +58,26 @@ struct ExperimentalFeaturesView: View {
                             .padding(.horizontal, 16)
                             .frame(height: 50)
                         }
+                    }
+                    .background(Color.settingsRowBackground)
+                    .cornerRadius(14)
+                }
 
-                        divider
-
-                        NavigationLink(destination: BonjourDiscoveryView()) {
-                            HStack {
-                                Text("Network Discovery")
-                                    .font(.system(size: 17, weight: .bold))
-                                    .foregroundColor(.white)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(Color.white.opacity(0.4))
+                // Section 2: MINIMUXER
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("MINIMUXER")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Color.white.opacity(0.6))
+                        .padding(.horizontal, 16)
+                    
+                    VStack(spacing: 0) {
+                        toggleRow(title: "Enable Minimuxer Backend Hotswap", isOn: Binding(
+                            get: { isMinimuxerBackendHotswapEnabled },
+                            set: { newValue in
+                                isMinimuxerBackendHotswapEnabled = newValue
+                                UserDefaults.standard.isMinimuxerBackendHotswapEnabled = newValue
                             }
-                            .padding(.horizontal, 16)
-                            .frame(height: 50)
-                        }
+                        ))
                     }
                     .background(Color.settingsRowBackground)
                     .cornerRadius(14)
@@ -86,6 +92,22 @@ struct ExperimentalFeaturesView: View {
         #if !os(tvOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
+    }
+
+    private func toggleRow(title: String, isOn: Binding<Bool>) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 17, weight: .bold))
+                .foregroundColor(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .tint(.green)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(minHeight: 50)
     }
 
     private var divider: some View {

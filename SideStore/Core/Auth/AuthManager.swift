@@ -19,43 +19,92 @@ public final class AuthManager: @unchecked Sendable {
     }
     
     private init() {}
+
+    // V3_AUTH_IDENTITY_GENERATION_V1: one AuthManager-owned process stamp and transition gate.
+    private let v3IdentityStampState = V3AuthIdentityStampState()
+    var v3IdentityGeneration: UInt64 {
+        v3IdentityStampState.snapshot.generation
+    }
+    var v3IdentityStamp: String {
+        v3IdentityStampState.snapshot.stamp
+    }
+    var v3IdentityIsStable: Bool {
+        v3IdentityStampState.snapshot.stable
+    }
+    func v3BeginIdentityTransition() {
+        // Close admission first, then cancel the contexts admitted before this transition.
+        v3IdentityStampState.beginTransition()
+        V3RemoteRequestLeases.invalidateAll()
+    }
+    func v3CompleteIdentityTransition() {
+        v3IdentityStampState.completeTransition()
+    }
+    func v3ReplaceSession(_ session: ALTAppleAPISession?) {
+        v3BeginIdentityTransition()
+        defer { v3CompleteIdentityTransition() }
+        self.session = session
+    }
+    func v3InstallSessionIfCurrent(_ session: ALTAppleAPISession, capturedStamp: String) -> Bool {
+        v3IdentityStampState.runIfCurrent(capturedStamp) { self.session = session }
+    }
+    func v3CachedSessionMatchesCurrentRoute(_ session: ALTAppleAPISession?) -> Bool {
+        let identityAtStart = v3IdentityStampState.snapshot
+        guard identityAtStart.stable, let session,
+              let credentials = authenticationSnapshot else { return false }
+        let identityAfterRead = v3IdentityStampState.snapshot
+        return V3AuthReadStampPolicy.mayReturn(capturedStamp: identityAtStart.stamp,
+                  currentStamp: identityAfterRead.stamp, stable: identityAfterRead.stable) &&
+            V3AuthIdentityBindingPolicy.hasUsableSession(
+                credentialRoutePresent: credentials.isAuthenticated,
+                dsid: credentials.appleIDAdsid, xcodeToken: credentials.appleIDXcodeToken,
+                sessionDSID: session.dsid, sessionXcodeToken: session.authToken,
+                generationBefore: identityAtStart.generation,
+                generationAfter: identityAfterRead.generation)
+    }
+    func v3AdvanceIdentityGeneration() {
+        v3IdentityStampState.advanceGeneration()
+        V3RemoteRequestLeases.invalidateAll()
+        V3RemoteRequestLeases.invalidateManualAttempts()
+    }
     
-    private var team: ALTTeam?
-    private var session: ALTAppleAPISession?
+    public var team: ALTTeam?
+    public var session: ALTAppleAPISession?
+
+    // LC_AUTH_CREDENTIAL_SNAPSHOT_V1
+    var authenticationSnapshot: LCEmbeddedAuthenticationSnapshot? {
+        try? Keychain.shared.authenticationSnapshot()
+    }
 
     public var isAuthenticated: Bool {
-        let hasEmail = Keychain.shared.appleIDEmailAddress != nil
-        let hasPassword = Keychain.shared.appleIDPassword != nil
-        let hasToken = Keychain.shared.appleIDXcodeToken != nil
-        return hasEmail && (hasPassword || hasToken)
+        authenticationSnapshot?.isAuthenticated ?? false
     }
     
     public var currentAppleID: String? {
         get { Keychain.shared.appleIDEmailAddress }
-        set { Keychain.shared.appleIDEmailAddress = newValue }
+        set { V3RemoteRequestLeases.invalidateManualAttempts(); self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDEmailAddress = newValue }
     }
     
     public var password: String? {
         get { Keychain.shared.appleIDPassword }
-        set { Keychain.shared.appleIDPassword = newValue }
+        set { V3RemoteRequestLeases.invalidateManualAttempts(); self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDPassword = newValue }
     }
     
     public var adsid: String? {
         get { Keychain.shared.appleIDAdsid }
-        set { Keychain.shared.appleIDAdsid = newValue }
+        set { V3RemoteRequestLeases.invalidateManualAttempts(); self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDAdsid = newValue }
     }
     
     public var xcodeToken: String? {
         get { Keychain.shared.appleIDXcodeToken }
-        set { Keychain.shared.appleIDXcodeToken = newValue }
+        set { V3RemoteRequestLeases.invalidateManualAttempts(); self.v3BeginIdentityTransition(); defer { self.v3CompleteIdentityTransition() }; Keychain.shared.appleIDXcodeToken = newValue }
     }
     
     public var hasStoredPassword: Bool {
-        return Keychain.shared.appleIDPassword != nil
+        return authenticationSnapshot?.hasPasswordCredentials ?? false
     }
     
     public var hasStoredXcodeToken: Bool {
-        return Keychain.shared.appleIDXcodeToken != nil
+        return authenticationSnapshot?.hasTokenCredentials ?? false
     }
     
     public func signOut(
@@ -63,7 +112,10 @@ public final class AuthManager: @unchecked Sendable {
         keepAnisetteData: Bool = true,
         keepAnisetteHeaders: Bool = true,
         keepSideSignHeaders: Bool = true
-    ) async {
+    ) {
+        V3RemoteRequestLeases.invalidateManualAttempts()
+        self.v3BeginIdentityTransition()
+        defer { self.v3CompleteIdentityTransition() }
         self.session = nil
         self.team = nil
         if !keepCertificate {
@@ -75,7 +127,7 @@ public final class AuthManager: @unchecked Sendable {
             debugLog("[AuthManager] Preserved signing certificate in cert manager and keychain.")
         }
         debugLog("[AuthManager] Clearing account and team info in database.")
-        await DatabaseManager.shared.deactivateActiveAccountAndTeam()
+        DatabaseManager.shared.deactivateActiveAccountAndTeam()
         debugLog("[AuthManager] Cleared account and team info in database.")
 
         debugLog("[AuthManager] Clearing sign-in info from keychain.")
@@ -97,25 +149,62 @@ public final class AuthManager: @unchecked Sendable {
     
     @discardableResult
     public func getAuthenticatedSession() async throws -> ALTAppleAPISession {
-        return try await TaskChainCoalescer.shared.coalesce(key: "apple_auth_session") {
-            guard let adsid = self.adsid,                           // directory services id
-                  let xcodeToken = self.xcodeToken else             // xcode token
-            {
-                debugLog("[AuthManager] No stored tokens found.")
-                throw OperationError.notAuthenticated
+        let identityAtStart = v3IdentityStampState.snapshot
+        guard identityAtStart.stable else { throw OperationError.notAuthenticated }
+        // Capture before queueing. The closure keeps this exact attempt alive, so its
+        // ObjectIdentifier cannot be reused while a coalesced task still owns the key.
+        let admission = try V3RemoteRequestLeases.admitted ?? V3RemoteRequestLeases.capture()
+        let remoteContext = admission.context
+        let defaultKey = V3AuthSessionCoalescerKey.value(for: identityAtStart.stamp)
+        let coalescerKey = remoteContext.map { defaultKey + ".remoteAttempt.\(ObjectIdentifier($0))" } ?? defaultKey
+        let session = try await TaskChainCoalescer.shared.coalesce(key: coalescerKey) {
+            try await admission.withScope {
+                // LC_AUTHENTICATED_SESSION_SNAPSHOT_V1
+                let credentialSnapshot: LCEmbeddedAuthenticationSnapshot?
+                do { credentialSnapshot = try Keychain.shared.authenticationSnapshot() }
+                catch { throw Keychain.shared.embeddedAuthenticationFailure(error) }
+                guard let adsid = credentialSnapshot?.appleIDAdsid,
+                      let xcodeToken = credentialSnapshot?.appleIDXcodeToken else {
+                    debugLog("[AuthManager] No stored tokens found.")
+                    throw OperationError.notAuthenticated
+                }
+                let anisetteData: ALTAnisetteData
+                let xcodeVersion: String
+                if remoteContext != nil {
+                    // The coalescer task is unstructured. Acquire last so revocation while
+                    // resolving the version cannot publish a session from an ended attempt.
+                    xcodeVersion = await AnisetteConfigManager.shared.resolvedXcodeVersion()
+                    anisetteData = try await AnisetteProvider.fetch()
+                } else {
+                    // Keep the default route's acquisition order and behavior unchanged.
+                    anisetteData = try await AnisetteProvider.fetch()   // one time pass
+                    xcodeVersion = await AnisetteConfigManager.shared.resolvedXcodeVersion()
+                }
+                let credentialSnapshotAfter: LCEmbeddedAuthenticationSnapshot?
+                do { credentialSnapshotAfter = try Keychain.shared.authenticationSnapshot() }
+                catch { throw Keychain.shared.embeddedAuthenticationFailure(error) }
+                guard self.v3IdentityIsStable,
+                      self.v3IdentityStamp == identityAtStart.stamp,
+                      credentialSnapshotAfter?.appleIDAdsid == adsid,
+                      credentialSnapshotAfter?.appleIDXcodeToken == xcodeToken else {
+                    throw OperationError.notAuthenticated
+                }
+                
+                let session = ALTAppleAPISession(
+                    dsid: adsid,
+                    authToken: xcodeToken,
+                    anisetteData: anisetteData,
+                    xcodeVersion: xcodeVersion
+                )
+                guard self.v3InstallSessionIfCurrent(session, capturedStamp: identityAtStart.stamp) else {
+                    throw OperationError.notAuthenticated
+                }
+                return session
             }
-            let anisetteData = try await AnisetteProvider.fetch()   // one time pass
-            let xcodeVersion = await AnisetteConfigManager.shared.resolvedXcodeVersion()
-            
-            let session = ALTAppleAPISession(
-                dsid: adsid,
-                authToken: xcodeToken,
-                anisetteData: anisetteData,
-                xcodeVersion: xcodeVersion
-            )
-            self.session = session
-            return session
         }
+        // A cancelled waiter must not dispatch the unstructured producer's result.
+        try admission.check()
+        return session
     }
 
     public func getAuthenticatedTeam() async throws -> ALTTeam {
@@ -137,6 +226,7 @@ public final class AuthManager: @unchecked Sendable {
         }
     }
     
+    // V3_HEADLESS_AUTH_ENTRYPOINT_V1: LiveContainer owns credentials and 2FA UI; the embedded service still executes SignInOperation through V3HeadlessAuthHandler.
     @discardableResult
     func signIn(
         presentingViewController: UIViewController? = nil,
@@ -145,29 +235,10 @@ public final class AuthManager: @unchecked Sendable {
         skipResign: Bool = false,
         skipHowTos: Bool = false
     ) async throws -> SignInResult {
-        let dbBackgroundContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-        let signInFlowHandler = SignInFlowHandler(presentingViewController: presentingViewController)
-        let context = StandaloneOperationContext(
-            steps: .signIn,
-            dbBackgroundContext: dbBackgroundContext
-        )
-        
-        let signInOperation = try SignInOperation(
-            context: context,
-            signInHandler: signInFlowHandler,
-            anisetteServerHandler: signInFlowHandler,
-            skipDeviceRegistration: skipDeviceRegistration,
-            skipCertificateProvisioning: skipCertificateProvisioning,
-            skipResign: skipResign,
-            skipHowTos: skipHowTos
-        )
-        let result = try await signInOperation.execute()
-        self.team = result.team
-        self.session = result.session
-        return result
+        // The embedded service must authenticate through the host IPC handler.
+        throw OperationError.invalidParameters("Sign in through LiveContainer's Account and Signing screen.")
     }
-    
-    
+
     // Developer Portal Operations
     public func signIn(appleID: String, 
                        password: String, 
@@ -187,17 +258,29 @@ public final class AuthManager: @unchecked Sendable {
             verificationHandler: verificationHandler
         )
     }
+    
+    public func authenticateWithToken(adsid: String,
+                                      xcodeToken: String,
+                                      anisetteData: ALTAnisetteData,
+                                      xcodeVersion: String) async throws -> (ALTAccount, ALTAppleAPISession)
+    {
+        // Upstream removed the proxy convenience method, not token-backed account lookup.
+        let session = ALTAppleAPISession(dsid: adsid, authToken: xcodeToken,
+            anisetteData: anisetteData, xcodeVersion: xcodeVersion)
+        let account = try await self.portalProxy.fetchAccount(session: session)
+        return (account, session)
+    }
 }
 
 fileprivate extension DatabaseManager {
     //TODO: this is not clean, but for now this should be fine, ie we should later make this proper async instead of blocking
-    func deactivateActiveAccountAndTeam() async {
+    func deactivateActiveAccountAndTeam() {
         guard self.isStarted else {
             debugLog("[AuthManager] DatabaseManager is not started. Skipping CoreData active account/team deactivation.")
             return
         }
         let bgContext = self.persistentContainer.newBackgroundContext()
-        await bgContext.perform {
+        bgContext.performAndWait {
             if let account = self.activeAccount(in: bgContext) {
                 account.isActiveAccount = false
             }
@@ -207,11 +290,11 @@ fileprivate extension DatabaseManager {
             do {
                 try bgContext.save()
             } catch {
-                debugLog("[AuthManager] Failed to save CoreData context when deactivating active account and team: \(error)")
+                debugLog("[AuthManager] Failed to save CoreData context when deactivating active account and team.")
             }
         }
         
-        await self.viewContext.perform {
+        self.viewContext.performAndWait {
             self.viewContext.processPendingChanges()
             self.viewContext.refreshAllObjects()
         }

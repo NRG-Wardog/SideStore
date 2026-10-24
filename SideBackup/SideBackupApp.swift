@@ -94,16 +94,22 @@ class AppDelegate: NSObject, UIApplicationDelegate {
             return      // This is ASSERTION Failure, ie RETURN URL needs to be valid. So ignoring (eating up) response is not the solution
         }
         
+        // V3_SIDEBACKUP_CALLBACK_QUERY_V1: preserve the explicit host target
+        // and one-shot callback correlation on both success and failure. Remove
+        // old error keys rather than creating duplicate/ambiguous query values.
+        var callbackItems = (components.queryItems ?? []).filter {
+            !["errorDomain", "errorCode", "errorDescription"].contains($0.name)
+        }
         switch result {
         case .success:
             components.path = "/success"
-            
-        case .failure(let error as NSError):
+        case .failure:
             components.path = "/failure"
-            components.queryItems = ["errorDomain": error.domain,
-                                     "errorCode": String(error.code),
-                                     "errorDescription": error.localizedDescription].map { URLQueryItem(name: $0, value: $1) }
+            callbackItems += [URLQueryItem(name: "errorDomain", value: "SideBackup"),
+                              URLQueryItem(name: "errorCode", value: "1"),
+                              URLQueryItem(name: "errorDescription", value: "The backup or restore operation did not complete.")]
         }
+        components.queryItems = callbackItems
         
         guard let responseURL = components.url else { return }
         
@@ -137,7 +143,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         Task { @MainActor in
             let logger = try? ConsoleLog.getConsoleLog()
             if let logger = logger {
-                debugLog(logger, "[SideBackup]: Attempting to open target SideStore app '\(targetSideStoreBundleID)' via LSApplicationWorkspace with return URL: \(responseURL.absoluteString)")
+                debugLog(logger, "[SideBackup]: Returning the correlated operation result to SideStore")
             }
             
             let success = await withCheckedContinuation { continuation in

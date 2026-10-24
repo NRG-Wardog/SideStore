@@ -1,13 +1,12 @@
 {
-  "originHash" : "69ef50e98469f665fd222dd23c3fdcdd9d71e0ff7e9c23097cb0742a7b0fc571",
+  "originHash" : "1bced19c57ecddb9248d1603ddfc835e0d96e07b8f305b143b57cc3ca54ba6cf",
   "pins" : [
     {
       "identity" : "anisettekit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/mahee96/AnisetteKit.git",
+      "location" : "https://github.com/NRG-Wardog/AnisetteKit.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "1f5a7e36553cc865b873f222b87a6486c0bcc7bf"
+        "revision" : "e6e9d4aac698de2a5219aaef02c9a417da45f4e9"
       }
     },
     {
@@ -47,24 +46,6 @@
       }
     },
     {
-      "identity" : "markdownkit",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/bmoliveira/MarkdownKit.git",
-      "state" : {
-        "revision" : "39ea7a3fc7e65bcafe55152592b834859be574a5",
-        "version" : "1.7.3"
-      }
-    },
-    {
-      "identity" : "nuke",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/kean/Nuke",
-      "state" : {
-        "revision" : "30f7a7e72e0607d304fbf69c799474bd5fb6d1ce",
-        "version" : "13.2.0"
-      }
-    },
-    {
       "identity" : "remotepairingkit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/mahee96/RemotePairingKit.git",
@@ -80,15 +61,6 @@
       "state" : {
         "revision" : "ea8eea9d89842a29af1b8e6c7677f1c86e72fa42",
         "version" : "0.4.0"
-      }
-    },
-    {
-      "identity" : "starscream",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/daltoniam/Starscream",
-      "state" : {
-        "revision" : "c6bfd1af48efcc9a9ad203665db12375ba6b145a",
-        "version" : "4.0.8"
       }
     },
     {

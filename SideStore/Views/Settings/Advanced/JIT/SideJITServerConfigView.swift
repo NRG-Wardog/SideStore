@@ -138,6 +138,7 @@ struct SideJITServerConfigView: View {
                     refreshServerState()
                 } else {
                     connectionStatus = .disabled
+                    resolvedAddress = ""
                 }
             }
         }
@@ -162,9 +163,9 @@ struct SideJITServerConfigView: View {
                 Text("Resolved Address")
                     .layoutPriority(1)
                 Spacer()
-                Text(resolvedAddress.isEmpty ? "Resolving…" : resolvedAddress)
+                Text(!isServerEnabled ? "Disabled" : (resolvedAddress.isEmpty ? "Resolving…" : resolvedAddress))
                     .font(.system(size: 13, design: .monospaced))
-                    .foregroundColor(resolvedAddress.isEmpty ? .secondary : .primary)
+                    .foregroundColor((!isServerEnabled || resolvedAddress.isEmpty) ? .secondary : .primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }

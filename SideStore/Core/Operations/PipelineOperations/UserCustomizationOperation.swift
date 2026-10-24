@@ -38,7 +38,7 @@ final class UserCustomizationOperation: BasePipelineOperation<InstallAppOperatio
         if UserDefaults.standard.customizeInfoPlist {
             let authTeam = try await AuthManager.shared.getAuthenticatedTeam()
             let teamID = authTeam.identifier
-            debugLog("[UserCustomizationOperation] targetBundleIdentifier='\(context.targetBundleIdentifier)', authTeamID='\(teamID)', appendTeamID=\(context.appendTeamID)")
+            debugLog("[UserCustomizationOperation] Customization identity resolved; appendTeamID=\(context.appendTeamID)")
             guard !teamID.isEmpty else {
                 debugLog("[UserCustomizationOperation] FAILED: authTeamID is empty")
                 throw OperationError.invalidParameters("Active developer team identifier is missing.")
@@ -117,10 +117,10 @@ final class UserCustomizationOperation: BasePipelineOperation<InstallAppOperatio
             let effectiveCustomID = customID ?? initialBundleID
             let resolvedID = result.appendTeamID && !teamID.isEmpty ? "\(effectiveCustomID).\(teamID)" : effectiveCustomID
             if let matchingApp = installedApps.first(where: { $0.bundleIdentifier == resolvedID }) {
-                debugLog("[UserCustomizationOperation] Matched existing installed app: \(matchingApp.name) (\(resolvedID))")
+                debugLog("[UserCustomizationOperation] Matched existing installed app.")
                 context.installedApp = matchingApp
             } else {
-                debugLog("[UserCustomizationOperation] No matching installed app for \(resolvedID); treating as new install/clone.")
+                debugLog("[UserCustomizationOperation] No matching installed app; treating as new install/clone.")
                 context.installedApp = nil
             }
         } else if UserDefaults.standard.customizeAppId {

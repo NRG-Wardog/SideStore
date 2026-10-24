@@ -28,7 +28,8 @@ struct CacheManagementView: View {
                         } else {
                             ForEach(viewModel.internalApps) { item in
                                 CacheItemRow(item: item, onExport: {
-                                    viewModel.activeExportURL = item.url
+                                    let appURL = item.url.appendingPathComponent("App.app")
+                                    viewModel.activeExportURL = FileManager.default.fileExists(atPath: appURL.path) ? appURL : item.url
                                 }, onDelete: {
                                     viewModel.itemToDelete = item
                                 })

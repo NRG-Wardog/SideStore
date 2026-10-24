@@ -36,8 +36,43 @@ private func getTag(level: String) -> String {
     return "\(timestamp) \(level): "
 }
 
+// SIDESTORE_TRANSITIVE_ERROR_LOG_PRIVACY_V1
+// SideSign errors can carry raw GrandSlam/portal/Anisette payloads. Omit those
+// lines before they enter Copy Logs; bounded v3 diagnostics carry safe codes.
+func shouldOmitUserCopyableSideStoreLog(_ message: String) -> Bool {
+    let lowercased = message.lowercased()
+    let markers = ["error", "failed", "failure", "cause", "response", "payload", "header",
+                   "authorization", "cookie", "dsid", "phone", "pairing", "2fa", "verification",
+                   "verification-code", "security code", "security-code", "password", "apple id",
+                   "appleid", "token", "anisette", "private key", "certificate der",
+                   "mobileprovision", "provisioning profile", "grandslam", "grand slam"]
+    // Certificate serials are sensitive identifiers even on successful paths.
+    // SideStore emits them from CertificateManager, SignInOperation, and its
+    // OCSP verifier without an error/payload marker, so omit the whole line.
+    // Match compound labels such as certSerial, targetSerial, serialNumber,
+    // serialHex, and serial_number without matching words such as "serialize".
+    let certificateSerial = lowercased.range(
+        of: #"\b[a-z0-9_]*serial(?:[_-]?(?:number|hex|dec))?\b"#,
+        options: .regularExpression
+    ) != nil
+    // The pinned code also emits unlabelled serials in certificate context,
+    // including "certificate (<serial>)", "certificate '<serial>'",
+    // "deleteCertificate: <serial>", and OCSP status lines.
+    let certificateValue = lowercased.range(
+        of: #"(?:\bcertificate\s+(?:0x)?[0-9a-f]{2,}\b|\bcertificate\s*[\(\['"]+\s*(?:0x)?[a-z0-9:-]{2,}\b|\b[a-z]*certificate\s*:\s*(?:0x)?[a-z0-9:-]{2,}\b)"#,
+        options: .regularExpression
+    ) != nil
+    let ocspValue = lowercased.range(
+        of: #"\bocsp\b[^\n]*\bfor\s+(?:0x)?[0-9a-f]{2,}\b"#,
+        options: .regularExpression
+    ) != nil
+    return certificateSerial || certificateValue || ocspValue || markers.contains { lowercased.contains($0) }
+}
+
 public func debugLog(_ text: @autoclosure () -> String) {
-    let message = formatLogMessage(text())
+    let rawMessage = text()
+    guard !shouldOmitUserCopyableSideStoreLog(rawMessage) else { return }
+    let message = formatLogMessage(rawMessage)
     if !message.isEmpty && message.allSatisfy({ $0 == "\n" || $0 == "\r" }) {
         print(message, terminator: "")
     } else {
@@ -46,93 +81,67 @@ public func debugLog(_ text: @autoclosure () -> String) {
 }
 
 public func verboseLog(_ text: @autoclosure () -> String) {
-    if SideStoreLogging.isLoggingEnabled {
-        let message = formatLogMessage(text())
-        if !message.isEmpty && message.allSatisfy({ $0 == "\n" || $0 == "\r" }) {
-            print(message, terminator: "")
-        } else {
-            print("\(getTag(level: "[V]"))\(message)")
-        }
+    guard SideStoreLogging.isLoggingEnabled else { return }
+    let rawMessage = text()
+    guard !shouldOmitUserCopyableSideStoreLog(rawMessage) else { return }
+    let message = formatLogMessage(rawMessage)
+    if !message.isEmpty && message.allSatisfy({ $0 == "\n" || $0 == "\r" }) {
+        print(message, terminator: "")
+    } else {
+        print("\(getTag(level: "[V]"))\(message)")
     }
 }
 
 public func formatLogMessage(_ message: String) -> String {
-    guard message.contains("UserInfo=") || 
-          message.contains("NSURLErrorDomain") || 
-          message.contains("NSErrorFailingURLStringKey=") ||
-          message.contains("Error Domain=") else 
-    {
-        return message
+    // V3_SAFE_LOG_FORMAT_V1: user-copyable logs never contain credentials,
+    // provider bodies, identifiers, URLs, or device/container paths.
+    let providerErrorMarkers = ["UserInfo=", "NSErrorFailingURL", "NSURLErrorDomain",
+        "Error Domain=", "ServerError.badServerResponse", "invalidResponseFormat"]
+    let codePattern = #"(?i)\bCode=(-?\d+)"#
+    var suppressProviderDetails = false
+    var suppressSideBackupDetails = false
+    var output: [String] = []
+    for line in message.components(separatedBy: .newlines) {
+        if suppressProviderDetails {
+            if line.contains("}") { suppressProviderDetails = false }
+            continue
+        }
+        if providerErrorMarkers.contains(where: { line.localizedCaseInsensitiveContains($0) }) {
+            if let range = line.range(of: codePattern, options: .regularExpression) {
+                let code = String(line[range]).replacingOccurrences(of: #"(?i)^Code="#, with: "",
+                    options: .regularExpression)
+                output.append("[V3_LOG_REDACTED] native_code=\(code)")
+            } else {
+                output.append("[V3_LOG_REDACTED]")
+            }
+            suppressProviderDetails = line.contains("UserInfo={") && !line.contains("}")
+            continue
+        }
+        if suppressSideBackupDetails {
+            if line.contains("[SideBackup Logs End]") { suppressSideBackupDetails = false }
+            continue
+        }
+        if line.localizedCaseInsensitiveContains("SideBackup") {
+            output.append("[V3_LOG_REDACTED] side_backup")
+            suppressSideBackupDetails = line.contains("[SideBackup Logs") && !line.contains("[SideBackup Logs End]")
+            continue
+        }
+        var safe = line
+        safe = safe.replacingOccurrences(of: #"(?i)\b(?:https?|file)://[^\s]+"#,
+            with: "[redacted URL]", options: .regularExpression)
+        safe = safe.replacingOccurrences(of: #"(?i)(?:/private)?/(?:var|Users|tmp|Library|System|Applications|Volumes)/[^\s,;]+"#,
+            with: "[redacted path]", options: .regularExpression)
+        safe = safe.replacingOccurrences(of: #"(?i)\b(?:proxy-authorization|authorization)\s*[:=]\s*(?:bearer|basic)\s+[^\s,;]+"#,
+            with: "authorization=[redacted credential]", options: .regularExpression)
+        safe = safe.replacingOccurrences(of: #"(?i)(["']?(?:UDID|DSID|phone(?:ID|Number)|deviceEndpointIp|bundlePath|bundleIdentifier|bundleID|app(?:\s*ID|Identifier)|team(?:\s*ID|Identifier)|downloadURL|callbackURL|accessToken|refreshToken|sessionToken|authorization|cookie|password|verificationCode|securityCode|private[_ ]?key|certificateDER|provisioningProfile|token|path|session(?:_id)?|request_id|correlationID|authToken|xcodeToken|secret|credential)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)"#,
+            with: "$1[redacted]", options: .regularExpression)
+        safe = safe.replacingOccurrences(of: #"(?i)\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b"#,
+            with: "[redacted UUID]", options: .regularExpression)
+        safe = safe.replacingOccurrences(of: #"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#,
+            with: "[redacted email]", options: .regularExpression)
+        safe = safe.replacingOccurrences(of: #"(?i)\b(?:[a-z0-9-]{1,63}\.)+[a-z][a-z0-9-]{1,63}\b"#,
+            with: "[redacted identifier]", options: .regularExpression)
+        output.append(safe)
     }
-    
-    // Extract URL
-    var failingURL: String? = nil
-    if let urlMatch = message.range(of: "NSErrorFailingURLStringKey=([^,}\\s]+)", options: .regularExpression) {
-        let extracted = String(message[urlMatch])
-        failingURL = extracted.replacingOccurrences(of: "NSErrorFailingURLStringKey=", with: "")
-    } else if let urlMatch = message.range(of: "NSErrorFailingURL=([^,}\\s]+)", options: .regularExpression) {
-        let extracted = String(message[urlMatch])
-        failingURL = extracted.replacingOccurrences(of: "NSErrorFailingURL=", with: "")
-    }
-    
-    // Extract Domain
-    var domain: String? = nil
-    if let domainMatch = message.range(of: "Error Domain=([^\\s,]+)", options: .regularExpression) {
-        let extracted = String(message[domainMatch])
-        domain = extracted.replacingOccurrences(of: "Error Domain=", with: "")
-    }
-    
-    // Extract Code
-    var code: String? = nil
-    if let codeMatch = message.range(of: "Code=(-?\\d+)", options: .regularExpression) {
-        let extracted = String(message[codeMatch])
-        code = extracted.replacingOccurrences(of: "Code=", with: "")
-    }
-    
-    // Extract Localized Description
-    var desc: String? = nil
-    if let descMatch = message.range(of: "\"([^\"]+)\"", options: .regularExpression) {
-        desc = String(message[descMatch]).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-    } else if let descMatch = message.range(of: "NSLocalizedDescription=([^,}\n]+)", options: .regularExpression) {
-        desc = String(message[descMatch]).replacingOccurrences(of: "NSLocalizedDescription=", with: "")
-    }
-    
-    // Extract Stream Error Code
-    var streamCode: String? = nil
-    if let streamMatch = message.range(of: "_kCFStreamErrorCodeKey=(\\d+)", options: .regularExpression) {
-        streamCode = String(message[streamMatch]).replacingOccurrences(of: "_kCFStreamErrorCodeKey=", with: "")
-    }
-    
-    // Clean Header Line
-    var header = message
-    if let range = message.range(of: "Error Domain=") {
-        header = String(message[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-    } else if let range = message.range(of: "UserInfo=") {
-        header = String(message[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    if header.hasSuffix(",") || header.hasSuffix(":") {
-        header = String(header.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    if header.contains("Failed to load image data") && header.contains("Error loading image") {
-        header = header.replacingOccurrences(of: ": Failed to load image data", with: "")
-    }
-    if let desc = desc, !header.contains(desc) {
-        header += ": \(desc)"
-    }
-    
-    var bullets: [String] = [header]
-    if let url = failingURL, !url.isEmpty {
-        bullets.append("  • url: '\(url)'")
-    }
-    if let dom = domain, !dom.isEmpty {
-        bullets.append("  • domain: '\(dom)'")
-    }
-    if let c = code {
-        bullets.append("  • code: \(c)")
-    }
-    if let stream = streamCode {
-        bullets.append("  • streamErrorCode: \(stream)")
-    }
-    
-    return bullets.joined(separator: "\n")
+    return output.joined(separator: "\n")
 }

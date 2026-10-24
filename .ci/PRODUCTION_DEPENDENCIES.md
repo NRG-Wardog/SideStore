@@ -1,0 +1,135 @@
+# Production dependency transition candidate
+
+This commit prepares source-owned dependency wiring over an exact reviewed
+source checkpoint. Runtime and license blobs remain identical. No authfix,
+logging change, runtime generator, integration workflow, release, or tag is part
+of this change. It is not a successfully resolved or natively tested build.
+
+## Exact graph
+
+- SideSign's manifest and lock select
+  `https://github.com/NRG-Wardog/AnisetteKit.git` at
+  `62ce85c8798d8eab8e29752aba7dc9f1f6a5b80d`, with no branch constraint.
+- SideStore's Xcode lock selects the same AnisetteKit revision.
+- SideStore's submodule URLs select `NRG-Wardog/SideSign.git` and
+  `NRG-Wardog/minimuxer.git`. No branch hint can override committed gitlinks.
+  The candidate must not be used for a production build while its SideSign
+  child pin is null in `.ci/production-dependencies.json`.
+- The intended minimuxer child is
+  `efbcab05d7d636aa37c6bf6c7f364d122c5610f6`. It already consumes its locally
+  built IDevice framework. idevice `0182d7d8ce0c8bbeb440adbc989d88dc1d4c0789`
+  and jktcp `82277a1f366e8d92e775d14212ff21621b25f3f3` retain their existing
+  sibling source layout and Cargo wiring; this candidate does not change them.
+- All five unrelated SideSign lock pins and all nine unrelated SideStore lock
+  pins remain identical, including URLs, revisions and branch/version states.
+
+## Lock metadata is provisional
+
+Both locks keep schema version 3 and remove the old `originHash`. Keeping the
+old hash would misrepresent the new manifest graph; no new hash was guessed.
+SwiftPM's [resolved-store implementation](https://github.com/swiftlang/swift-package-manager/blob/main/Sources/PackageGraph/ResolvedPackagesStore.swift)
+models this value as optional. That source inspection is not evidence that the
+selected Xcode/Swift resolver accepted these candidate locks.
+
+Real resolution on the target macOS/Xcode toolchain is mandatory. Record its
+version, complete command and output, lock before/after hashes, exact checkout
+origins/revisions, and resolved dependency graph. Preserve the resolver-produced
+hash in a separately reviewed metadata commit. Update only this gate's lock
+metadata assertion and the exact lock digest to match that observed result;
+never relax the pin-map comparison. Fail resolution if any unrelated pin moves.
+
+## Verification layers
+
+Each source checkpoint's proof files and frozen manifests remain unchanged
+through this production dependency transition. Their whole-tree source commands
+correctly reject the production tree's intentional dependency metadata changes.
+
+SideSign's production source checkpoint is
+`ed30d3989ea0f80bcb91466d6d5ca043f4366df0`. It adds exactly one Foundation import
+to the existing Swift test, an exact test-import parity check and six mutation
+tests over historical checkpoint `aaa4375a59075a7b0a446cf4c2dc8193c247a875`.
+The frozen `.ci/source-parity.json`, runtime/library/CLI, manifests and licenses
+remain unchanged. The production proof inherits that import and its proof files
+without a new test exemption: SideSign `test_files` stays empty.
+
+1. Preserve three separate proof results, using independent full-history
+   checkouts. At historical SideSign `aaa4375a59075a7b0a446cf4c2dc8193c247a875`,
+   run its original `python3 -B .ci/source-parity.py`; the expected status is
+   `exact_frozen_source_pass`. At corrected SideSign
+   `ed30d3989ea0f80bcb91466d6d5ca043f4366df0`, run
+   `python3 -B .ci/source-parity.py` and `python3 -B .ci/test-source-parity.py`;
+   the source status is `exact_frozen_runtime_with_test_import_pass`, with the
+   exact single Foundation-import row and historical AAA checkpoint. On the
+   production candidate use the production gate below. Do not run the old
+   whole-tree checker on dependency-wired files and call its rejection a pass.
+   For SideStore's unchanged `9d8c71ed69684f805325ef440983e74d97113a71` checkpoint,
+   run `python3 -B scripts/verify_runtime_source.py --require-clean`.
+2. Run `python3 -B .ci/production-dependencies.py` on a clean production checkout.
+   It binds the complete tracked inventory and every unchanged checkpoint blob
+   and mode, verifies working files/index, and checks exact dependency pins.
+   It rejects GIT environment redirection, hidden working edits and arbitrary
+   source exemptions. It does not execute a resolver or claim runtime success.
+3. While the child commit is unpublished, SideStore preparation can be reviewed
+   with `python3 -B .ci/production-dependencies.py --allow-pending-child-pins`.
+   That explicit mode reports preparation only. The default fails closed.
+4. Run `python3 -B .ci/test_production_dependencies.py`. These mutation tests
+   cover source drift, unsafe file types, hidden changes, unexpected files,
+   index redirection, allowlist broadening, unrelated pin movement, floating
+   Anisette branches, duplicate identities and fabricated hashes.
+5. On SideStore run `python3 -B tests/runtime_source/test_runtime_source.py`.
+   Only the two whole-tree assertions and the intended Anisette pin assertion
+   are adapted for the intentional dependency transition. The two frozen
+   whole-owner adversarial fixtures explicitly check out the frozen checkpoint
+   before mutation, preserving their original rejection assertions. All other
+   verifier adversarial tests and native declaration/behavior tests still run. Swift compiler absence is a skip, never native success.
+
+The integration's seven-owner contract gate must still verify all 88 frozen
+contract-bearing source files and 22 edges against the exact selected owners.
+Its original frozen registry/provenance remains evidence for the checkpoint;
+production provenance separately records this narrow dependency transition.
+No wildcard source exclusions or rebaselined runtime hashes are appropriate.
+
+## Publication and native acceptance order
+
+1. After the current native gates pass, publish the provisional SideSign
+   source candidate on its authorized isolated owner branch. Verify the exact
+   remote commit and fetch it with full history on the real Mac CI runner.
+   The lock is explicitly provisional and `production_ready` remains false;
+   neither default nor active integration branches move at this step.
+2. Run the strict production proof on that clean remote checkout before
+   resolution. Resolve and test its untouched manifest against the real remote
+   AnisetteKit dependency on the selected macOS/Xcode toolchain. Preserve every
+   unrelated pin and capture genuine resolver output. Do not use path overlays,
+   mirrors, source patchers or a guessed originHash. Record the actual lock
+   metadata and narrow proof update in a separate reviewed follow-up commit,
+   publish it on the same isolated owner branch, and verify its final remote SHA.
+   The old proof correctly rejects a resolver-modified checkout until this
+   reviewed metadata update; do not report the dirty output as a strict pass.
+3. In SideStore finalize both gitlinks atomically: published SideSign commit
+   and the exact minimuxer commit above. Record the SideSign SHA in the proof,
+   then run the strict gate. Initialize children from their committed URLs;
+   verify their heads, origins, retained histories and licenses. All seven
+   owner repositories must retain full ancestry: clone/fetch without a depth
+   limit and verify `git rev-parse --is-shallow-repository` reports `false`
+   for each owner, including initialized children. Do not use `--depth 1` or
+   `--shallow-submodules`; deepen an existing shallow child before proof.
+4. Build the pinned Rust/framework outputs from maintained idevice/jktcp sources
+   with the already-reviewed build process. Stage only build products where
+   minimuxer already expects them; do not rewrite package/runtime sources.
+5. Resolve SideStore's actual Xcode project graph using the target toolchain,
+   with no local-path overlay. Preserve all nine unrelated frozen pins. Record
+   and commit the real lock metadata and narrow proof digest update separately.
+6. Run all portable tests plus actual native SideStore behavior/compiler tests
+   and the full seven-owner contract gate. Existing native skips must become
+   executed tests on the selected Mac runner. Verify the maintained production
+   checkout, not just a frozen or overlaid scratch copy.
+7. Run the combined IPA build from the seven exact production owner commits.
+   Verify runtime source hashes before build and tracked-source immutability
+   afterward, preserve artifact/provenance hashes, inspect packaging/signing and
+   symbol/marker acceptance. Store generated products outside source checkouts
+   where possible. If tools create expected build outputs inside them, use a
+   separate clean checkout for the strict whole-tree proof; do not add broad
+   ignored-path exemptions to this verifier.
+
+Native resolution, compiler execution, the combined IPA and device behavior
+remain required gates. This local candidate does not establish those results.

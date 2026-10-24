@@ -557,48 +557,51 @@ private extension BrowseViewController
     
     func install(_ app: StoreApp, at indexPath: IndexPath, progressUpdateHandler: @escaping (Progress) -> Void)
     {
-        let previousProgress = AppManager.shared.installationProgress(for: app)
-        guard previousProgress == nil else {
-            previousProgress?.cancel()
-            return
-        }
-        
-        // if let installedApp = app.installedApp, installedApp.isUpdateAvailable
-        if let installedApp = app.installedApp, installedApp.hasUpdate
-        {
-            let progress = AppManager.shared.update(installedApp, presentingViewController: self, completionHandler: finish(_:))
-            progressUpdateHandler(progress)
-        }
-        else
-        {
-            let group = AppManager.shared.install(.app(app), presentingViewController: self, completionHandler: finish(_:))
-            progressUpdateHandler(group.progress)
-        }
-        
-        func finish(_ result: Result<InstalledApp, Error>)
-        {
-            debugLog("BrowseViewController.finish invoked with result: \(result) for \(app.bundleIdentifier)")
-            DispatchQueue.main.async {
-                switch result
-                {
-                case .failure(let error) where error is CancellationError: break // Ignore
-                case .failure(let error):
-                    let toastView = ToastView(error: error, opensLog: true)
-                    toastView.show(in: self)
-                    
-                case .success: debugLog("Installed app: \(app.bundleIdentifier)")
-                }
-                
-                UIView.performWithoutAnimation {
-                    if let indexPath = self.dataSource.fetchedResultsController.indexPath(forObject: app)
+        InstallAppDialog.present(storeApp: app, from: self) { [weak self] in
+            guard let self else { return }
+            let previousProgress = AppManager.shared.installationProgress(for: app)
+            guard previousProgress == nil else {
+                previousProgress?.cancel()
+                return
+            }
+            
+            // if let installedApp = app.installedApp, installedApp.isUpdateAvailable
+            if let installedApp = app.installedApp, installedApp.hasUpdate
+            {
+                let progress = AppManager.shared.update(installedApp, presentingViewController: self, completionHandler: finish(_:))
+                progressUpdateHandler(progress)
+            }
+            else
+            {
+                let group = AppManager.shared.install(.app(app), presentingViewController: self, completionHandler: finish(_:))
+                progressUpdateHandler(group.progress)
+            }
+            
+            func finish(_ result: Result<InstalledApp, Error>)
+            {
+                debugLog("BrowseViewController.finish invoked with result: \(result) for \(app.bundleIdentifier)")
+                DispatchQueue.main.async {
+                    switch result
                     {
-                        debugLog("BrowseViewController.finish: reloading item at \(indexPath)")
-                        self.collectionView.reloadItems(at: [indexPath])
+                    case .failure(let error) where error is CancellationError: break // Ignore
+                    case .failure(let error):
+                        let toastView = ToastView(error: error, opensLog: true)
+                        toastView.show(in: self)
+                        
+                    case .success: debugLog("Installed app: \(app.bundleIdentifier)")
                     }
-                    else
-                    {
-                        debugLog("BrowseViewController.finish: reloading section")
-                        self.collectionView.reloadSections(IndexSet(integer: indexPath.section))
+                    
+                    UIView.performWithoutAnimation {
+                        if let indexPath = self.dataSource.fetchedResultsController.indexPath(forObject: app)
+                        {
+                            debugLog("BrowseViewController.finish: reloading item at \(indexPath)")
+                            self.collectionView.reloadItems(at: [indexPath])
+                        }
+                        else
+                        {
+                            debugLog("BrowseViewController.finish: reloading section")
+                            self.collectionView.reloadData()
+                        }
                     }
                 }
             }

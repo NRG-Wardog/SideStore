@@ -49,7 +49,20 @@ final class PipelineRunner: Sendable
                                 dbContext: NSManagedObjectContext,
                                 completionHandler: @escaping (Result<InstalledApp, Error>) -> Void) -> RefreshGroup
     {
-        let group = RefreshGroup(dbContext: dbContext)
+        // Retain the upstream database-only entry point and its fresh context.
+        let context = StandaloneOperationContext(steps: [], dbBackgroundContext: dbContext)
+        return self.performSingleOperation(operation, handler: handler, context: context,
+                                           completionHandler: completionHandler)
+    }
+
+    // V3_PIPELINE_CONTEXT_BRIDGE_V1: host operations retain their shared progress/error context.
+    @discardableResult
+    func performSingleOperation(_ operation: AppOperation,
+                                handler: PipelineExecutionHandler,
+                                context: StandaloneOperationContext,
+                                completionHandler: @escaping (Result<InstalledApp, Error>) -> Void) -> RefreshGroup
+    {
+        let group = RefreshGroup(context: context)
         group.completionHandler = { (results) in
             do
             {
@@ -65,13 +78,25 @@ final class PipelineRunner: Sendable
             }
         }
         debugLog("[AppManager] performSingleOperation started for: \(operation.bundleIdentifier)")
+        let queuedAdmission: V3RemoteRequestAdmission
+        do { queuedAdmission = try V3RemoteRequestLeases.capture() }
+        catch { completionHandler(.failure(error)); return group }
         group.activeTask = Task.detached {
+            defer { queuedAdmission.close() }
             do {
                 debugLog("[AppManager] performSingleOperation executing task for: \(operation.bundleIdentifier)")
-                try await self.perform([operation], handler: handler, group: group)
+                try await queuedAdmission.withScope {
+                    try await self.perform([operation], handler: handler, group: group)
+                }
+                try await MainActor.run {
+                    try queuedAdmission.check()
+                    queuedAdmission.close()
+                    // Publish once, after all scope checks, on the original callback actor.
+                    group.completionHandler?(group.results)
+                }
             } catch {
                 if Task.isCancelled || error is CancellationError {
-                    debugLog("[AppManager] performSingleOperation task CANCELLED for: \(operation.bundleIdentifier)")
+                    debugLog("[AppManager] performSingleOperation task cancelled.")
                     completionHandler(.failure(OperationError.cancelled))
                     return
                 }
@@ -100,6 +125,15 @@ final class PipelineRunner: Sendable
     
     @discardableResult
     func perform(_ operations: [AppOperation],
+                 handler: PipelineExecutionHandler,
+                 group: RefreshGroup) async throws -> RefreshGroup
+    {
+        try await V3RemoteRequestLeases.withAuthorizedRoute {
+            try await self.performUsingAdmittedRoute(operations, handler: handler, group: group)
+        }
+    }
+
+    private func performUsingAdmittedRoute(_ operations: [AppOperation],
                  handler: PipelineExecutionHandler,
                  group: RefreshGroup) async throws -> RefreshGroup
     {
@@ -143,11 +177,17 @@ final class PipelineRunner: Sendable
             }
         }
         
-        /* Minimuxer Readiness Check */
+        // COMBINED_COREDEVICE_PIPELINE_BATCH_V1: lease before readiness, release on every returning path.
+        let transportCore = minimuxer.core
+        await transportCore.beginTransportBatch()
         do {
-            try await ensureMinimuxerReady()
-        } catch let opError as OperationError {
-            group.error = opError
+        /* Minimuxer Readiness Check */
+        if !CellularRefreshManager.shared.isEnabled,
+           case .failure(let error) = await isMinimuxerReady()
+        {
+            let opError = V3RefreshEarlyFailureBoundary.readiness.preserving(
+                V3HeadlessPairingFailure.tagIfInvalidPairing(error.asOperationError), operations: operations)
+            group.context.error = opError
             for operation in operations {
                 let elapsed = CFAbsoluteTimeGetCurrent() - group.operationStartTime
                 operation.logSummary(status: "FAILED", elapsed: elapsed, error: opError)
@@ -156,7 +196,8 @@ final class PipelineRunner: Sendable
         }
         
         group.progress.totalUnitCount = Int64(operations.count * 100)
-        group.progress.completedUnitCount = 1
+        // V3_PROGRESS_BASELINE_FIX_V1: child weights already span the full total.
+        group.progress.completedUnitCount = 0
         
         for operation in operations
         {
@@ -186,6 +227,7 @@ final class PipelineRunner: Sendable
             )
             try await validateOp.execute()
         } catch {
+            let error = V3RefreshEarlyFailureBoundary.preflight.preserving(error, operations: operations)
             group.error = error
             for operation in operations {
                 let elapsed = CFAbsoluteTimeGetCurrent() - group.operationStartTime
@@ -195,44 +237,39 @@ final class PipelineRunner: Sendable
         }
         
         
+        // Deferred cellular injection can publish success before device mutation.
+        // Keep per-app injection until it shares the durable outcome contract.
         let operationsCount = operations.count
-        let isCellularRefreshGroup = (operationsCount >= 2 && CellularRefreshManager.shared.isCellularMode)
-        group.isCellularRefreshGroup = isCellularRefreshGroup
-        debugLog("[PipelineRunner] Configured pipeline for \(operationsCount) operation(s): isCellularRefreshGroup = \(isCellularRefreshGroup) (isCellularMode = \(CellularRefreshManager.shared.isCellularMode))")
+        group.isCellularRefreshGroup = false
 
-        // run the operation pipeline
+        // Finish standalone apps before a host replacement can terminate us.
+        let hostOperations = operations.filter {
+            ($0.app as? ALTApplication)?.isAltStoreApp == true || $0.bundleIdentifier.isAltStoreAppID
+        }
+        let normalOperations = operations.filter {
+            !(($0.app as? ALTApplication)?.isAltStoreApp == true || $0.bundleIdentifier.isAltStoreAppID)
+        }
         try await withThrowingTaskGroup(of: Void.self) { taskGroup in
-            for operation in operations {
+            for operation in normalOperations {
                 taskGroup.addTask {
                     try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount)
                 }
             }
             while let _ = try await taskGroup.next() {}
         }
-
-        // Run standalone batch profile injection if cellular refresh group with at least 2 operations
-        if isCellularRefreshGroup && operationsCount >= 2 && !group.sharedContext.pendingProfiles.isEmpty {
-            debugLog("[PipelineRunner] Starting batch profile injection for \(group.sharedContext.pendingProfiles.count) app(s)...")
-            let injectContext = StandaloneOperationContext(steps: .injectBatchProfiles, dbBackgroundContext: group.dbContext)
-            let injectOp = try InjectBatchProfilesOperation(
-                batches: Array(group.sharedContext.pendingProfiles.values),
-                context: injectContext,
-                onAppCompleted: { [weak self] bundleID in
-                    if let op = operations.first(where: { $0.bundleIdentifier == bundleID }) {
-                        self?.progress.progress(for: op)?.completedUnitCount = 100
-                    }
-                }
-            )
-            try await injectOp.execute()
+        for operation in hostOperations {
+            try Task.checkCancellation()
+            try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount)
         }
-
-        await MainActor.run {
-            group.completionHandler?(group.results)
-        }
-        
+        // Outer entry wrappers publish completion after their final admission checks.
+        await transportCore.endTransportBatch()
         return group
+        } catch {
+            await transportCore.endTransportBatch()
+            throw error
+        }
     }
-    
+
     func performOperation(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1) async throws {
         debugLog("[AppManager] performOperation: Starting execution for app: \(operation.bundleIdentifier)")
         defer {
@@ -245,22 +282,21 @@ final class PipelineRunner: Sendable
             let result = try await self.performPipeline(for: operation, handler: handler, group: group, operationsCount: operationsCount)
             if operationsCount <= 1 {
                 progress.set(nil, for: operation)
-                debugLog("[AppManager] performOperation: completed successfully. progress was reset for installedApp: \(result.bundleIdentifier)")
+                debugLog("[AppManager] performOperation: completed successfully; progress was reset.")
             }
             
             // persist the result
             let bundleID = result.bundleIdentifier
-            let dbContext = group.dbContext
-            do {
-                try await dbContext.perform {
-                    let hasChanges = dbContext.hasChanges
-                    if hasChanges {
-                        try dbContext.save()
-                    }
-                    debugLog("[AppManager] performOperation: Context changes were saved for installedApp: \(bundleID)")
+            let dbContext = group.context.dbBackgroundContext
+            // V3_POST_MUTATION_PERSISTENCE_CONTRACT_V1: the device mutation may
+            // already have happened. A failed durable commit is a non-retryable
+            // persistence outcome, never operation success. Do not log native error text.
+            try await dbContext.perform {
+                let hasChanges = dbContext.hasChanges
+                try V3MutationPersistencePolicy.persistResult(hasChanges: hasChanges) {
+                    try dbContext.save()
                 }
-            } catch {
-                debugLog("[AppManager] perform(): Failed to save InstalledApp to database. \(error.localizedDescription)")
+                debugLog("[AppManager] performOperation: InstalledApp result persistence confirmed for \(bundleID)")
             }
             
             group.set(.success(result), forAppWithBundleIdentifier: bundleID)
@@ -325,19 +361,54 @@ final class PipelineRunner: Sendable
         context.isCellularRefreshGroup = group.isCellularRefreshGroup
         context.groupOperationsCount = operationsCount
         
-        if case .install(_, let customID) = operation { context.customBundleIdentifier  = customID }
-        if case .update(_,  let customID) = operation {
-            context.customBundleIdentifier  = customID
-            context.isStoreUpdate = true
+        switch operation {
+            case .install(_, let customID), .reinstall(_, let customID):
+                context.customBundleIdentifier = customID
+            case .update(_, let customID):
+                context.customBundleIdentifier = customID
+                context.isStoreUpdate = true
+            case .resign(_, let mode):
+                context.alternateIconMode = mode
+            default:
+                break
         }
-        if case .resign(_,  let mode)     = operation { context.alternateIconMode       = mode }
         
+        // The prepared copy belongs only to this operation and outlives every
+        // awaited pipeline step. Cleanup never removes shared caches or the host.
+        var preparedHostRefreshBundle: V3HostRefreshBundlePreparation.Prepared?
+        defer { preparedHostRefreshBundle?.removeOwnedCopy() }
         if let app = operation.app as? InstalledApp {
             context.installedApp = app
             context.appBundleFingerprint = app.appBundleFingerprint
             context.useMainProfile = app.useMainProfile
             context.customBundleIdentifier = app.customBundleIdentifier
             context.targetAppBundle = ALTApplication(fileURL: app.fileURL)
+            // V3_HOST_REFRESH_BUNDLE_PREPARATION_V1: no download occurs in a
+            // refresh pipeline. Recover missing self metadata from the exact
+            // installed host, without changing payload-cache or signing policy.
+            if case .refresh = operation, context.targetAppBundle == nil,
+               app.bundleIdentifier == StoreApp.altstoreAppID {
+                do {
+                    let prepared = try V3HostRefreshBundlePreparation.prepare(
+                        originalBundleID: app.bundleIdentifier,
+                        resignedBundleID: app.resignedBundleIdentifier,
+                        expectedOriginalBundleID: StoreApp.altstoreAppID,
+                        activeBundleID: Bundle.Info.activeBundleIdentifier,
+                        activeBundleURL: Bundle.Info.activeBundleURL,
+                        extensions: app.appExtensions.map {
+                            .init(original: $0.bundleIdentifier, resigned: $0.resignedBundleIdentifier)
+                        }, checkAdmission: {
+                            try Task.checkCancellation()
+                            try V3RemoteRequestLeases.admitted?.check()
+                        })
+                    preparedHostRefreshBundle = prepared
+                    context.targetAppBundle = prepared.appBundle
+                } catch {
+                    if error is CancellationError { throw error }
+                    throw lcStructuredSigningFailure(error, stage: "command", sourceStep: nil,
+                                                     facts: lcRefreshFailureFacts(error))
+                }
+            }
         }
         
         context.beginInstallationHandler = { (installedApp) in
@@ -354,7 +425,7 @@ final class PipelineRunner: Sendable
         
         let permissionReviewMode: PermissionReviewMode
         switch operation {
-            case .install: permissionReviewMode = .all
+            case .install, .reinstall: permissionReviewMode = .all
             case .update: permissionReviewMode = .added
             default: permissionReviewMode = .none
         }
@@ -373,12 +444,128 @@ final class PipelineRunner: Sendable
     }
 }
 
-extension RefreshGroup {
-    var context: StandaloneOperationContext {
-        let ctx = StandaloneOperationContext(steps: [], dbBackgroundContext: dbContext)
-        ctx.error = self.error
-        return ctx
+
+
+
+// V3_REFRESH_EARLY_FAILURE_BOUNDARIES_V1: these checks precede executeStep,
+// so preserve their finite responsibility before AppManager forms app results.
+// This is diagnostic evidence only; the existing check and throw remain intact.
+enum V3RefreshEarlyFailureBoundary {
+    case readiness, preflight
+
+    func preserving(_ error: Error, operations: [AppOperation]) -> Error {
+        guard !operations.isEmpty, operations.allSatisfy({
+            if case .refresh = $0 { return true }; return false
+        }) else { return error }
+        if error is CancellationError || error is CombinedFailure { return error }
+        let native = error as NSError
+        if CombinedFailure.isURLCancellation(domain: native.domain, code: native.code) { return error }
+        let step: CombinedFailure.SourceStep = self == .readiness ? .refreshReadiness : .refreshPreflight
+        let stage: CombinedFailure.Stage
+        if let operation = error as? OperationError, case .notAuthenticated = operation {
+            stage = .authentication
+        } else {
+            // A readiness failure is not, by itself, proof of networking,
+            // pairing, signing, or installation failure.
+            stage = .command
+        }
+        return lcStructuredSigningFailure(error, stage: stage.rawValue,
+            sourceStep: step.rawValue, facts: lcRefreshFailureFacts(error, sourceStep: step.rawValue))
     }
 }
 
+// V3_HOST_REFRESH_BUNDLE_PREPARATION_BEGIN
+// The self-app's installable payload cache is optional. A profile-only refresh
+// still needs the exact running host's metadata, never a catalog replacement.
+// Use a request-owned canonical copy, not a global fileURL fallback: no signing
+// or staging operation may accidentally write into the installed application.
+enum V3HostRefreshBundlePreparation {
+    struct ExtensionIdentity {
+        let original: String
+        let resigned: String
+    }
 
+    struct Prepared {
+        let appBundle: ALTApplication
+        let ownedDirectory: URL
+
+        func removeOwnedCopy() {
+            try? FileManager.default.removeItem(at: ownedDirectory)
+        }
+    }
+
+    static func prepare(originalBundleID: String, resignedBundleID: String,
+                        expectedOriginalBundleID: String, activeBundleID: String,
+                        activeBundleURL: URL, extensions: [ExtensionIdentity],
+                        temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+                        checkAdmission: () throws -> Void) throws -> Prepared {
+        try checkAdmission()
+        guard !originalBundleID.isEmpty, originalBundleID == expectedOriginalBundleID,
+              !resignedBundleID.isEmpty, resignedBundleID == activeBundleID,
+              let source = ALTApplication(fileURL: activeBundleURL),
+              source.bundleIdentifier == resignedBundleID,
+              source.provisioningProfile != nil else {
+            throw OperationError.invalidApp(reason: "The running host does not match the self-refresh target.")
+        }
+        var originalByResigned: [String: String] = [:]
+        var originalIDs = Set<String>()
+        for identity in extensions {
+            guard identity.original.hasPrefix(originalBundleID + "."),
+                  identity.resigned.hasPrefix(resignedBundleID + "."),
+                  identity.original.dropFirst(originalBundleID.count) == identity.resigned.dropFirst(resignedBundleID.count),
+                  originalByResigned[identity.resigned] == nil,
+                  originalIDs.insert(identity.original).inserted else {
+                throw OperationError.invalidApp(reason: "The self-refresh extension identities are inconsistent.")
+            }
+            originalByResigned[identity.resigned] = identity.original
+        }
+        let sourceExtensionIDs = source.appExtensions.map { $0.bundleIdentifier }
+        guard Set(sourceExtensionIDs).count == sourceExtensionIDs.count,
+              Set(sourceExtensionIDs) == Set(originalByResigned.keys) else {
+            throw OperationError.invalidApp(reason: "The running host extensions do not match the self-refresh target.")
+        }
+        // Keep the preservation-mode verifier intact. Unsupported entries and
+        // unreadable files must fail before copy, not be omitted or followed.
+        guard let sourceFingerprint = AppBundleFingerprint.compute(for: activeBundleURL) else {
+            throw OperationError.invalidApp(reason: "The running host payload could not be verified for refresh.")
+        }
+        try checkAdmission()
+        let owner = temporaryDirectory.appendingPathComponent("v3-host-refresh-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: owner, withIntermediateDirectories: false)
+        var published = false
+        defer { if !published { try? FileManager.default.removeItem(at: owner) } }
+        let copyURL = owner.appendingPathComponent("App.app", isDirectory: true)
+        try FileManager.default.copyItem(at: activeBundleURL, to: copyURL)
+        try checkAdmission()
+        guard AppBundleFingerprint.compute(for: copyURL) == sourceFingerprint,
+              AppBundleFingerprint.compute(for: activeBundleURL) == sourceFingerprint,
+              let copy = ALTApplication(fileURL: copyURL),
+              copy.bundleIdentifier == resignedBundleID else {
+            throw OperationError.invalidApp(reason: "The running host changed or its refresh copy did not verify.")
+        }
+        // Match DatabaseManager's canonical-cache identifiers. Signed Mach-O
+        // entitlements, embedded profiles, all other files and the live host
+        // stay untouched. The effective/custom ID remains in the context.
+        try copy.updateInfoPlist(with: ["CFBundleIdentifier": originalBundleID])
+        for appExtension in copy.appExtensions {
+            guard let original = originalByResigned[appExtension.bundleIdentifier] else {
+                throw OperationError.invalidApp(reason: "The refresh copy contains an unexpected extension.")
+            }
+            try appExtension.updateInfoPlist(with: ["CFBundleIdentifier": original])
+        }
+        try checkAdmission()
+        guard AppBundleFingerprint.compute(for: activeBundleURL) == sourceFingerprint,
+              AppBundleFingerprint.compute(for: copyURL) != nil,
+              let prepared = ALTApplication(fileURL: copyURL),
+              prepared.bundleIdentifier == originalBundleID,
+              prepared.provisioningProfile != nil,
+              Set(prepared.appExtensions.map { $0.bundleIdentifier }) == originalIDs,
+              prepared.appExtensions.count == extensions.count else {
+            throw OperationError.invalidApp(reason: "The canonical self-refresh bundle could not be verified.")
+        }
+        try checkAdmission()
+        published = true
+        return Prepared(appBundle: prepared, ownedDirectory: owner)
+    }
+}
+// V3_HOST_REFRESH_BUNDLE_PREPARATION_END

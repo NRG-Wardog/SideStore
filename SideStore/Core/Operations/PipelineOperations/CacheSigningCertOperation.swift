@@ -26,7 +26,7 @@ final class CacheSigningCertOperation: BasePipelineOperation<InstallAppOperation
         
         let resignedID = installedApp.resignedBundleIdentifier
         if resignedID.isAltStoreAppID {
-            debugLog("[CacheSigningCertOperation] Skipping caching of signing cert for self (\(resignedID)) in favor of embedded certificate.")
+            debugLog("[CacheSigningCertOperation] Skipping caching of signing certificate for self in favor of embedded certificate.")
             return
         }
         

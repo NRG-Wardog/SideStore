@@ -4,6 +4,16 @@
 <dict>
 	<key>ALTAnisetteURL</key>
 	<string>https://ani.sidestore.io</string>
+	<key>ALTAppGroups</key>
+	<array>
+		<string>group.$(APP_GROUP_IDENTIFIER)</string>
+	</array>
+	<key>ALTDeviceID</key>
+	<string>XXXXXXXX-XXXXXXXXXXXXXXXX</string>
+	<key>ALTPairingFile</key>
+	<string>&lt;insert pairing file here&gt;</string>
+	<key>ALTServerID</key>
+	<string>1F7D5B55-79CE-4546-A029-D4DDC4AF3B6D</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDocumentTypes</key>
@@ -71,11 +81,6 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>INIntentsSupported</key>
-	<array>
-		<string>RefreshAllIntent</string>
-		<string>ViewAppIntent</string>
-	</array>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>sidestore-com.SideStore.SideStore</string>
@@ -165,11 +170,6 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>SideStore can use local network access to discover Bonjour (mDNS) services on your network. This is not required for core functionality.</string>
-	<key>NSUserActivityTypes</key>
-	<array>
-		<string>RefreshAllIntent</string>
-		<string>ViewAppIntent</string>
-	</array>
 	<key>OSLogPreferences</key>
 	<dict>
 		<key>com.SideStore.SideStore</key>
@@ -215,36 +215,16 @@
 			<key>UIWindowSceneSessionRoleApplication</key>
 			<array>
 				<dict>
-					<key>UILaunchStoryboardName</key>
-					<string>LaunchScreen</string>
 					<key>UISceneConfigurationName</key>
 					<string>Default Configuration</string>
 					<key>UISceneDelegateClassName</key>
 					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
-					<key>UISceneStoryboardFile</key>
-					<string>Main</string>
 				</dict>
 			</array>
 		</dict>
 	</dict>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>audio</string>
-		<string>fetch</string>
-		<string>location</string>
-		<string>remote-notification</string>
-		<string>processing</string>
-	</array>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>SideStore uses location updates to keep background operations active.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>SideStore uses location updates to keep background operations active.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
-	<key>UILaunchStoryboardName</key>
-	<string>LaunchScreen</string>
-	<key>UIMainStoryboardFile</key>
-	<string>Main</string>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>armv7</string>
@@ -307,6 +287,7 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>mobiledevicepairing</string>
+					<string>mobiledevicepair</string>
 				</array>
 			</dict>
 		</dict>

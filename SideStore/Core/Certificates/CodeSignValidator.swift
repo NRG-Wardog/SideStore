@@ -1,3 +1,4 @@
+// V3_HOST_SIGNING_VALIDATOR_QUIET_V1
 //
 //  CodeSignValidator.swift
 //  SideStore
@@ -42,28 +43,29 @@ public struct CodeSignValidator {
     
     public static func validate(
         runningProfile: ALTProvisioningProfile?,
+        observedRunningCertificate: ALTX509Certificate? = nil,
         portalCertificates: [ALTX509Certificate]?,
         signerCertificate: ALTX509Certificate,
         signerTeam: ALTTeam
     ) -> Result<Void, CodeSignValidationReason> {
         
         guard let runningProfile = runningProfile else {
-            debugLog("[CodeSignValidator] Validation failed: missingProfile (runningProfile is nil)")
+            /* Local signing details are intentionally not logged. */
             return .failure(.missingProfile)
         }
         
-        let runningCert = CertificateManager.shared.getSigningCertificate(at: Bundle.Info.activeBundleURL)
+        let runningCert = observedRunningCertificate ?? CertificateManager.shared.getSigningCertificate(at: Bundle.Info.activeBundleURL)
         guard let runningCert = runningCert else {
-            debugLog("[CodeSignValidator] Validation failed: missingCertificate (failed to parse runningCert from binary)")
+            /* Local signing details are intentionally not logged. */
             return .failure(.missingCertificate)
         }
         
         // 1. Expired Certificate / Profile
         if runningProfile.expirationDate <= Date() {
-            debugLog("[CodeSignValidator] Validation failed: expired (running profile is expired: \(runningProfile.expirationDate))")
+            /* Local signing details are intentionally not logged. */
             return .failure(.expired)
         } else if runningCert.expiryDate <= Date() {
-            debugLog("[CodeSignValidator] Validation failed: expired (running certificate is expired: \(runningCert.expiryDate))")
+            /* Local signing details are intentionally not logged. */
             return .failure(.expired)
         }
         
@@ -75,10 +77,10 @@ public struct CodeSignValidator {
                 let activeAppleID = signerTeam.account?.appleID,
                 requesterEmail.lowercased() != activeAppleID.lowercased() 
             {
-                debugLog("[CodeSignValidator] Validation failed: differentAccount (running profile email '\(requesterEmail)' != active account Apple ID '\(activeAppleID)')")
+                /* Local signing details are intentionally not logged. */
                 return .failure(.differentAccount)
             } else {
-                debugLog("[CodeSignValidator] Validation failed: differentTeam (running profile team '\(runningTeamID)' != active team '\(signerTeam.identifier)')")
+                /* Local signing details are intentionally not logged. */
                 return .failure(.differentTeam)
             }
         }
@@ -88,10 +90,10 @@ public struct CodeSignValidator {
             let isRunningCertActive = portalCertificates.contains { $0.serialNumber == runningCert.serialNumber }
             if !isRunningCertActive {
                 if signerTeam.type == .free {
-                    debugLog("[CodeSignValidator] Validation failed: freeAccountLimitRevoked (certificate is no longer active on portal for free account)")
+                    /* Local signing details are intentionally not logged. */
                     return .failure(.freeAccountLimitRevoked)
                 } else {
-                    debugLog("[CodeSignValidator] Validation failed: revoked (certificate is no longer active on portal)")
+                    /* Local signing details are intentionally not logged. */
                     return .failure(.revoked)
                 }
             }
@@ -101,15 +103,15 @@ public struct CodeSignValidator {
         let hasCurrentSignerCert = runningProfile.certificates.contains { $0.serialNumber == signerCertificate.serialNumber }
         if !hasCurrentSignerCert {
             if let machineName = runningCert.machineName, (machineName.starts(with: "SideStore") || machineName.starts(with: "AltStore")) {
-                debugLog("[CodeSignValidator] Validation failed: privateKeyLost (running profile cert mismatch, cert created by SideStore/AltStore: \(machineName))")
+                /* Local signing details are intentionally not logged. */
                 return .failure(.privateKeyLost)
             } else {
-                debugLog("[CodeSignValidator] Validation failed: externalSigner (running profile cert mismatch, cert not created by SideStore/AltStore: \(runningCert.machineName ?? "N/A"))")
+                /* Local signing details are intentionally not logged. */
                 return .failure(.externalSigner)
             }
         }
         
-        debugLog("[CodeSignValidator] Validation succeeded!")
+        /* Local signing details are intentionally not logged. */
         return .success(())
     }
 }

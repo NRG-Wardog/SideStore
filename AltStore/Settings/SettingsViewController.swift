@@ -81,10 +81,9 @@ extension SettingsViewController
         case anisetteServers        // row 4 - Anisette Servers
         case connectionConfig       // row 5 - Connection Configuration
         case developerServices      // row 6 - Developer Portal Services
-        case profileManagement      // row 7 - Profile Management
-        case certificateManagement  // row 8 - Certificate Management
-        case backupAndRestore       // row 9 - Backup & Restore
-        case userCustomizations     // row 10 - User Customizations
+        case certificateManagement  // row 7 - Certificate Management
+        case backupAndRestore       // row 8 - Backup & Restore
+        case userCustomizations     // row 9 - User Customizations
 
         static var allCases: [AdvancedSettingsRow] {
             var rows: [AdvancedSettingsRow] = [.sendFeedback, .refreshAttempts, .refreshSideJITServer, .resetPairingFile]
@@ -94,7 +93,6 @@ extension SettingsViewController
             rows.append(contentsOf: [
                 .connectionConfig,
                 .developerServices,
-                .profileManagement,
                 .certificateManagement,
                 .backupAndRestore,
                 .userCustomizations
@@ -117,9 +115,7 @@ extension SettingsViewController
 
 final class SettingsViewController: UITableViewController
 {
-    private var activeTeam: ALTTeam?
-    private var accountStatus: AccountVerificationRow.Status = .completed
-    private var accountVerificationTask: Task<Void, Never>?
+    private var activeTeam: Team?
     
     private var prototypeHeaderFooterView: SettingsHeaderFooterView!
     
@@ -294,20 +290,13 @@ final class SettingsViewController: UITableViewController
         self.update()
     }
     
-    override func viewWillDisappear(_ animated: Bool)
-    {
-        super.viewWillDisappear(animated)
-        self.accountVerificationTask?.cancel()
-    }
-    
     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
-        if segue.identifier == "anisetteServers" || segue.identifier == "developerServices" || segue.identifier == "profileManagement" || segue.identifier == "certificateManagement" || segue.identifier == "diagnostics" {
+        if segue.identifier == "anisetteServers" || segue.identifier == "developerServices" || segue.identifier == "certificateManagement" || segue.identifier == "diagnostics" {
             let controller = segue.destination
             
         #if !os(tvOS)
             if segue.identifier == "anisetteServers"        || 
                 segue.identifier == "developerServices"      ||
-                segue.identifier == "profileManagement"      ||
                 segue.identifier == "certificateManagement" || 
                 segue.identifier == "diagnostics"
             {
@@ -400,30 +389,20 @@ private extension SettingsViewController
     
     func update()
     {
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            let currentActiveTeam = try? await AuthManager.shared.getAuthenticatedTeam()
-            let appleID = AuthManager.shared.currentAppleID
-            verboseLog("[SettingsVC] update() called. activeTeam: \(currentActiveTeam?.identifier ?? "nil"), account: \(appleID ?? "nil")")
+        let currentActiveTeam = DatabaseManager.shared.activeTeam()
+        verboseLog("[SettingsVC] update() called. activeTeam: \(currentActiveTeam?.identifier ?? "nil"), account: \(currentActiveTeam?.account.appleID ?? "nil")")
+        
+        if let team = currentActiveTeam, AuthManager.shared.isAuthenticated
+        {
+            self.accountNameLabel.text = team.name
+            self.accountEmailLabel.text = team.account.appleID
+            self.accountTypeLabel.text = team.type.localizedDescription
             
-            if let team = currentActiveTeam, AuthManager.shared.isAuthenticated
-            {
-                self.accountNameLabel.text = team.name
-                self.accountEmailLabel.text = appleID
-                self.accountTypeLabel.text = team.type.localizedDescription
-                
-                self.activeTeam = team
-                self.startAccountVerification(for: team)
-            }
-            else
-            {
-                self.activeTeam = nil
-                self.accountVerificationTask?.cancel()
-                self.accountVerificationTask = nil
-                self.accountStatus = .completed
-                self.updateAccountCardRowStyles()
-            }
-            self.tableView.reloadData()
+            self.activeTeam = team
+        }
+        else
+        {
+            self.activeTeam = nil
         }
         
         // AppRefreshRow
@@ -447,44 +426,6 @@ private extension SettingsViewController
         if self.isViewLoaded
         {
             self.tableView.reloadData()
-        }
-    }
-    
-    private func startAccountVerification(for team: ALTTeam)
-    {
-        self.accountVerificationTask?.cancel()
-        self.accountVerificationTask = Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            if !UserDefaults.standard.isDeviceRegistered {
-                self.accountStatus = .checking
-                self.tableView.reloadData()
-                self.updateAccountCardRowStyles()
-            }
-            let status = await AccountVerificationRow.verifyStatus(for: team)
-            if !Task.isCancelled {
-                self.accountStatus = status
-                self.tableView.reloadData()
-                self.updateAccountCardRowStyles()
-            }
-        }
-    }
-    
-    private func updateAccountCardRowStyles()
-    {
-        guard self.isViewLoaded else { return }
-        let typeIndexPath = IndexPath(row: 2, section: Section.account.rawValue)
-        if let typeCell = self.tableView.cellForRow(at: typeIndexPath) as? InsetGroupTableViewCell {
-            typeCell.style = (self.accountStatus == .completed) ? .bottom : .middle
-        }
-    }
-    
-    private func resolvePendingAccountActions()
-    {
-        guard let team = self.activeTeam else { return }
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            await AccountVerificationRow.resolvePendingActions(for: self.accountStatus, team: team, presentingViewController: self)
-            self.startAccountVerification(for: team)
         }
     }
     
@@ -629,21 +570,27 @@ private extension SettingsViewController
     func signIn()
     {
         debugLog("[SettingsVC] signIn() invoked by user action")
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            do {
-                let result = try await AuthManager.shared.signIn(presentingViewController: self)
-                debugLog("[SettingsVC] signIn() authentication succeeded for team: \(result.team.name) (\(result.team.identifier))")
-            } catch is CancellationError {
-                debugLog("[SettingsVC] signIn() authentication cancelled by user")
-            } catch {
-                debugLog("[SettingsVC] signIn() authentication failed with error: \(error)")
-                let toastView = ToastView(error: error)
-                toastView.show(in: self.view)
+        AppManager.shared.signIn(presentingViewController: self) { [weak self] (result) in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result
+                {
+                case .failure(let error) where error is CancellationError:
+                    debugLog("[SettingsVC] signIn() authentication cancelled by user")
+                    break
+                    
+                case .failure(let error):
+                    debugLog("[AuthenticationUI] Stage result recorded; private payload omitted.")
+                    let toastView = ToastView(error: error)
+                    toastView.show(in: self.view)
+                    
+                case .success(let (team, _, _)):
+                    debugLog("[AuthenticationUI] Stage result recorded; private payload omitted.")
+                }
+                
+                debugLog("[SettingsVC] signIn() calling update()...")
+                self.update()
             }
-            
-            debugLog("[SettingsVC] signIn() calling update()...")
-            self.update()
         }
     }
     
@@ -662,22 +609,18 @@ private extension SettingsViewController
         
         let cancelAction = UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .cancel, handler: nil)
         
-        let signOutAction = UIAlertAction(title: NSLocalizedString("Sign Out", comment: ""), style: .destructive) { [weak self] _ in
+        let signOutAction = UIAlertAction(title: NSLocalizedString("Sign Out", comment: ""), style: .destructive) { _ in
             let keepCert = contentVC.isChecked
             let keepAnisette = contentVC.isKeepAnisetteChecked
             let keepAnisetteHeaders = contentVC.isKeepAnisetteHeadersChecked
             let keepSideSignHeaders = contentVC.isKeepSideSignHeadersChecked
-            Task.detached { [weak self] in
-                await AuthManager.shared.signOut(
-                    keepCertificate: keepCert,
-                    keepAnisetteData: keepAnisette,
-                    keepAnisetteHeaders: keepAnisetteHeaders,
-                    keepSideSignHeaders: keepSideSignHeaders
-                )
-                await MainActor.run {
-                    self?.update()
-                }
-            }
+            AuthManager.shared.signOut(
+                keepCertificate: keepCert,
+                keepAnisetteData: keepAnisette,
+                keepAnisetteHeaders: keepAnisetteHeaders,
+                keepSideSignHeaders: keepSideSignHeaders
+            )
+            self.update()
         }
         
         alertController.addAction(cancelAction)
@@ -953,9 +896,6 @@ extension SettingsViewController
     
     override func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat
     {
-        if Section.allCases[indexPath.section] == .account && indexPath.row == 3 {
-            return AccountVerificationRow.preferredHeight
-        }
         let effectiveIndexPath: IndexPath
         if Section.allCases[indexPath.section] == .advancedSettings {
             let row = AdvancedSettingsRow.allCases[indexPath.row]
@@ -965,35 +905,6 @@ extension SettingsViewController
         }
         return super.tableView(tableView, heightForRowAt: effectiveIndexPath)
     }
-
-    override func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath)
-    {
-        if Section.allCases[indexPath.section] == .account {
-            if indexPath.row == 2, let insetCell = cell as? InsetGroupTableViewCell {
-                insetCell.style = (self.accountStatus == .completed) ? .bottom : .middle
-            } else if indexPath.row == 3, let actionCell = cell as? AccountVerificationRow {
-                actionCell.style = .bottom
-                actionCell.backgroundColor = .clear
-                actionCell.contentView.backgroundColor = .clear
-                actionCell.backgroundConfiguration = .clear()
-            }
-        }
-    }
-
-    override func tableView(_ tableView: UITableView, indentationLevelForRowAt indexPath: IndexPath) -> Int
-    {
-        if Section.allCases[indexPath.section] == .account && indexPath.row == 3 {
-            return 0
-        }
-        let effectiveIndexPath: IndexPath
-        if Section.allCases[indexPath.section] == .advancedSettings {
-            let row = AdvancedSettingsRow.allCases[indexPath.row]
-            effectiveIndexPath = IndexPath(row: row.rawValue, section: indexPath.section)
-        } else {
-            effectiveIndexPath = indexPath
-        }
-        return super.tableView(tableView, indentationLevelForRowAt: effectiveIndexPath)
-    }
     
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int
     {
@@ -1002,7 +913,7 @@ extension SettingsViewController
         {
         case _ where isSectionHidden(section): return 0
         case .signIn: return (self.activeTeam == nil) ? 1 : 0
-        case .account: return (self.activeTeam == nil) ? 0 : (self.accountStatus == .completed ? 3 : 4)
+        case .account: return (self.activeTeam == nil) ? 0 : 3
         case .appRefresh: return AppRefreshRow.allCases.count
         case .advancedSettings: return AdvancedSettingsRow.allCases.count
         default: return super.tableView(tableView, numberOfRowsInSection: section.rawValue)
@@ -1011,14 +922,6 @@ extension SettingsViewController
     
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell
     {
-        if Section.allCases[indexPath.section] == .account && indexPath.row == 3 {
-            let cell = tableView.dequeueReusableCell(withIdentifier: AccountVerificationRow.reuseIdentifier) as? AccountVerificationRow
-                ?? AccountVerificationRow()
-            cell.configure(with: self.accountStatus)
-            cell.style = .bottom
-            return cell
-        }
-        
         let effectiveIndexPath: IndexPath
         if Section.allCases[indexPath.section] == .advancedSettings {
             let row = AdvancedSettingsRow.allCases[indexPath.row]
@@ -1027,14 +930,6 @@ extension SettingsViewController
             effectiveIndexPath = indexPath
         }
         let cell = super.tableView(tableView, cellForRowAt: effectiveIndexPath)
-        
-        if Section.allCases[indexPath.section] == .account {
-            if indexPath.row == 2 {
-                if let insetCell = cell as? InsetGroupTableViewCell {
-                    insetCell.style = (self.accountStatus == .completed) ? .bottom : .middle
-                }
-            }
-        }
         
 
         if AppRefreshRow.AllCases().count == 1
@@ -1135,11 +1030,6 @@ extension SettingsViewController
         switch section
         {
         case .signIn: self.signIn()
-        case .account:
-            if indexPath.row == 3 {
-                tableView.deselectRow(at: indexPath, animated: true)
-                self.resolvePendingAccountActions()
-            }
         case .appRefresh:
             let row = AppRefreshRow.allCases[indexPath.row]
             switch row
@@ -1338,11 +1228,6 @@ extension SettingsViewController
                 let vc = UIHostingController(rootView: developerServicesView)
                 self.prepare(for: UIStoryboardSegue(identifier: "developerServices", source: self, destination: vc), sender: nil)
 
-            case .profileManagement:
-                let profileManagementView = ProfileManagementView(presentingViewController: self)
-                let vc = UIHostingController(rootView: profileManagementView)
-                self.prepare(for: UIStoryboardSegue(identifier: "profileManagement", source: self, destination: vc), sender: nil)
-
             case .certificateManagement:
                 let certificateManagementView = CertificatesView(presentingViewController: self)
                 let vc = UIHostingController(rootView: certificateManagementView)
@@ -1384,7 +1269,7 @@ extension SettingsViewController
             
             
         // case .account, .patreon, .display, .instructions, .macDirtyCow: break
-        case .patreon, .display, .instructions, .betaTesting: break
+        case .account, .patreon, .display, .instructions, .betaTesting: break
         }
         
         

@@ -31,7 +31,7 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         self.setProgress(10)
         
         if self.context.isCellularRefreshGroup {
-            debugLog("[RefreshAppOperation] Queueing \(self.context.bundleIdentifier) into batch profile injection (isCellularRefreshGroup = true)")
+            debugLog("[RefreshAppOperation] Queueing app for batch profile injection.")
             self.context.sharedContext.addPendingProfileBatch(PendingProfileBatch(
                 bundleID: self.context.bundleIdentifier,
                 profiles: profiles.values.map { $0.data },
@@ -53,14 +53,19 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
         } catch {
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
-            throw error
+            throw V3RefreshFailureBoundary.provisioningProfileInstallation.preserving(error)
         }
         
         self.setProgress(80)
         let dbContext = self.context.dbBackgroundContext
         
-        let installedApp = try await dbContext.perform {
-            try self.updateInstalledApp(for: appBundle, profiles: profiles, in: dbContext)
+        let installedApp: InstalledApp
+        do {
+            installedApp = try await dbContext.perform {
+                try self.updateInstalledApp(for: appBundle, profiles: profiles, in: dbContext)
+            }
+        } catch {
+            throw V3RefreshFailureBoundary.refreshRecordUpdate.preserving(error)
         }
         
         self.setProgress(100)

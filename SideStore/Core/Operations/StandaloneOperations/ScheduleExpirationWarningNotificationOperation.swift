@@ -75,7 +75,7 @@ final class ScheduleExpirationWarningNotificationOperation: BaseStandaloneOperat
             do {
                 try await center.add(request)
             } catch {
-                debugLog("[ScheduleExpirationWarningNotificationOperation] Failed to schedule notification '\(identifier)': \(error)")
+                debugLog("[ScheduleExpirationWarningNotificationOperation] Failed to schedule expiration notification.")
             }
         }
         #else

@@ -45,7 +45,8 @@ public class RefreshAttempt: BaseEntity
         catch
         {
             self.isSuccess = false
-            self.errorDescription = error.localizedDescription
+            // V3_REFRESH_HISTORY_ERROR_PRIVACY_V1: provider-controlled error text is not persisted in refresh history.
+            self.errorDescription = V3PersistedErrorSanitizer.refreshHistoryDescription(for: error)
         }
     }
 }

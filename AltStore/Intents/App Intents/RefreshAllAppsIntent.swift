@@ -22,7 +22,8 @@ class IntentError: NSError, CustomLocalizedStringResourceConvertible, @unchecked
     
     init(_ error: some Error)
     {
-        let serializedError = (error as NSError).sanitizedForSerialization()
+        // V3_INTENT_ERROR_PRIVACY_V1: Shortcuts/Siri receive only safe structured identity and fixed copy.
+        let serializedError = V3PersistedErrorSanitizer.sanitize(error as NSError)
         super.init(domain: serializedError.domain, code: serializedError.code, userInfo: serializedError.userInfo)
     }
     
@@ -32,62 +33,12 @@ class IntentError: NSError, CustomLocalizedStringResourceConvertible, @unchecked
     }
 }
 
-@available(iOS 17.0, tvOS 17.0, *)
-struct InstallIPAIntent: AppIntent, ProgressReportingIntent
-{
-    static var title: LocalizedStringResource = "Install IPA"
-    static var description = IntentDescription("Installs an IPA file with SideStore.")
-    static var openAppWhenRun = false
-
-    @Parameter(title: "IPA File")
-    var ipaFile: IntentFile
-
-    static var parameterSummary: some ParameterSummary {
-        Summary("Install \(\.$ipaFile)")
-    }
-
-    init()
-    {
-        self.progress.completedUnitCount = 0
-        self.progress.totalUnitCount = 1
-    }
-
-    func perform() async throws -> some IntentResult
-    {
-        do
-        {
-            try await DatabaseManager.shared.start()
-
-            let temporaryDirectory = FileManager.default.uniqueTemporaryURL()
-            defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
-
-            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
-
-            let ipaURL = temporaryDirectory.appendingPathComponent("App.ipa")
-            try self.ipaFile.data.write(to: ipaURL)
-
-            let intentProgress = self.progress
-            _ = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<InstalledApp, Error>) in
-                let group = AppManager.shared.install(.url(ipaURL)) { result in
-                    continuation.resume(with: result)
-                }
-                intentProgress.addChild(group.progress, withPendingUnitCount: 1)
-            }
-
-            return .result()
-        }
-        catch
-        {
-            let intentError = IntentError(error)
-            throw intentError
-        }
-    }
-}
-
+// V3_HEADLESS_INSTALL_IPA_INTENT_REMOVED_V1: IPA installation is host-owned.
 
 @available(iOS 17.0, tvOS 17.0, *)
 extension RefreshAllAppsIntent
 {
+    // V3_SHORTCUT_GUEST_BACKEND_PIPELINE_V1: this guest action runs the canonical SideStore refresh pipeline.
     private actor OperationActor
     {
         private(set) var operation: BackgroundRefreshAppsOperation?
@@ -105,6 +56,7 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
     static let intentClassName = "RefreshAllIntent"
     
     static var title: LocalizedStringResource = "Refresh All Apps"
+    static var openAppWhenRun = true
     static var description = IntentDescription("Refreshes your sideloaded apps to prevent them from expiring.")
     
     static var parameterSummary: some ParameterSummary {
@@ -178,7 +130,7 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
         }
         catch
         {
-            let intentError = IntentError(error)
+            let intentError = IntentError(V3HeadlessPairingFailure.tagIfInvalidPairing(error))
             throw intentError
         }
     }
@@ -194,8 +146,9 @@ private extension RefreshAllAppsIntent
         let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         let installedApps = await context.perform { InstalledApp.fetchAppsForRefreshingAll(in: context) }
         
-        try await withCheckedThrowingContinuation { continuation in
-            let operation = try? AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: self.presentsNotifications) { (result) in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let operation = V3RefreshIntentStartPolicy.create({
+                try AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: self.presentsNotifications) { (result) in
                 do
                 {
                     let results = try result.get()
@@ -203,7 +156,7 @@ private extension RefreshAllAppsIntent
                     for (_, result) in results
                     {
                         guard case let .failure(error) = result else { continue }
-                        throw error
+                        throw V3HeadlessPairingFailure.tagIfInvalidPairing(error)
                     }
                     
                     continuation.resume()
@@ -217,11 +170,9 @@ private extension RefreshAllAppsIntent
                     continuation.resume(throwing: error)
                 }
             }
-            
-            guard let operation else {
-                debugLog("[RefreshAllAppsIntent] backgroundRefresh instance is nil")
-                return 
-            }
+            }, continuation: continuation,
+                classify: V3HeadlessPairingFailure.tagIfInvalidPairing)
+            guard let operation else { return }
             
             operation.ignoresServerNotFoundError = false
             

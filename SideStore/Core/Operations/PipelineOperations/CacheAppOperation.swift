@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Darwin
 
 final class CacheAppOperation: BasePipelineOperation<InstallAppOperationContext, URL?>, @unchecked Sendable {
 
@@ -35,44 +36,59 @@ final class CacheAppOperation: BasePipelineOperation<InstallAppOperationContext,
 
     @discardableResult
     static func cachePayload(for bundleURL: URL) throws -> (signature: String, targetFileURL: URL) {
-        guard let signature = AppBundleFingerprint.compute(for: bundleURL) else {
+        guard let signature = AppBundleFingerprint.computeOriginalCacheKey(for: bundleURL) else {
             throw OperationError.invalidApp(reason: "Failed to compute app bundle fingerprint for '\(bundleURL.lastPathComponent)'")
         }
 
-        let targetFileURL = InstalledApp.payloadURL(forSignature: signature)
+        // Resolve the trusted, existing Apps root once. A missing descendant
+        // cannot reliably resolve aliases in that root on its own.
+        let appsDirectoryURL = InstalledApp.appsDirectoryURL.resolvingSymlinksInPath().standardizedFileURL
+        let targetFileURL = appsDirectoryURL.appendingPathComponent("Payloads")
+            .appendingPathComponent(signature).appendingPathComponent("App.app")
+        // Retain containment and no-overwrite copy boundaries while restoring
+        // upstream cache key/reuse behavior. Caches are not reset or pruned.
+        // Resolving a nonexistent App.app may leave an existing symlink ancestor
+        // unresolved. Inspect only the three cache components below Apps, in
+        // order, without following their final entry (including dangling links).
+        let cachePathComponents = [
+            targetFileURL.deletingLastPathComponent().deletingLastPathComponent(),
+            targetFileURL.deletingLastPathComponent(),
+            targetFileURL
+        ]
+        for componentURL in cachePathComponents {
+            var fileStatus = stat()
+            let status = componentURL.path.withCString { lstat($0, &fileStatus) }
+            if status == 0 {
+                guard (fileStatus.st_mode & mode_t(S_IFMT)) != mode_t(S_IFLNK) else {
+                    throw OperationError.invalidApp(reason: "The cache destination contains a symbolic link. Existing caches were preserved.")
+                }
+            } else {
+                let errorCode = errno
+                guard errorCode == ENOENT else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errorCode), userInfo: nil)
+                }
+            }
+        }
+        let rootPath = appsDirectoryURL.path + "/"
+        guard targetFileURL.standardizedFileURL.path.hasPrefix(rootPath) else {
+            throw OperationError.invalidApp(reason: "The cache destination is outside the app cache. Existing caches were preserved.")
+        }
         if !FileManager.default.fileExists(atPath: targetFileURL.path) {
             let parentDir = targetFileURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true, attributes: nil)
-            SideStore.debugLog("[CacheAppOperation] Caching app bundle for signature \(signature) to \(targetFileURL.path)")
-            try FileManager.default.copyItem(at: bundleURL, to: targetFileURL, shouldReplace: true)
+            try FileManager.default.copyItem(at: bundleURL, to: targetFileURL, shouldReplace: false)
         } else {
-            SideStore.debugLog("[CacheAppOperation] Payload already cached for signature \(signature), skipping copy.")
         }
 
         return (signature, targetFileURL)
     }
 
     static func pruneUnusedCaches(activeSignatures: Set<String> = [], activeBundleIDs: Set<String>, isActivelyManaging: (String) -> Bool) {
-        // 1. Prune unused payloads in Apps/Payloads/
-        let payloadsDirectory = InstalledApp.appsDirectoryURL.appendingPathComponent("Payloads")
-        if let cachedPayloadDirs = try? FileManager.default.contentsOfDirectory(
-            at: payloadsDirectory,
-            includingPropertiesForKeys: [.isDirectoryKey, .nameKey],
-            options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles]
-        ) {
-            for payloadDir in cachedPayloadDirs {
-                do {
-                    let resourceValues = try payloadDir.resourceValues(forKeys: [.isDirectoryKey, .nameKey])
-                    guard let isDirectory = resourceValues.isDirectory, let signature = resourceValues.name else { continue }
-                    if isDirectory && !activeSignatures.contains(signature) {
-                        SideStore.debugLog("[CacheAppOperation] DELETING UNUSED CACHED PAYLOAD: \(signature)")
-                        try FileManager.default.removeItem(at: payloadDir)
-                    }
-                } catch {
-                    SideStore.debugLog("[CacheAppOperation] Failed to remove cached payload directory: \(error)")
-                }
-            }
-        }
+        // Preservation validation: shared payload auto-pruning is intentionally
+        // disabled. A verified cache may still be awaiting its CoreData commit,
+        // or be retained after a migration failure. User-requested cleanup is
+        // separate and remains available; no old maintenance pass is completed.
+        _ = activeSignatures
 
         // 2. Prune unused instance directories in Apps/
         do {

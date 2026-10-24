@@ -1,3 +1,4 @@
+// V3_CERTIFICATE_SERIAL_LOG_REDACTION_V1: certificate serials are password-equivalent and never logged.
 //
 //  CertificateManager.swift
 //  SideStore
@@ -57,22 +58,19 @@ public final class CertificateManager: @unchecked Sendable {
     // MARK: - Active Keychain Certificate Encapsulation
     
     /// Loads active signing certificate from Keychain into memory.
+    // LC_VERIFIED_ACTIVE_CERTIFICATE_V1
     @discardableResult
     public func loadActiveCertificate() throws -> ActiveSigningCertificate? {
-        guard let data = Keychain.shared.signingCertificate else {
-            debugLog("[CertificateManager] loadActiveCertificate: No signingCertificate data found in Keychain.")
-            self.activeCertificate = nil
-            return nil
-        }
-        let password = Keychain.shared.signingCertificatePassword
         do {
-            let cert = try Self.parse(data, password: password)
-            let active = ActiveSigningCertificate(certificate: cert, p12Data: data, password: password)
+            guard let stored = try Keychain.shared.signingCertificateSnapshot() else {
+                self.activeCertificate = nil
+                return nil
+            }
+            let cert = try Self.parse(stored.p12Data, password: stored.password)
+            let active = ActiveSigningCertificate(certificate: cert, p12Data: stored.p12Data, password: stored.password)
             self.activeCertificate = active
-            debugLog("[CertificateManager] loadActiveCertificate: Successfully loaded certificate (serial: \(cert.serialNumber)).")
             return active
         } catch {
-            debugLog("[CertificateManager] loadActiveCertificate failed to load/decrypt certificate: \(error)")
             self.activeCertificate = nil
             throw error
         }
@@ -88,34 +86,68 @@ public final class CertificateManager: @unchecked Sendable {
 
     /// Sets active signing certificate in memory cache, encrypts and persists to Keychain.
     public func setActiveCertificate(_ cert: ALTCertificate?) throws {
-        if let cert = cert {
-            do {
+        do {
+            if let cert {
                 let password = getPassword(for: cert)
                 let p12Data = try Self.convert(cert, password: password)
-                Keychain.shared.signingCertificate = p12Data
-                Keychain.shared.signingCertificatePassword = password
-                saveCertificate(cert)
-                let active = ActiveSigningCertificate(certificate: cert, p12Data: p12Data, password: password)
-                self.activeCertificate = active
-                debugLog("[CertificateManager] setActiveCertificate: Successfully stored certificate (serial: \(cert.serialNumber)).")
-            } catch {
-                debugLog("[CertificateManager] setActiveCertificate failed to export/encrypt certificate: \(error)")
-                throw error
+                try Keychain.shared.writeSigningCertificate(p12Data: p12Data, password: password,
+                    serial: cert.serialNumber) { storedData, storedPassword in
+                    let parsed = try Self.parse(storedData, password: storedPassword)
+                    guard parsed.serialNumber == cert.serialNumber else {
+                        throw NSError(domain: "com.SideStore.Keychain", code: 1009)
+                    }
+                }
+                self.recordCertificateMetadata(cert)
+                self.activeCertificate = ActiveSigningCertificate(certificate: cert, p12Data: p12Data, password: password)
+            } else {
+                try Keychain.shared.writeSigningCertificate(p12Data: nil, password: nil, serial: nil) { _, _ in }
+                self.activeCertificate = nil
             }
-        } else {
-            self.activeCertificate = nil
-            Keychain.shared.clearCertificates()
-            debugLog("[CertificateManager] setActiveCertificate: Cleared active certificate in Keychain.")
+        } catch {
+            // Preserve the last proven certificate on a verified rollback;
+            // an uncertain transaction must not remain advertised in memory.
+            let native = error as NSError
+            if native.domain == "com.SideStore.Keychain" && native.code == 1010 {
+                self.activeCertificate = nil
+            }
+            throw error
         }
     }
 
-    /// Clears active certificate in memory cache and Keychain.
-    public func clearActiveCertificate() {
-        debugLog("[CertificateManager] clearActiveCertificate: Clearing active certificate.")
-        self.activeCertificate = nil
-        Keychain.shared.clearCertificates()
+    // Clear retained key material only after a persisted, cryptographically verified copy exists.
+    public func v3CompletePendingCertificateIfStored(_ certificate: ALTCertificate) throws {
+        guard let record = try Keychain.shared.pendingCertificateCreation() else { return }
+        guard record.phase == .created, let der = record.certificateDER,
+              certificate.x509.data == der,
+              V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: record.privateKey) else {
+            throw V3PendingCertificateCreationError.pending
+        }
+        let auth = AuthManager.shared
+        let generation = auth.v3IdentityGeneration
+        guard auth.v3IdentityIsStable, !Task.isCancelled else {
+            throw V3PendingCertificateCreationError.pending
+        }
+        try Keychain.shared.completePendingCertificateCreation(record, certificateSerial: certificate.serialNumber,
+            storedCopyIsVerified: { bytes, password in
+                // Supplied bytes are read under the same shared transaction as journal deletion.
+                // Never reacquire the Keychain lock in this callback.
+                guard auth.v3IdentityIsStable, auth.v3IdentityGeneration == generation,
+                      !Task.isCancelled else { return false }
+                if record.purpose == .importedCopy &&
+                    !self.getImportedCertificateSerials().contains(certificate.serialNumber) { return false }
+                let stored = try Self.parse(bytes, password: password)
+                return stored.x509.data == der &&
+                    V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyDER: stored.privateKey) &&
+                    auth.v3IdentityIsStable && auth.v3IdentityGeneration == generation && !Task.isCancelled
+            })
     }
-    
+
+
+    public func clearActiveCertificate() {
+        do { try self.setActiveCertificate(nil) }
+        catch { debugLog("[LC_KEYCHAIN] certificate_clear_failed") }
+    }
+
     // MARK: - Certificate Encoding Helpers
     
     public var activeSigningCertificateBase64Encoded: String? {
@@ -127,8 +159,8 @@ public final class CertificateManager: @unchecked Sendable {
     }
 
     public func saveCertificate(_ cert: ALTCertificate) {
-        debugLog("[CertificateManager] saveCertificate started for serial: \(cert.serialNumber)")
-        defer { debugLog("[CertificateManager] saveCertificate completed for serial: \(cert.serialNumber)") }
+        debugLog("[CertificateManager] Certificate identity details omitted.")
+        defer { debugLog("[CertificateManager] Certificate identity details omitted.") }
         
         do {
             let password = getPassword(for: cert)
@@ -137,9 +169,13 @@ public final class CertificateManager: @unchecked Sendable {
             Keychain.shared[certificateSerial: cert.serialNumber] = p12Data
             debugLog("[CertificateManager] Successfully saved p12 to keychain")
         } catch {
-            debugLog("[CertificateManager] Failed to export/save p12 to keychain: \(error)")
+            debugLog("[CertificateManager] Failed to export/save p12 to keychain.")
         }
         
+        self.recordCertificateMetadata(cert)
+    }
+
+    private func recordCertificateMetadata(_ cert: ALTCertificate) {
         let serials = getImportedCertificateSerials()
         if !serials.contains(cert.serialNumber) {
             var updatedSerials = serials
@@ -157,8 +193,8 @@ public final class CertificateManager: @unchecked Sendable {
     }
 
     public func saveX509Certificate(_ x509: ALTX509Certificate) {
-        debugLog("[CertificateManager] saveX509Certificate started for serial: \(x509.serialNumber)")
-        defer { debugLog("[CertificateManager] saveX509Certificate completed for serial: \(x509.serialNumber)") }
+        debugLog("[CertificateManager] Certificate identity details omitted.")
+        defer { debugLog("[CertificateManager] Certificate identity details omitted.") }
         
         if let derData = x509.data {
             debugLog("[CertificateManager] derData exists, size: \(derData.count)")
@@ -246,7 +282,7 @@ public final class CertificateManager: @unchecked Sendable {
     }
     
     public func deleteCertificate(serialNumber: String) {
-        debugLog("[CertificateManager] deleteCertificate: \(serialNumber)")
+        debugLog("[CertificateManager] Certificate identity details omitted.")
         if self.activeCertificate?.serialNumber == serialNumber {
             clearActiveCertificate()
         }
@@ -266,7 +302,7 @@ public final class CertificateManager: @unchecked Sendable {
             return cert
         }
         
-        debugLog("[CertificateManager] getSignableCertificate: No signable certificate found for serial \(serialNumber).")
+        debugLog("[CertificateManager] Certificate identity details omitted.")
         return nil
     }
 
@@ -291,10 +327,10 @@ public final class CertificateManager: @unchecked Sendable {
                 if let cert = try? ALTCertificate(p12Data: data, password: password) {
                     signableCert = cert
                     if cert.serialNumber.lowercased() == serialNumber.lowercased() {
-                        debugLog("[CertificateManager] getSignableCertificate: Decrypted embedded p12 using '\(pwdName)' with matching serial '\(cert.serialNumber)'.")
+                        debugLog("[CertificateManager] Certificate identity details omitted.")
                         break
                     } else {
-                        verboseLog("[CertificateManager] getSignableCertificate: Decrypted embedded p12 using '\(pwdName)', but serial mismatch (certSerial: \(cert.serialNumber), targetSerial: \(serialNumber)).")
+                        verboseLog("[CertificateManager] Certificate identity details omitted.")
                     }
                 } else {
                     verboseLog("[CertificateManager] getSignableCertificate: Failed to decrypt embedded p12 using password source '\(pwdName)'.")
@@ -302,7 +338,7 @@ public final class CertificateManager: @unchecked Sendable {
             }
 
             if signableCert != nil || serialNumber.isEmpty {
-                debugLog("[CertificateManager] getSignableCertificate: Returning certificate (serial: '\(signableCert?.serialNumber ?? "nil")', targetSerial: '\(serialNumber)').")
+                debugLog("[CertificateManager] Certificate identity details omitted.")
                 return signableCert
             }
         }
@@ -314,7 +350,7 @@ public final class CertificateManager: @unchecked Sendable {
         let executableURL: URL
         if url.pathExtension == "app" {
             guard let execURL = ALTApplication(fileURL: url)?.executableURL else {
-                debugLog("[CertificateManager] readBinaryCertificate: Failed to locate executable in bundle: \(url.path)")
+                debugLog("[CertificateManager] readBinaryCertificate: Failed to locate bundle executable.")
                 return nil
             }
             executableURL = execURL
@@ -323,7 +359,7 @@ public final class CertificateManager: @unchecked Sendable {
         }
         
         guard let parser = try? MachOParser(url: executableURL) else {
-            debugLog("[CertificateManager] readBinaryCertificate: Failed to parse Mach-O at \(executableURL.path)")
+            debugLog("[CertificateManager] readBinaryCertificate: Failed to parse Mach-O.")
             return nil
         }
         
@@ -339,43 +375,33 @@ public final class CertificateManager: @unchecked Sendable {
             let subjectDN = details.subject
             let isFilteredOut = subjectDN.contains("Root") || subjectDN.contains("Authority") || subjectDN.contains("Relations")
             
-            verboseLog("""
-            [CertificateManager] readBinaryCertificate: Certificate [\(index)]:
-              - Subject: '\(details.subject)'
-              - Issuer: '\(details.issuer)'
-              - Serial Hex: '\(details.serialHex)'
-              - Valid From: \(details.validFrom?.description ?? "N/A")
-              - Valid Until: \(details.validUntil?.description ?? "N/A")
-              - Filtered Out: \(isFilteredOut)
-              - Parsed ALTX509Certificate: Success (serial: \(x509Cert.serialNumber))
-            """)
+            verboseLog("[CertificateManager] Certificate identity details omitted.")
             
             if isFilteredOut {
                 continue
             }
             
-            debugLog("[CertificateManager] readBinaryCertificate: Extracted leaf signing certificate from Mach-O (\(executableURL.lastPathComponent))")
+            debugLog("[CertificateManager] readBinaryCertificate: Extracted leaf signing certificate from Mach-O.")
             return x509Cert
         }
         return nil
     }
 
     public func getSigningCertificate(at url: URL) -> ALTX509Certificate? {
-        verboseLog("[CertificateManager] Step 1 (Mach-O): Checking \(url.path)...")
+        verboseLog("[CertificateManager] Step 1 (Mach-O): Checking app binary...")
         if let binaryX509 = readBinaryCertificate(at: url) {
-            debugLog("[CertificateManager] getSigningCertificate: Loaded signing certificate from Mach-O \(url.path) (serial: \(binaryX509.serialNumber)).")
+            debugLog("[CertificateManager] Certificate identity details omitted.")
             return binaryX509
         } else {
-            verboseLog("[CertificateManager] Step 1 (Mach-O): No valid leaf certificate extracted from Mach-O at \(url.path).")
+            verboseLog("[CertificateManager] Step 1 (Mach-O): No valid leaf certificate extracted.")
             return nil
         }
     }
 
     public func getSigningCertificate(for app: InstalledAppProtocol) -> ALTX509Certificate? {
-        let bundleID = app.bundleIdentifier
         let isSelf = app.resignedBundleIdentifier.isAltStoreAppID || app.bundleIdentifier.isAltStoreAppID
 
-        verboseLog("[CertificateManager] getSigningCertificate started for app: \(app.name), isSelf: \(isSelf), bundleID: \(bundleID)")
+        verboseLog("[CertificateManager] getSigningCertificate started; isSelf: \(isSelf)")
 
         // STEP 1: Mach-O Binary Check (Only for SideStore itself)
         if isSelf {
@@ -384,17 +410,17 @@ public final class CertificateManager: @unchecked Sendable {
 
         // STEP 2: App Group Cached Certificate Check (For third-party apps)
         let certURL = app.signingCertificateURL
-        verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): Checking \(certURL.path)...")
+        verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): Checking cached certificate...")
 
         if FileManager.default.fileExists(atPath: certURL.path) {
             if let derData = try? Data(contentsOf: certURL), let cert = ALTX509Certificate(data: derData) {
-                debugLog("[CertificateManager] getSigningCertificate: Loaded cached signing certificate from App Group \(certURL.path) (serial: \(cert.serialNumber))")
+                debugLog("[CertificateManager] Certificate identity details omitted.")
                 return cert
             } else {
-                verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): File exists at \(certURL.path) but failed to parse.")
+                verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): Cached certificate exists but failed to parse.")
             }
         }
-        verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): No cached certificate found in App Group at \(certURL.path).")
+        verboseLog("[CertificateManager] Step 2 (App Group Cached Cert): No usable cached certificate found.")
 
         return nil
     }

@@ -27,12 +27,7 @@ final class RemoveAppOperation: BasePipelineOperation<InstallAppOperationContext
         
         await backgroundContext.perform {
             let installedAppInContext = backgroundContext.object(with: installedApp.objectID) as! InstalledApp
-            let bundleID = installedAppInContext.bundleIdentifier
-            let resignedBundleID = installedAppInContext.resignedBundleIdentifier
-            ProfileManager.shared.setAssignedProfile(nil, for: bundleID)
-            if resignedBundleID != bundleID {
-                ProfileManager.shared.setAssignedProfile(nil, for: resignedBundleID)
-            }
+            CacheResignedMetadataOperation.clearCustomizations(for: installedAppInContext)
             backgroundContext.delete(installedAppInContext)
         }
         

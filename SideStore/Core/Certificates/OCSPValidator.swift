@@ -1,3 +1,4 @@
+// V3_CERTIFICATE_SERIAL_LOG_REDACTION_V1: certificate serials are password-equivalent and never logged.
 //
 //  OCSPValidator.swift
 //  SideStore
@@ -72,14 +73,14 @@ public struct OCSPValidator {
     public static func validate(_ certificate: ALTX509Certificate) async throws {
         // 1. Expiration check
         if certificate.expiryDate <= Date() {
-            debugLog("[OCSPValidator] Certificate \(certificate.serialNumber) is expired (\(certificate.expiryDate)).")
+            debugLog("[OCSPValidator] Certificate identity details omitted.")
             throw OCSPValidationError.expired
         }
         
         guard let data = certificate.data,
               let derData = getDERData(from: data) ?? certificate.data as Data?,
               let secCert = SecCertificateCreateWithData(nil, derData as CFData) else {
-            debugLog("[OCSPValidator] Failed to parse SecCertificate for serial \(certificate.serialNumber).")
+            debugLog("[OCSPValidator] Certificate identity details omitted.")
             throw OCSPValidationError.invalidCertificate
         }
         
@@ -91,20 +92,20 @@ public struct OCSPValidator {
         // 2. Apple SecTrust Evaluation (Fast local OS check)
         let isSecTrustRevoked = checkRevocationWithSecTrust(secCert: secCert, wwdrCert: wwdrCert)
         if isSecTrustRevoked {
-            debugLog("[OCSPValidator] Certificate \(certificate.serialNumber) confirmed REVOKED by SecTrust evaluation!")
+            debugLog("[OCSPValidator] Certificate identity details omitted.")
             throw OCSPValidationError.revoked
         }
         
         // 3. Direct un-cached HTTP OCSP Live Query
         let liveStatus = await fetchDirectLiveOCSPStatus(cert: secCert, issuerCert: wwdrCert)
-        debugLog("[OCSPValidator] Direct Live HTTP OCSP status for \(certificate.serialNumber): \(liveStatus)")
+        debugLog("[OCSPValidator] Certificate identity details omitted.")
         
         switch liveStatus {
         case .revoked:
-            debugLog("[OCSPValidator] Certificate \(certificate.serialNumber) confirmed REVOKED by direct live OCSP query!")
+            debugLog("[OCSPValidator] Certificate identity details omitted.")
             throw OCSPValidationError.revoked
         case .error(let message):
-            debugLog("[OCSPValidator] Direct Live HTTP OCSP query error for \(certificate.serialNumber): \(message)")
+            debugLog("[OCSPValidator] Certificate identity details omitted.")
             throw OCSPValidationError.ocspServerError(message)
         case .valid, .unknown:
             break

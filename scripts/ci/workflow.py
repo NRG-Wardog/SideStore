@@ -141,6 +141,7 @@ def clean_spm_cache():
 
 def build():
     run("mkdir -p build/logs")
+    run("rm -rf AltStore/Resources/Icons.xcassets/Modern/*")
     run(
         "set -o pipefail && "
         "NSUnbufferedIO=YES make -B build "

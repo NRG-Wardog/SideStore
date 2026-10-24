@@ -76,7 +76,20 @@ public extension InstalledAppProtocol {
                 return payloadURL
             }
         }
-        return self.directoryURL.appendingPathComponent("App.app")
+        let current = self.directoryURL.appendingPathComponent("App.app")
+        if FileManager.default.fileExists(atPath: current.path) {
+            return current
+        }
+        // Preserve access to the original-ID layout when the non-destructive
+        // migration is still pending or its destination conflicted.
+        let appsDirectory = InstalledApp.appsDirectoryURL
+        let legacy = appsDirectory.appendingPathComponent(self.bundleIdentifier).appendingPathComponent("App.app")
+        let rootPath = appsDirectory.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        if legacy.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(rootPath),
+           FileManager.default.fileExists(atPath: legacy.path) {
+            return legacy
+        }
+        return current
     }
     
     var refreshedIPAURL: URL {

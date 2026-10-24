@@ -16,6 +16,7 @@ protocol AnisetteServerHandler: AnyObject {
 enum ProvisioningErrorDecision {
     case retry
     case cancel
+    // Preserve the upstream choice without treating partial headless provisioning as success.
     case skip
 }
 
@@ -24,7 +25,7 @@ enum RevokeDecision {
     case revokeSelected([ALTX509Certificate])
 }
 
-protocol SignInHandler: AnyObject, CertificateProvisioningHandler, DeviceProvisioningHandler, CodeSignValidationHandler {
+protocol SignInHandler: AnyObject {
     func credentials() async throws -> (String, String)
     func verificationCode(for request: TwoFactorRequest) async throws -> TwoFactorResponse
     func accountRepair(url: URL, message: String) async -> AccountRepairDecision
@@ -35,9 +36,7 @@ protocol SignInHandler: AnyObject, CertificateProvisioningHandler, DeviceProvisi
     func resolvePostAuth() async
     
     func resolveRevocation(certificates: [ALTX509Certificate], teamType: ALTTeamType) async throws -> RevokeDecision
-    
-    func showCertificateSkipAcknowledgment() async
-    func showDeviceRegistrationSkipAcknowledgment() async
+    func resolveResign(mismatchReason: CodeSignValidationReason, context: StandaloneOperationContext) async throws -> Bool
     
     func complete() async
 }

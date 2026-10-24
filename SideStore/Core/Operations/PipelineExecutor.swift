@@ -66,6 +66,11 @@ final class PipelineExecutor: @unchecked Sendable {
             logOperationResult(result: result, loggerType: loggerType, operation: step)
         }
 
+        // V3_PIPELINE_PHASE_REPORTING_V1: report the authoritative step before it runs.
+        if let headlessHandler = context.handler as? V3HeadlessPipelineHandler {
+            await headlessHandler.recordPipelinePhase(step,
+                downloadUsesNetwork: downloadingApp.url?.isFileURL == false)
+        }
         do {
             switch step {
             case .preflightChecks:
@@ -292,7 +297,48 @@ final class PipelineExecutor: @unchecked Sendable {
             }
         } catch {
             result = error
-            throw error
+            if error is CancellationError { throw error }
+            // A refresh boundary may already have a complete typed diagnosis.
+            // Bridging it again would erase that evidence before manifest capture.
+            if case .refresh = appOperation, error is CombinedFailure { throw error }
+            // LC_STRUCTURED_FAILURE_V1: preserve step responsibility and the underlying error.
+            var stage: String
+            switch step {
+            case .resignApp, .fetchProvisioningProfiles, .verifyCertificate: stage = "signing"
+            case .sendApp, .installApp: stage = "installation"
+            default: stage = "command"
+            }
+            var sourceStep: String?
+            switch step {
+            case .fetchProvisioningProfiles: sourceStep = "provisioningProfileFetch"
+            case .verifyCertificate: sourceStep = "certificateValidation"
+            case .resignApp: sourceStep = "localCodeSigning"
+            default: break
+            }
+            if case .refresh = appOperation, sourceStep == nil {
+                sourceStep = V3RefreshFailureBoundary.pipelineStep(step)?.sourceStep.rawValue
+            }
+            if let operationError = error as? OperationError, operationError == .notAuthenticated { stage = "authentication" }
+            if let portalError = error as? DeveloperPortalError {
+                switch portalError {
+                case .incorrectCredentials, .appSpecificPasswordRequired, .requiresTwoFactorAuthentication,
+                     .incorrectVerificationCode, .authenticationHandshakeFailed, .invalidAnisetteData,
+                     .tooManyAttempts, .accountRepairRequired, .invalid2FAResponse: stage = "authentication"
+                default: break
+                }
+            }
+            var facts: [String: String] = [:]
+            if stage == "signing" {
+                facts["extension_count"] = String(context.targetAppBundle?.appExtensions.count ?? 0)
+                facts["signing_certificate_present"] = context.targetSigningCertificate == nil ? "false" : "true"
+                if let certificate = context.targetSigningCertificate {
+                    facts["signing_certificate_serial_sha256"] = lcSigningHash(certificate.serialNumber)
+                }
+            }
+            if case .refresh = appOperation {
+                facts.merge(lcRefreshFailureFacts(error, sourceStep: sourceStep)) { existing, _ in existing }
+            }
+            throw lcStructuredSigningFailure(error, stage: stage, sourceStep: sourceStep, facts: facts)
         }
     }
     
@@ -310,5 +356,316 @@ final class PipelineExecutor: @unchecked Sendable {
             """
             )
         }
+    }
+}
+
+// V3_REFRESH_FAILURE_BOUNDARIES_V1: observe responsibility at the actual
+// instruction, not from a later progress label or a provider description.
+// These diagnostics still need proper testing on a real refresh failure.
+enum V3RefreshFailureBoundary: String, CaseIterable {
+    case certificateSelection, refreshMetadataCache, refreshApplication
+    case provisioningProfileInstallation, refreshRecordUpdate
+
+    var stage: CombinedFailure.Stage {
+        switch self {
+        case .provisioningProfileInstallation: return .installation
+        case .refreshRecordUpdate: return .persistence
+        case .certificateSelection, .refreshMetadataCache, .refreshApplication: return .command
+        }
+    }
+
+    var sourceStep: CombinedFailure.SourceStep {
+        switch self {
+        case .certificateSelection: return .certificateSelection
+        case .refreshMetadataCache: return .refreshMetadataCache
+        case .refreshApplication: return .refreshApplication
+        case .provisioningProfileInstallation: return .provisioningProfileInstallation
+        case .refreshRecordUpdate: return .refreshRecordUpdate
+        }
+    }
+
+    static func pipelineStep(_ step: PipelineStep) -> V3RefreshFailureBoundary? {
+        switch step {
+        case .updateAppCertificate: return .certificateSelection
+        case .cacheResignedMetadata: return .refreshMetadataCache
+        case .refreshApp: return .refreshApplication
+        default: return nil
+        }
+    }
+
+    func preserving(_ error: Error) -> Error {
+        if error is CancellationError || error is CombinedFailure { return error }
+        // Existing finite native stage/source/cause markers take precedence.
+        // The original error stays process-local; only allowlisted scalars are
+        // serialized later by CombinedFailure.capture.
+        return lcStructuredSigningFailure(error, stage: stage.rawValue,
+            sourceStep: sourceStep.rawValue, facts: lcRefreshFailureFacts(error))
+    }
+}
+
+// Capture the Swift enum before NSError bridging erases its case identity.
+// Only the profile-fetch boundary may compare known local invalidParameters
+// guards. Their associated text never leaves this function; unknown text stays
+// unknown. Readiness additionally recognizes only exact local VPN guard text;
+// arbitrary noDevice/backend payloads must never authorize an enable request.
+func lcRefreshFailureFacts(_ error: Error, sourceStep: String? = nil) -> [String: String] {
+    guard let operation = error as? OperationError else { return [:] }
+    let kind: String
+    switch operation {
+    case .invalidParameters: kind = "invalidParameters"
+    case .invalidOperationContext: kind = "invalidOperationContext"
+    case .notAuthenticated: kind = "notAuthenticated"
+    case .unknownResult: kind = "unknownResult"
+    case .missingAppBundle: kind = "missingAppBundle"
+    case .missingProvisioningProfile: kind = "missingProvisioningProfile"
+    case .certificateExpired: kind = "certificateExpired"
+    case .certificateRevoked: kind = "certificateRevoked"
+    case .customCertificateExpired: kind = "customCertificateExpired"
+    case .customCertificateRevoked: kind = "customCertificateRevoked"
+    case .certificateChanged: kind = "certificateChanged"
+    case .invalidApp: kind = "invalidApp"
+    case .invalidPairingFile: kind = "invalidPairingFile"
+    case .pairingNotComplete: kind = "pairingNotComplete"
+    case .noDevice: kind = "noDevice"
+    case .noConnection: kind = "noConnection"
+    case .noVPN: kind = "noVPN"
+    case .invalidVPN: kind = "invalidVPN"
+    case .notReachable: kind = "notReachable"
+    case .minimuxerNotStarted: kind = "minimuxerNotStarted"
+    case .timedOut: kind = "timedOut"
+    case .unknown: kind = "unknownOperation"
+    default: kind = "otherOperation"
+    }
+    var facts = ["refresh_failure_kind": kind]
+    // A finite, local pre-mutation observation. Never export the peer address
+    // or classify arbitrary gateway text as a recoverable VPN condition.
+    if sourceStep == "refreshReadiness" {
+        if case .noVPN = operation { facts["refresh_readiness_reason"] = "vpnUnavailable" }
+        // V3_COLD_VPN_PEER_ADDRESS_RECOVERY_V1: pinned minimuxer localVPN
+        // endpoint.ip() guard, whose sole throw is deviceEndpointNotInitialized.
+        // A generic utun can bypass host preflight while LocalDevVPN is off.
+        // Keep the original noDevice kind and recognize the full local guard,
+        // not every noDevice, a prefix, or arbitrary native/provider text.
+        if case .noDevice(let message) = operation,
+           message == "VPN tunnel iface is up but tunnel peer IP is not yet reachable — VPN may not be routing device traffic correctly. Cause: DeviceEndpointNotInitialized" {
+            facts["refresh_readiness_reason"] = "peerAddressUnavailable"
+        }
+        if case .invalidVPN(let message) = operation {
+            let prefix = "VPN tunnel iface is up and tunnel peer IP "
+            let suffix = " is known, but TCP port poll failed — device may be unreachable on this interface"
+            if message.hasPrefix(prefix), message.hasSuffix(suffix), message.utf8.count <= 512 {
+                let peer = message.dropFirst(prefix.count).dropLast(suffix.count)
+                let characters = "0123456789abcdefABCDEF:.%abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-"
+                if !peer.isEmpty, peer.utf8.count <= 128,
+                   peer.allSatisfy({ characters.contains($0) }) {
+                    facts["refresh_readiness_reason"] = "peerProbeFailed"
+                }
+            }
+        }
+    }
+    guard sourceStep == "provisioningProfileFetch",
+          case .invalidParameters(let message) = operation,
+          message.utf8.count <= 1024 else { return facts }
+    let reason: String?
+    switch message {
+    case "FetchProvisioningProfilesOperation: context.targetAppBundle is nil":
+        reason = "missingTargetAppBundle"
+    case "Cannot update features for unknown team type.":
+        reason = "unknownTeamType"
+    case "Missing progress weight for step 'fetchProvisioningProfiles' in steps list":
+        reason = "missingProgressWeight"
+    case "Missing PipelineStep mapping for FetchProvisioningProfilesOperation":
+        reason = "missingPipelineStepMapping"
+    default:
+        let reusePrefix = "Invalid maxReuse ("
+        let reuseSuffix = ") for step 'fetchProvisioningProfiles' in steps list"
+        let groupPrefix = "Application group '"
+        let groupSuffix = "' contains raw placeholder '$(APP_GROUP_IDENTIFIER)'."
+        if message.hasPrefix(reusePrefix), message.hasSuffix(reuseSuffix) {
+            let value = String(message.dropFirst(reusePrefix.count).dropLast(reuseSuffix.count))
+            // Match only the original guard's canonical nonpositive Int.
+            reason = Int(value).flatMap { $0 <= 0 && String($0) == value ? "invalidProgressReuse" : nil }
+        } else if message.hasPrefix(groupPrefix), message.hasSuffix(groupSuffix) {
+            let group = message.dropFirst(groupPrefix.count).dropLast(groupSuffix.count)
+            let allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-$()"
+            // Full bounded template, not substring/provider-message matching.
+            reason = group.utf8.count <= 256 && group.contains("$(APP_GROUP_IDENTIFIER)") &&
+                group.allSatisfy({ allowed.contains($0) }) ? "unresolvedAppGroupPlaceholder" : nil
+        } else { reason = nil }
+    }
+    if let reason { facts["local_precondition"] = reason }
+    return facts
+}
+
+import CryptoKit
+// LC_SIGNING_CAUSE_CLASSIFIER_V1: only typed upstream errors gain a semantic cause.
+func lcSafeSigningCause(_ error: Error, portalResponse: Bool = false) -> String {
+    if let urlError = error as? URLError {
+        switch urlError.code {
+        case .networkConnectionLost: return "signingNetworkConnectionLost"
+        case .timedOut: return "signingNetworkTimedOut"
+        case .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost:
+            return "signingNetworkUnavailable"
+        default: break
+        }
+    }
+    let native = error as NSError
+    if native.domain == NSURLErrorDomain {
+        switch native.code {
+        case NSURLErrorNetworkConnectionLost: return "signingNetworkConnectionLost"
+        case NSURLErrorTimedOut: return "signingNetworkTimedOut"
+        case NSURLErrorNotConnectedToInternet, NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost:
+            return "signingNetworkUnavailable"
+        default: break
+        }
+    }
+    if let serverError = error as? ServerError {
+        switch serverError {
+        case .underlyingError: return portalResponse ? "developerPortalRejectedRequest" : "unknownSigningCause"
+        case .badServerResponse, .invalidResponseFormat, .missingKey:
+            return portalResponse ? "developerPortalInvalidResponse" : "unknownSigningCause"
+        }
+    }
+    if let portalError = error as? DeveloperPortalError {
+        switch portalError {
+        case .maximumAppIDLimitReached: return "appIDLimitReached"
+        case .provisioningProfileDoesNotExist: return "provisioningProfileUnavailable"
+        case .certificateDoesNotExist: return "certificateUnavailable"
+        default: break
+        }
+    }
+    return "unknownSigningCause"
+}
+
+func lcSigningHash(_ value: String) -> String {
+    SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
+private final class LCSigningHTTPObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var status: Int?
+    private var providerCode: String?
+    private var resultCode: Int?
+    func record(_ value: Int?, code: String?) {
+        lock.lock(); defer { lock.unlock() }
+        status = value.flatMap { (100...599).contains($0) ? $0 : nil }
+        providerCode = SideSignPortalDiagnostics.safeProviderCode(code)
+    }
+    func recordResultCode(_ code: Int) {
+        lock.lock(); defer { lock.unlock() }
+        resultCode = code
+    }
+    func snapshot() -> (status: Int?, providerCode: String?, resultCode: Int?) {
+        lock.lock(); defer { lock.unlock() }
+        return (status, providerCode, resultCode)
+    }
+}
+
+// Request facts are captured before calling the existing upstream API. No shared
+// last-step state: parallel extension failures retain their own request identity.
+func lcPortalSigningContext(teamID: String, generation: UInt64,
+                            bundleID: String? = nil, features: [String: String]? = nil,
+                            groupCount: Int? = nil, groupID: String? = nil, profileMode: String? = nil) -> [String: String] {
+    var facts = ["account_binding": "verified", "team_binding": "verified",
+                 "team_sha256": lcSigningHash(teamID), "session_generation": String(generation)]
+    if let bundleID { facts["requested_bundle_sha256"] = lcSigningHash(bundleID) }
+    if let features {
+        facts["capability_count"] = String(features.count)
+        facts["capabilities_sha256"] = lcSigningHash(features.sorted { $0.key < $1.key }
+            .map { $0.key + "=" + $0.value }.joined(separator: "\n"))
+        facts["capability_names"] = features.keys.filter { CombinedFailure.signingCapabilityNames.contains($0) }.sorted().joined(separator: ",")
+        facts["enabled_capability_names"] = features.filter { CombinedFailure.signingCapabilityNames.contains($0.key) && $0.value == "true" }.keys.sorted().joined(separator: ",")
+    }
+    if let groupCount { facts["app_group_count"] = String(groupCount) }
+    if let groupID { facts["requested_app_group_sha256"] = lcSigningHash(groupID) }
+    if let profileMode {
+        facts["profile_mode"] = profileMode
+        // The team-profile endpoint chooses devices server-side. Do not claim
+        // that a saved device or a UI certificate was explicitly sent to it.
+        facts["device_registration"] = "unobserved"
+    }
+    return facts
+}
+
+func lcStructuredSigningFailure(_ error: Error, stage: String, sourceStep: String?,
+                                facts: [String: String] = [:], portalResponse: Bool = false) -> NSError {
+    let native = error as NSError
+    var info: [String: Any] = ["LCStructuredFailureStageV1": stage,
+        NSUnderlyingErrorKey: native, NSLocalizedDescriptionKey: "SideStore could not complete this pipeline step."]
+    if let sourceStep { info["LCStructuredFailureSourceV1"] = sourceStep }
+    var context = facts
+    if stage == "signing" { info["LCStructuredFailureCauseV1"] = lcSafeSigningCause(error, portalResponse: portalResponse) }
+    // Associated provider descriptions are not transport/stage evidence.
+    // Reuse the wire boundary's existing typed-body guard for portal enums too.
+    if error is DeveloperPortalError { context["typed_error"] = "sideSignDeveloperPortalError" }
+    if let server = error as? ServerError {
+        switch server {
+        case .underlyingError(let code, _):
+            context["typed_error"] = "sideSignServerReportedError"
+            // -1 is SideSign's sentinel for a detail-only response, not an
+            // observed numeric Apple result code. NSError's ordinal is never used.
+            context["server_code"] = code == -1 ? "unknown" : String(code)
+        case .badServerResponse: context["typed_error"] = "sideSignBadResponse"
+        case .invalidResponseFormat: context["typed_error"] = "sideSignInvalidResponse"
+        case .missingKey: context["typed_error"] = "sideSignMissingKey"
+        }
+        if context["http_status"] == nil { context["http_status"] = "unavailable" }
+    }
+    if let prior = native.userInfo["LCStructuredSigningContextV1"] as? [String: String] {
+        context.merge(prior) { _, requestFact in requestFact }
+    }
+    for key in ["LCStructuredFailureStageV1", "LCStructuredFailureSourceV1", "LCStructuredFailureCauseV1"] {
+        if let prior = native.userInfo[key] as? String { info[key] = prior }
+    }
+    if let safe = CombinedFailure.validatedSigningContext(context), !safe.isEmpty {
+        info["LCStructuredSigningContextV1"] = safe
+    }
+    return NSError(domain: native.domain, code: native.code, userInfo: info)
+}
+
+func lcPortalSigningRequest<T>(sourceStep: String, facts: [String: String],
+                               operation: () async throws -> T) async throws -> T {
+    let observation = LCSigningHTTPObservation()
+    do {
+        return try await SideSignPortalDiagnostics.$responseObserver.withValue({ observation.record($0, code: $1) }) {
+            try await SideSignPortalDiagnostics.$resultCodeObserver.withValue({ observation.recordResultCode($0) }) {
+                try await operation()
+            }
+        }
+    }
+    catch let portal as DeveloperPortalError {
+        // Only annotate the proven App ID capacity result; leave other typed
+        // upstream business handling unchanged.
+        guard sourceStep == "appIDRegistration",
+              case .maximumAppIDLimitReached = portal else { throw portal }
+        let response = observation.snapshot()
+        var observed = facts
+        observed["http_status"] = response.status.map { String($0) } ?? "unavailable"
+        observed["provider_code"] = response.providerCode ?? "unavailable"
+        observed["server_code"] = response.resultCode.map { String($0) } ?? "unknown"
+        throw lcStructuredSigningFailure(portal, stage: "signing", sourceStep: sourceStep,
+                                         facts: observed, portalResponse: true)
+    }
+    catch let server as ServerError {
+        var observed = facts
+        let response = observation.snapshot()
+        observed["http_status"] = response.status.map { String($0) } ?? "unavailable"
+        observed["provider_code"] = response.providerCode ?? "unavailable"
+        // Keep business handling of other typed upstream errors unchanged.
+        throw lcStructuredSigningFailure(server, stage: "signing", sourceStep: sourceStep,
+                                         facts: observed, portalResponse: true)
+    }
+}
+
+func lcProvisioningBundleRequest<T>(role: String, originalBundleID: String, preferredParentMatch: Bool,
+                                    operation: () async throws -> T) async throws -> T {
+    do { return try await operation() }
+    catch {
+        guard (error as? ServerError) != nil ||
+              (error as NSError).userInfo["LCStructuredSigningContextV1"] != nil else { throw error }
+        throw lcStructuredSigningFailure(error, stage: "signing", sourceStep: "provisioningProfileFetch",
+            facts: ["provisioning_bundle_role": role,
+                    "provisioning_bundle_sha256": lcSigningHash(originalBundleID),
+                    "preferred_parent_id_match": String(preferredParentMatch)])
     }
 }

@@ -60,13 +60,15 @@ class CacheViewModel: ObservableObject {
         
         // Fetch all database apps to map display names & icons
         let context = DatabaseManager.shared.viewContext
-        var dbAppsMap: [String: (name: String, fileURL: URL, alternateIconURL: URL, hasAlternateIcon: Bool)] = [:]
+        var dbAppsByFingerprint: [String: (name: String, bundleID: String, fileURL: URL, alternateIconURL: URL, hasAlternateIcon: Bool)] = [:]
         
         context.performAndWait {
             let apps = InstalledApp.all(in: context)
             for app in apps {
-                dbAppsMap[app.bundleIdentifier] = (
+                guard let fingerprint = app.appBundleFingerprint else { continue }
+                dbAppsByFingerprint[fingerprint] = (
                     name: app.name,
+                    bundleID: app.bundleIdentifier,
                     fileURL: app.fileURL,
                     alternateIconURL: app.alternateIconURL,
                     hasAlternateIcon: app.hasAlternateIcon
@@ -80,15 +82,19 @@ class CacheViewModel: ObservableObject {
             var resignedItems: [CacheItem] = []
             
             // 1. Process Internal Cache Items
-            for url in internalAppURLs {
-                let bundleID = url.lastPathComponent
-                let size = CacheManager.shared.calculateSize(of: url)
+            for shaDirURL in internalAppURLs {
+                let sha = shaDirURL.lastPathComponent
+                let appURL = shaDirURL.appendingPathComponent("App.app")
+                let size = CacheManager.shared.calculateSize(of: shaDirURL)
                 let sizeStr = await self.formatBytes(size)
                 
-                var displayName = bundleID
-                var iconImage: UIImage? = nil
+                let appBundle = ALTApplication(fileURL: appURL)
+                let bundleID = appBundle?.bundleIdentifier
                 
-                if let dbInfo = dbAppsMap[bundleID] {
+                var displayName = appBundle?.name ?? sha
+                var iconImage: UIImage? = appBundle?.icon
+                
+                if let dbInfo = dbAppsByFingerprint[sha] {
                     displayName = dbInfo.name
                     
                     if dbInfo.hasAlternateIcon,
@@ -100,12 +106,12 @@ class CacheViewModel: ObservableObject {
                 }
                 
                 let item = CacheItem(
-                    id: bundleID,
+                    id: sha,
                     name: displayName,
                     bundleIdentifier: bundleID,
                     sizeString: sizeStr,
                     sizeInBytes: size,
-                    url: url,
+                    url: shaDirURL,
                     isDirectory: true,
                     image: iconImage
                 )

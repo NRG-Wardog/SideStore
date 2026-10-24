@@ -31,7 +31,7 @@ final class CacheResignedMetadataOperation: BasePipelineOperation<InstallAppOper
         
         let resignedID = installedApp.resignedBundleIdentifier
         if resignedID.isAltStoreAppID {
-            debugLog("[CacheResignedMetadataOperation] Skipping caching of resigned metadata for self (\(resignedID)).")
+            debugLog("[CacheResignedMetadataOperation] Skipping caching of resigned metadata for self.")
             return
         }
         
@@ -54,7 +54,7 @@ final class CacheResignedMetadataOperation: BasePipelineOperation<InstallAppOper
             let targetID = profile.bundleIdentifier
             let fileURL = profilesDirectory.appendingPathComponent("\(targetID).mobileprovision")
             try profile.data.write(to: fileURL, options: .atomic)
-            debugLog("[CacheResignedMetadataOperation] Cached provisioning profile for \(targetID) to \(fileURL.path)")
+            debugLog("[CacheResignedMetadataOperation] Cached provisioning profile.")
         }
     }
     
@@ -71,9 +71,9 @@ final class CacheResignedMetadataOperation: BasePipelineOperation<InstallAppOper
             do {
                 let parser = try InfoPlistParser(bundleURL: bundle.fileURL)
                 try parser.write(to: destURL)
-                debugLog("[CacheResignedMetadataOperation] Cached resigned Info.plist for \(targetID) to \(destURL.path)")
+                debugLog("[CacheResignedMetadataOperation] Cached resigned Info.plist.")
             } catch {
-                debugLog("[CacheResignedMetadataOperation] Failed to cache Info.plist for \(targetID) from \(bundle.fileURL.path): \(error)")
+                debugLog("[CacheResignedMetadataOperation] Failed to cache Info.plist.")
             }
         }
     }
@@ -93,7 +93,7 @@ final class CacheResignedMetadataOperation: BasePipelineOperation<InstallAppOper
             
             if let plistData = try? PropertyListSerialization.data(fromPropertyList: entitlements, format: .xml, options: 0) {
                 try? plistData.write(to: fileURL, options: .atomic)
-                debugLog("[CacheResignedMetadataOperation] Cached Entitlements for \(resignedID) to \(fileURL.path)")
+                debugLog("[CacheResignedMetadataOperation] Cached entitlements.")
             }
         }
     }
@@ -104,8 +104,26 @@ final class CacheResignedMetadataOperation: BasePipelineOperation<InstallAppOper
             let id = file.deletingPathExtension().lastPathComponent
             if !validIDs.contains(id) {
                 try? FileManager.default.removeItem(at: file)
-                debugLog("[CacheResignedMetadataOperation] Removed stale \(description): \(file.lastPathComponent)")
+                debugLog("[CacheResignedMetadataOperation] Removed stale cached metadata.")
             }
+        }
+    }
+    
+    static func clearCustomizations(for app: InstalledApp) {
+        guard UserDefaults.standard.isClearCustomizationsOnUninstallEnabled else { return }
+        
+        let bundleID = app.bundleIdentifier
+        let resignedBundleID = app.resignedBundleIdentifier
+        let appDirectoryURL = app.directoryURL
+        
+        ProfileManager.shared.setAssignedProfile(nil, for: bundleID)
+        if resignedBundleID != bundleID {
+            ProfileManager.shared.setAssignedProfile(nil, for: resignedBundleID)
+        }
+        
+        if FileManager.default.fileExists(atPath: appDirectoryURL.path) {
+            try? FileManager.default.removeItem(at: appDirectoryURL)
+            SideStore.debugLog("[CacheResignedMetadataOperation] Cleared cached app directory.")
         }
     }
 }

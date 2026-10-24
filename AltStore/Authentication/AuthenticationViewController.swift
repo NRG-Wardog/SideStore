@@ -37,9 +37,9 @@ final class AuthenticationViewController: UIViewController
                 let sourceURL = UserDefaults.standard.menuAnisetteList
                 do {
                     _ = try await AnisetteServersManager.shared.syncWithRemote(sourceURLString: sourceURL, forceRemote: true)
-                    debugLog("AuthenticationViewController: Server list refresh request completed for sourceURL: \(sourceURL)")
+                    debugLog("[AuthenticationUI] Stage result recorded; private payload omitted.")
                 } catch {
-                    debugLog("AuthenticationViewController: Server list refresh request Failed for sourceURL: \(sourceURL) Error: \(error)")
+                    debugLog("[AuthenticationUI] Stage result recorded; private payload omitted.")
                 }
             }
         }
@@ -181,7 +181,7 @@ private extension AuthenticationViewController
                 }
 
             case .failure(let error as NSError):
-                debugLog("AuthenticationViewController: Authentication failed with error: \(error)")
+                debugLog("[AuthenticationUI] Stage result recorded; private payload omitted.")
                 DispatchQueue.main.async {
                     let error = error.withLocalizedTitle(NSLocalizedString("Failed to Sign In", comment: ""))
                     let toastView = ToastView(error: error)

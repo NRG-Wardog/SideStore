@@ -1,3 +1,4 @@
+// V3_CERTIFICATE_SERIAL_LOG_REDACTION_V1: certificate serials are password-equivalent and never logged.
 //
 //  VerifyCertificateOperation.swift
 //  SideStore
@@ -44,15 +45,7 @@ final class VerifyCertificateOperation: BasePipelineOperation<InstallAppOperatio
             let portalCertificateSerials = Set(portalCertificates.compactMap { $0.serialNumber })
             let signingCertificateSerial = self.context.targetSigningCertificate?.serialNumber
             
-            debugLog("""
-            [VerifyCertificateOperation] Parameter Accountability for '\(appName)' (\(bundleID)):
-              • installedAppSerial           : \(installedAppSerial ?? "nil")
-              • overrideCertSerial           : \(self.context.overrideSigningCertificate?.serialNumber ?? "nil")
-              • activeCertSerial             : \(self.context.activeSigningCertificate?.serialNumber ?? "nil")
-              • targetSigningCertSerial      : \(signingCertificateSerial ?? "nil")
-              • portalCertificateSerials (\(portalCertificateSerials.count))  : \(Array(portalCertificateSerials))
-              • willResign                   : \(self.willResign)
-            """)
+            debugLog("[VerifyCertificateOperation] Certificate identity details omitted.")
             
             if !willResign {
                 debugLog("[VerifyCertificateOperation] Running in verification-only mode (!willResign) for '\(appName)'...")
@@ -113,13 +106,13 @@ final class VerifyCertificateOperation: BasePipelineOperation<InstallAppOperatio
     private func ocspCheck(_ certificate: ALTX509Certificate) async -> CertificateStatus {
         do {
             try await OCSPValidator.validate(certificate)
-            debugLog("[VerifyCertificateOperation] ocspCheck: Certificate \(certificate.serialNumber) is valid (assuming cross-signed).")
+            debugLog("[VerifyCertificateOperation] Certificate identity details omitted.")
             return .valid(isCrossSigned: true)
         } catch OCSPValidationError.expired {
-            debugLog("[VerifyCertificateOperation] ocspCheck: Certificate \(certificate.serialNumber) is EXPIRED.")
+            debugLog("[VerifyCertificateOperation] Certificate identity details omitted.")
             return .expired
         } catch OCSPValidationError.revoked {
-            debugLog("[VerifyCertificateOperation] ocspCheck: Certificate \(certificate.serialNumber) is REVOKED.")
+            debugLog("[VerifyCertificateOperation] Certificate identity details omitted.")
             return .revoked
         } catch {
             debugLog("[VerifyCertificateOperation] ocspCheck: OCSP validation error (\(error)). Assuming cross-signed.")

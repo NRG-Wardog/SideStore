@@ -84,7 +84,7 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
                 try FileManager.default.removeItem(at: fileURL)
                 debugLog("[InstallAppOperation] Removed refreshed IPA")
             } catch {
-                debugLog("[InstallAppOperation] Failed to remove refreshed .ipa: \(error)")
+                debugLog("[InstallAppOperation] Failed to remove refreshed IPA.")
             }
         }
     }
@@ -124,14 +124,7 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
             
             let isDifferentSideStore = Self.isDifferentSideStoreContainer(installedApp, resignedAppBundle)
             if isDifferentSideStore {
-                self.debugLog("""
-                [WARN] Skipped inserting/updating into InstalledApp table for SideStore:
-                    - Resigned Bundle ID: '\(resignedAppBundle.bundleIdentifier)'
-                    - Active Container Bundle ID: '\(installedApp.resignedBundleIdentifier)'
-                    Reason: A different bundle ID installs SideStore as a new app container which initializes its own database upon launch.
-                            Hence we do not perist current change to prevent corruption of current sidestore's database entry.
-                    
-                """)
+                self.debugLog("[InstallAppOperation] Skipped current database update for a different SideStore container.")
             } else {
                 /* App Extensions */
                 let installedExtensions = try self.fetchOrCreateExtensions(
@@ -168,7 +161,7 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
                         
                         if let finalData = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]) {
                             try? finalData.write(to: jsonURL)
-                            self.debugLog("[InstallAppOperation] Wrote recursively serialized staged self-reinstall metadata to JSON: \(jsonURL.path)")
+                            self.debugLog("[InstallAppOperation] Wrote recursively serialized staged self-reinstall metadata to JSON.")
                         }
                     }
                 }
@@ -276,9 +269,9 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
                             to: installedApp.alternateIconURL,
                             shouldReplace: true
                         )
-                        self.debugLog("[InstallAppOperation] Copied alternate icon at: \(alternateIconURL) to: \(installedApp.alternateIconURL)")
+                        self.debugLog("[InstallAppOperation] Copied alternate icon.")
                     } catch {
-                        self.debugLog("[InstallAppOperation] Failed to copy alternate icon: \(error)")
+                        self.debugLog("[InstallAppOperation] Failed to copy alternate icon.")
                     }
                 case .remove:
                     try? FileManager.default.removeItem(at: installedApp.alternateIconURL)
@@ -289,7 +282,7 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
 
             if let overrideProfile = self.context.overrideProvisioningProfile {
                 ProfileManager.shared.assignProfile(uuid: overrideProfile.uuid, for: installedApp.bundleIdentifier)
-                self.debugLog("[InstallAppOperation] Assigned profile '\(overrideProfile.name)' to installed app '\(installedApp.bundleIdentifier)'")
+                self.debugLog("[InstallAppOperation] Assigned provisioning profile to installed app.")
             }
         }
 
@@ -327,14 +320,7 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
                 customAppExBundleID = resignedBundleID.replacingOccurrences(of: resignedParentBundleID, with: targetParentBundleID)
             }
             
-            self.debugLog("""
-            [InstallAppOperation] Extension Bundle Mapping:
-              • targetParentBundleID   : \(targetParentBundleID)
-              • resignedParentBundleID : \(resignedParentBundleID)
-              • originalAppExBundleID  : \(originalAppExBundleID)
-              • customAppExBundleID    : \(customAppExBundleID ?? "nil")
-              • resignedAppExBundleID  : \(resignedBundleID)
-            """)
+            self.debugLog("[InstallAppOperation] Extension bundle mapping resolved.")
             
             let installedExtension = try installedApp.appExtensions
                                             .first(where: { $0.resignedBundleIdentifier == resignedBundleID })
@@ -390,6 +376,9 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
     }
 
     private func handleSelfReinstallation(for installedApp: InstalledApp) {
+        // Stop keepalive background services unconditionally so the process can suspend cleanly
+        BackgroundServiceManager.stop()
+
         // Reinstalling ourself will hang until we leave the app, so we need to exit it without force closing
         Task.detached {
             let bgTaskID = await MainActor.run {

@@ -113,6 +113,10 @@ public class DatabaseManager: @unchecked Sendable
 
     private func performStart() async throws
     {
+        // Resolve existing storage before Core Data can create or migrate it.
+        if self.persistentContainer.persistentStoreCoordinator.persistentStores.isEmpty {
+            try MaintenanceManager.shared.preparePersistentStoreURLs(in: self.persistentContainer)
+        }
         if self.persistentContainer.isMigrationRequired
         {
             // Quit any other running AltStore processes to prevent concurrent database access during and after migration.
@@ -120,7 +124,12 @@ public class DatabaseManager: @unchecked Sendable
             CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), .willMigrateDatabase, nil, nil, true)
         }
 
-        try await self.persistentContainer.loadPersistentStores()
+        // EMBEDDED_SIDESTORE_STARTUP_FIX_V1: retry preparation without reattaching SQLite.
+        if self.persistentContainer.persistentStoreCoordinator.persistentStores.isEmpty {
+            try await self.persistentContainer.loadPersistentStores()
+        } else {
+            debugLog("[SIDESTORE_STARTUP] reusing_attached_persistent_store_after_startup_failure")
+        }
         try await self.prepareDatabase()
     }
 
@@ -183,7 +192,7 @@ public class DatabaseManager: @unchecked Sendable
         return self.persistentContainer.viewContext
     }
     
-    public func activeAccount(in context: NSManagedObjectContext) -> Account?
+    public func activeAccount(in context: NSManagedObjectContext = DatabaseManager.shared.viewContext) -> Account?
     {
         let predicate = NSPredicate(format: "%K == YES", #keyPath(Account.isActiveAccount))
         
@@ -191,7 +200,7 @@ public class DatabaseManager: @unchecked Sendable
         return activeAccount
     }
     
-    public func activeTeam(in context: NSManagedObjectContext) -> Team?
+    public func activeTeam(in context: NSManagedObjectContext = DatabaseManager.shared.viewContext) -> Team?
     {
         let predicate = NSPredicate(format: "%K == YES", #keyPath(Team.isActiveTeam))
         
@@ -205,11 +214,13 @@ public class DatabaseManager: @unchecked Sendable
         
         let context = self.persistentContainer.newBackgroundContext()
         try await context.perform {
-            guard let localAppBundle = ALTApplication(fileURL: Bundle.Info.activeBundleURL) else { return }
+            guard let localAppBundle = ALTApplication(fileURL: Bundle.Info.activeBundleURL) else {
+                throw ALTError.invalidApp(reason: "Unable to read the active LiveContainer application bundle.")
+            }
             
             #if !targetEnvironment(simulator)
             guard localAppBundle.provisioningProfile != nil else {
-                throw ALTError(.invalidApp)
+                throw ALTError.invalidApp(reason: "The active LiveContainer bundle has no readable provisioning profile.")
             }
             #endif
             
@@ -348,7 +359,7 @@ public class DatabaseManager: @unchecked Sendable
                     let (signature, _) = try CacheAppOperation.cachePayload(for: temporaryFileURL)
                     installedApp.appBundleFingerprint = signature
                 } catch {
-                    debugLog("Failed to cache SideStore app bundle: \(error)")
+                    debugLog("SideStore payload cache verification failed; details omitted.")
                 }
             }
             
@@ -371,7 +382,7 @@ public class DatabaseManager: @unchecked Sendable
             try context.save()
         }
         
-        await self.updateFeaturedSortIDs()
+        // V3_HEADLESS_FEATURED_SORT_SKIP_V1: this embedded process has no Featured UI consumer.
     }
     
     private func reconcileSelfFromSelfBinary(installedApp: InstalledApp, localAppBundle: ALTApplication, serialNumber: String?) {

@@ -56,19 +56,37 @@ public actor AnisetteConfigManager {
         set { Keychain.shared.adiPb = newValue }
     }
     
-    public func resolveDeviceIdentifier() -> UUID {
-        if let storedId = anisetteIdentifier, !storedId.isEmpty {
-            if let parsed = UUID(uuidString: storedId) {
-                return parsed
+    // LC_ANISETTE_PAIR_PRECONDITION_V1
+    public func resolveDeviceIdentifier() throws -> UUID {
+        try resolveAnisetteSnapshot().identifier
+    }
+
+    func resolveAnisetteSnapshot() throws -> LCEmbeddedAnisetteSnapshot {
+        let read = LoginDiagnosticTrace.current?.begin(.keychainRead)
+        do {
+            let snapshot = try Keychain.shared.resolveAnisetteSnapshot()
+            read?.finish(.succeeded)
+            LoginDiagnosticTrace.current?.begin(.pairValidation).finish(.succeeded)
+            if snapshot.adiBlob == nil {
+                LoginDiagnosticTrace.current?.skip(.blobPresence, reason: .fresh)
+            } else {
+                LoginDiagnosticTrace.current?.begin(.blobPresence).finish(.succeeded, reason: .cached)
             }
-            if let data = Data(base64Encoded: storedId), data.count == 16 {
-                let uuid = data.withUnsafeBytes { UUID(uuid: $0.load(as: uuid_t.self)) }
-                return uuid
+            return snapshot
+        } catch {
+            read?.finish(.failed, error: error)
+            if error is LCAnisettePairError {
+                LoginDiagnosticTrace.current?.begin(.pairValidation).finish(.failed,
+                    reason: (error as? LCAnisettePairError) == .stateChanged ? .stateChanged : .rejected, error: error)
             }
+            throw error
         }
-        let generated = UUID()
-        anisetteIdentifier = generated.uuidString
-        return generated
+    }
+
+    func commitAnisetteBlob(_ blob: Data, snapshot: LCEmbeddedAnisetteSnapshot) throws {
+        try v3LoginStageSync(.freshBlobCommit) {
+            try Keychain.shared.commitAnisetteBlob(blob, snapshot: snapshot)
+        }
     }
     
     private nonisolated var configFileURL: URL {
@@ -110,8 +128,21 @@ public actor AnisetteConfigManager {
         }
     }
     
-    public func loadConfig() -> AnisetteConfig {
+    // Use the current upstream akd client-info default for both providers.
+    // The Android ADI libraries do not establish a required client-info profile.
+    // Preserve the compatibility argument and every explicit persisted override.
+    public nonisolated static func defaultClientInfo(forOnDeviceAndroid: Bool) -> String {
+        AppConstants.Anisette.defaultClientInfo
+    }
+
+    public func loadConfig(forOnDeviceAndroid: Bool? = nil) -> AnisetteConfig {
+        resolveConfig(forOnDeviceAndroid: forOnDeviceAndroid).config
+    }
+
+    private func resolveConfig(forOnDeviceAndroid: Bool?)
+        -> (config: AnisetteConfig, clientInfoSource: AuthenticationHeaderSource) {
         let ud = UserDefaults.standard
+        let onDeviceAndroid = forOnDeviceAndroid ?? ud.useOnDeviceAnisette
         let udClientInfo   = ud.customAnisetteClientInfo
         let udUserAgent    = ud.customAnisetteUserAgent
         let udDeviceID     = ud.customAnisetteDeviceID
@@ -130,7 +161,7 @@ public actor AnisetteConfigManager {
             return config
         }()
 
-        let resolvedClientInfo   = (udClientInfo?.isEmpty == false ? udClientInfo : fileConfig?.clientInfo) ?? AppConstants.Anisette.defaultClientInfo
+        let resolvedClientInfo   = (udClientInfo?.isEmpty == false ? udClientInfo : fileConfig?.clientInfo) ?? Self.defaultClientInfo(forOnDeviceAndroid: onDeviceAndroid)
         let resolvedUserAgent    = (udUserAgent?.isEmpty == false ? udUserAgent : fileConfig?.userAgent) ?? AppConstants.Anisette.defaultUserAgent
         let resolvedDeviceID     = (udDeviceID?.isEmpty == false ? udDeviceID : fileConfig?.customDeviceID)
         let resolvedLocalUserID  = (udLocalUserID?.isEmpty == false ? udLocalUserID : fileConfig?.customLocalUserID)
@@ -140,7 +171,9 @@ public actor AnisetteConfigManager {
         let resolvedSerialNumber = (udSerialNumber?.isEmpty == false ? udSerialNumber : fileConfig?.customSerialNumber)
         let resolvedRoutingInfo  = (udRoutingInfo?.isEmpty == false ? udRoutingInfo : fileConfig?.customRoutingInfo)
 
-        return AnisetteConfig(
+        let clientInfoSource: AuthenticationHeaderSource = udClientInfo?.isEmpty == false
+            ? .userDefaults : (fileConfig != nil ? .file : .defaultValue)
+        let config = AnisetteConfig(
             clientInfo: resolvedClientInfo,
             userAgent: resolvedUserAgent,
             customDeviceID: resolvedDeviceID,
@@ -151,12 +184,21 @@ public actor AnisetteConfigManager {
             customSerialNumber: resolvedSerialNumber,
             customRoutingInfo: resolvedRoutingInfo
         )
+        return (config, clientInfoSource)
     }
 
-    public func makeRequestHeaders() -> AnisetteRequestHeaders {
-        let config = loadConfig()
-        return AnisetteRequestHeaders().with {
-            $0.clientInfo = config.clientInfo.isEmpty ? AppConstants.Anisette.defaultClientInfo : config.clientInfo
+    public func makeRequestHeaders(forOnDeviceAndroid: Bool = false) -> AnisetteRequestHeaders {
+        makeRequestHeaderSelection(forOnDeviceAndroid: forOnDeviceAndroid).headers
+    }
+
+    public func makeRequestHeaderSelection(forOnDeviceAndroid: Bool = false)
+        -> (headers: AnisetteRequestHeaders, clientInfoSource: AuthenticationHeaderSource) {
+        let span = LoginDiagnosticTrace.current?.begin(.requestHeaders)
+        defer { span?.finish(.succeeded) }
+        let selected = resolveConfig(forOnDeviceAndroid: forOnDeviceAndroid)
+        let config = selected.config
+        let headers = AnisetteRequestHeaders().with {
+            $0.clientInfo = config.clientInfo.isEmpty ? Self.defaultClientInfo(forOnDeviceAndroid: forOnDeviceAndroid) : config.clientInfo
             $0.userAgent  = config.userAgent.isEmpty ? AppConstants.Anisette.defaultUserAgent : config.userAgent
             if let customLU = config.customLocalUserID, !customLU.isEmpty { $0.localUserID = customLU }
             if let customDev = config.customDeviceID, !customDev.isEmpty { $0.deviceID = customDev }
@@ -165,6 +207,9 @@ public actor AnisetteConfigManager {
             if let serial = config.customSerialNumber, !serial.isEmpty { $0.serialNumber = serial }
             if let routing = config.customRoutingInfo, !routing.isEmpty { $0.routingInfo = routing }
         }
+        // Empty file values still use the existing request-time default.
+        let source: AuthenticationHeaderSource = config.clientInfo.isEmpty ? .defaultValue : selected.clientInfoSource
+        return (headers, source)
     }
 
     public func resolvedXcodeVersion() async -> String {
@@ -258,7 +303,7 @@ public actor AnisetteConfigManager {
         deleteConfigFile()
 
         let config = AnisetteConfig(
-            clientInfo: AppConstants.Anisette.defaultClientInfo,
+            clientInfo: Self.defaultClientInfo(forOnDeviceAndroid: ud.useOnDeviceAnisette),
             userAgent: AppConstants.Anisette.defaultUserAgent
         )
         return config

@@ -1,0 +1,13 @@
+# Deferred device setup fixture
+
+This isolated offline fixture projects the production provisioning loop, successful/failing finalization, deferred identity validation and pairing-configuration observation unchanged. The shared allowlisted outcome policy is byte-checked across service, host and UI. It never authenticates, uses native providers, reads real pairing files or contacts the network.
+
+Generate: python3 -B generate.py --sources ASSEMBLED_ROOT --output-dir OUTPUT
+Source checks: python3 -B test_source.py --sources ASSEMBLED_ROOT
+Native fake fixture: swiftc -parse-as-library OUTPUT/CandidateDeferredSetup.swift OUTPUT/BoundaryDoubles.swift OUTPUT/RuntimeTests.swift -o OUTPUT/fixture; OUTPUT/fixture OUTPUT/cases.json
+
+Account/team/certificate acquisition, Keychain persistence, checked Core Data save, file/bundle metadata, device registration, resign and UI completion remain owned doubles. Private-key proof is no longer a Boolean double: the complete production V3PendingCertificateKeyProof is extracted unchanged and executes Security public/private-key matching with freshly generated ephemeral synthetic RSA keys and a self-signed certificate. No real account, persistent Keychain, private file, Apple service or ADI provider is used. The actual deferred service-terminal branch and certExportActive guards are also extracted unchanged, followed by terminal JSON serialization and the real outcome recognizer. Synthetic PFX bytes pass through the actual export adapter; the host P12 parser does not run.
+
+The 15 case names in generate.py retain the original 11 behavioral cases and add the precise fresh-PEM/reloaded-DER representation regression, real mismatched/malformed-key rejection, and ownership checks across finalization, serialized deferred success and certificate export. This does not establish Core Data durability, P12 parser interoperability, complete backend/UI execution, device operation or pairing correctness. Matching native compilation and physical-device checks remain separate gates.
+
+Fail-before control: run this current generator against the exact delivered baseline product files, compile with these current boundary/runtime files, then invoke the executable with --expect-prior-pem-rejection. It must prove a real matching PEM key is rejected by the prior DER-only finalization guard before account activation, emitting DEFERRED_PRIOR_PEM_REJECTION_REPRODUCED. The normal candidate run must instead complete the actual finalize/terminal/export chain. Baseline and candidate product hashes must be recorded independently; neither run substitutes a mocked proof.

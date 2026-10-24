@@ -7,6 +7,7 @@
 //
 
 @preconcurrency import UIKit
+import CoreData
 import SideSign
 
 public class DeveloperPortalProxy {
@@ -26,78 +27,309 @@ public class DeveloperPortalProxy {
     
     fileprivate init() {}
     
-    private func getSession() async throws -> ALTAppleAPISession {
-        try await AuthManager.shared.getAuthenticatedSession()
+    // V3_AUTH_IDENTITY_BOUND_DEVELOPER_PORTAL_V1
+    private struct BoundSession {
+        let session: ALTAppleAPISession
+        let appleID: String
+        let generation: UInt64
+        let identityStamp: String
+        let remoteContext: ILoaderRemoteAuthenticationContext?
+        let admission: V3RemoteRequestAdmission
     }
 
-    private func getTeam(_ team: ALTTeam? = nil) async throws -> ALTTeam {
-        if let team { return team }
-        return try await AuthManager.shared.getAuthenticatedTeam()
+    private func getBoundSession() async throws -> BoundSession {
+        let auth = AuthManager.shared
+        guard auth.v3IdentityIsStable else { throw OperationError.notAuthenticated }
+        let generation = auth.v3IdentityGeneration
+        let identityStamp = auth.v3IdentityStamp
+        let credentialsBefore = auth.authenticationSnapshot
+        let admission = try V3RemoteRequestLeases.admitted ?? V3RemoteRequestLeases.capture()
+        let remoteContext = admission.context
+        let session = try await admission.withScope { try await auth.getAuthenticatedSession() }
+        let credentials = auth.authenticationSnapshot
+        guard V3AuthIdentityBindingPolicy.hasUsableSession(
+            credentialRoutePresent: credentials?.isAuthenticated == true,
+            dsid: credentials?.appleIDAdsid, xcodeToken: credentials?.appleIDXcodeToken,
+            sessionDSID: session.dsid, sessionXcodeToken: session.authToken,
+            generationBefore: generation,
+            generationAfter: auth.v3IdentityGeneration),
+              V3AuthIdentityBindingPolicy.sameCredentialRoute(
+                appleIDBefore: credentialsBefore?.appleIDEmailAddress,
+                appleIDAfter: credentials?.appleIDEmailAddress,
+                dsidBefore: credentialsBefore?.appleIDAdsid, dsidAfter: credentials?.appleIDAdsid,
+                tokenBefore: credentialsBefore?.appleIDXcodeToken, tokenAfter: credentials?.appleIDXcodeToken),
+              V3AuthIdentityBindingPolicy.mayDispatch(generationBefore: generation,
+                generationAfter: auth.v3IdentityGeneration, cancelled: Task.isCancelled),
+              auth.v3IdentityIsStable, identityStamp == auth.v3IdentityStamp,
+              let appleID = credentials?.appleIDEmailAddress else {
+            throw OperationError.notAuthenticated
+        }
+        return BoundSession(session: session, appleID: appleID, generation: generation,
+            identityStamp: identityStamp, remoteContext: remoteContext, admission: admission)
     }
+
+    private func verifyCurrent(_ context: BoundSession) throws {
+        try context.admission.check()
+        let auth = AuthManager.shared
+        let credentials = auth.authenticationSnapshot
+        guard V3AuthReadStampPolicy.mayReturn(capturedStamp: context.identityStamp,
+              currentStamp: auth.v3IdentityStamp, stable: auth.v3IdentityIsStable),
+              context.generation == auth.v3IdentityGeneration,
+              V3AuthIdentityBindingPolicy.mayDispatch(generationBefore: context.generation,
+                generationAfter: auth.v3IdentityGeneration, cancelled: Task.isCancelled),
+              V3AuthIdentityBindingPolicy.hasUsableSession(
+                credentialRoutePresent: credentials?.isAuthenticated == true,
+                dsid: credentials?.appleIDAdsid, xcodeToken: credentials?.appleIDXcodeToken,
+                sessionDSID: context.session.dsid, sessionXcodeToken: context.session.authToken,
+                generationBefore: context.generation,
+                generationAfter: auth.v3IdentityGeneration),
+              V3AuthIdentityBindingPolicy.mayUseTeam(
+                sessionOwner: context.appleID, teamOwner: credentials?.appleIDEmailAddress) else {
+            throw OperationError.notAuthenticated
+        }
+    }
+
+    private func awaitBound<T>(_ context: BoundSession,
+                               operation: () async throws -> T) async throws -> T {
+        try verifyCurrent(context)
+        let value = try await context.admission.withScope(operation)
+        try verifyCurrent(context)
+        return value
+    }
+
+    private struct DatabaseTeamOwnershipSnapshot: Sendable {
+        let teamOwners: [String]
+        let activeTeamIdentifier: String?
+        let activeAccountOwner: String?
+    }
+
+    private func databaseOwnershipSnapshot(for identifier: String) async throws -> DatabaseTeamOwnershipSnapshot {
+        try await DatabaseManager.shared.persistentContainer.performBackgroundTask { context in
+            // Pin SQLite reads to one generation. In-memory Core Data stores
+            // do not support query generations, but this closure still reads
+            // every ownership fact on the same private context queue.
+            if context.persistentStoreCoordinator?.persistentStores.contains(
+                where: { $0.type == NSSQLiteStoreType }) == true {
+                try context.setQueryGenerationFrom(.current)
+            }
+            let request = NSFetchRequest<Team>(entityName: "Team")
+            request.predicate = NSPredicate(format: "%K == %@", #keyPath(Team.identifier), identifier)
+            let matches = try context.fetch(request)
+            let owners = Set(matches.compactMap { $0.account?.appleID }
+                .compactMap(V3AuthIdentityBindingPolicy.normalizedOwner)).sorted()
+            let activeTeamIdentifier = DatabaseManager.shared.activeTeam(in: context)?.identifier
+            let activeAccountOwner = DatabaseManager.shared.activeAccount(in: context)?.appleID
+            return DatabaseTeamOwnershipSnapshot(teamOwners: owners,
+                activeTeamIdentifier: activeTeamIdentifier, activeAccountOwner: activeAccountOwner)
+        }
+    }
+
+    private func owner(for team: ALTTeam, context: BoundSession) async throws -> String? {
+        let directOwner = V3AuthIdentityBindingPolicy.normalizedOwner(team.account?.appleID)
+        // SideSign's fetchTeams(for:session:) binds each returned ALTTeam to
+        // the requested ALTAccount. Trust that explicit owner; a prior DB row
+        // with the same team identifier may belong to a different account.
+        if let directOwner { return directOwner }
+        let databaseSnapshot = try await databaseOwnershipSnapshot(for: team.identifier)
+        return V3AuthIdentityBindingPolicy.resolveColdTeamOwner(
+            storedTeamOwners: databaseSnapshot.teamOwners,
+            activeTeamIdentifier: databaseSnapshot.activeTeamIdentifier,
+            requestedTeamIdentifier: team.identifier,
+            activeAccountOwner: databaseSnapshot.activeAccountOwner,
+            sessionOwner: context.appleID)
+    }
+
+    private func getBoundTeam(_ team: ALTTeam? = nil, context: BoundSession) async throws -> ALTTeam {
+        let resolved: ALTTeam
+        if let team { resolved = team }
+        else { resolved = try await AuthManager.shared.getAuthenticatedTeam() }
+        let owner = try await owner(for: resolved, context: context)
+        try verifyCurrent(context)
+        guard V3AuthIdentityBindingPolicy.mayDispatchTeamRequest(
+            sessionOwner: context.appleID, teamOwner: owner,
+            generationBefore: context.generation,
+            generationAfter: AuthManager.shared.v3IdentityGeneration,
+            cancelled: Task.isCancelled) else {
+            throw OperationError.notAuthenticated
+        }
+        return resolved
+    }
+
     
     public func fetchTeams(for account: ALTAccount) async throws -> [ALTTeam] {
-        let session = try await self.getSession()
-        return try await ALTAppleAPI.shared.fetchTeams(for: account, session: session)
+        let context = try await self.getBoundSession()
+        try self.verifyCurrent(context)
+        guard V3AuthIdentityBindingPolicy.mayFetchTeams(sessionOwner: context.appleID,
+            requestedOwner: account.appleID, generationBefore: context.generation,
+            generationAfter: AuthManager.shared.v3IdentityGeneration,
+            cancelled: Task.isCancelled) else {
+            throw OperationError.notAuthenticated
+        }
+        let teams = try await self.awaitBound(context) {
+            try await self.awaitBound(context) { try await ALTAppleAPI.shared.fetchTeams(for: account, session: context.session) }
+        }
+        try self.verifyCurrent(context)
+        return teams
     }
     
     public func fetchCertificates(team: ALTTeam? = nil) async throws -> [ALTX509Certificate] {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.fetchCertificates(for: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.fetchCertificates(for: team, session: session) }
     }
     
     @discardableResult
-    public func createCertificate(machineName: String, type: CertificateType = .development, team: ALTTeam? = nil) async throws -> ALTCertificate {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.addCertificate(machineName: machineName, type: type, to: team, session: session)
+    public func createCertificate(machineName: String, type: CertificateType = .development, team: ALTTeam? = nil, purpose: V3CertificateCreationPurpose = .importedCopy) async throws -> ALTCertificate {
+        let token = try V3CertificateMutationAdmission.acquire()
+        defer { V3CertificateMutationAdmission.release(token) }
+        let context = try await getBoundSession()
+        let team = try await getBoundTeam(team, context: context)
+        guard try Keychain.shared.pendingCertificateCreation() == nil else { throw V3PendingCertificateCreationError.pendingCreation }
+        try verifyCurrent(context)
+        if team.type == .free && type.isPaidOnly { throw DeveloperPortalError.invalidParameters(cause: "This certificate type requires a paid account.") }
+        let request = try CertificateRequest(machineName: machineName)
+        let prepared = try Keychain.shared.beginPendingCertificateCreation(ownerDSID: context.session.dsid, teamID: team.identifier, request: request, type: type, purpose: purpose)
+        try verifyCurrent(context)
+        let dispatched = try Keychain.shared.advancePendingCertificateCreation(prepared)
+        try verifyCurrent(context)
+        let certificate = try await V3RemoteRequestLeases.$admitted.withValue(context.admission) {
+            try await ILoaderRemoteAuthentication.$current.withValue(context.remoteContext) {
+                try await ALTAppleAPI.shared.addCertificate(request: request, machineIdentifier: dispatched.machineIdentifier, type: type, to: team, session: context.session)
+            }
+        }
+        guard let der = certificate.data, V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: dispatched.privateKey) else { throw V3PendingCertificateCreationError.invalidProof }
+        // Retain the original owner's result before rejecting a stale/cancelled caller.
+        let created = try Keychain.shared.advancePendingCertificateCreation(dispatched, certificateDER: der)
+        try verifyCurrent(context)
+        guard purpose == .provisioning else { return certificate }
+
+        // V3_JOURNALED_CERTIFICATE_METADATA_ENRICHMENT_V1
+        // Read full portal metadata under the original identity, not a newly acquired session.
+        // Any read/proof failure leaves the created journal intact for explicit reconciliation;
+        // it must never turn a completed server mutation into another create attempt.
+        let metadataTeam = try await getBoundTeam(team, context: context)
+        guard metadataTeam.identifier == created.teamID, context.session.dsid == created.ownerDSID else {
+            throw V3PendingCertificateCreationError.ownerChanged
+        }
+        let certificates = try await awaitBound(context) {
+            try await ALTAppleAPI.shared.fetchCertificates(for: metadataTeam, session: context.session)
+        }
+        let matches = certificates.filter {
+            $0.serialNumber.caseInsensitiveCompare(certificate.serialNumber) == .orderedSame
+        }
+        guard matches.count == 1 else { throw V3PendingCertificateCreationError.ambiguousResult }
+        let fullX509 = matches[0]
+        guard fullX509.data == der,
+              V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: certificate.privateKey) else {
+            throw V3PendingCertificateCreationError.invalidProof
+        }
+        guard try Keychain.shared.pendingCertificateCreation() == created else {
+            throw V3PendingCertificateCreationError.storageUnverified
+        }
+        try verifyCurrent(context)
+        return ALTCertificate(x509: fullX509, privateKey: certificate.privateKey)
     }
-    
+
     @discardableResult
     public func revokeCertificate(_ certificate: ALTX509Certificate, team: ALTTeam? = nil) async throws -> Bool {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.revokeCertificate(certificate, for: team, session: session)
+        let token = try V3CertificateMutationAdmission.acquire()
+        defer { V3CertificateMutationAdmission.release(token) }
+        let context = try await getBoundSession()
+        let team = try await getBoundTeam(team, context: context)
+        guard try Keychain.shared.pendingCertificateCreation() == nil else { throw V3PendingCertificateCreationError.pendingCreation }
+        try verifyCurrent(context)
+        return try await awaitBound(context) { try await ALTAppleAPI.shared.revokeCertificate(certificate, for: team, session: context.session) }
     }
-    
+
+    public func reconcilePendingCertificateCreation(team requestedTeam: ALTTeam? = nil) async throws -> ALTCertificate? {
+        let token = try V3CertificateMutationAdmission.acquire()
+        defer { V3CertificateMutationAdmission.release(token) }
+        let context = try await getBoundSession()
+        guard var retained = try Keychain.shared.pendingCertificateCreation() else { return nil }
+        try verifyCurrent(context)
+        guard context.session.dsid == retained.ownerDSID else { throw V3PendingCertificateCreationError.ownerChanged }
+        let team: ALTTeam
+        if let requestedTeam {
+            team = try await getBoundTeam(requestedTeam, context: context)
+        } else {
+            let account = try await awaitBound(context) { try await ALTAppleAPI.shared.fetchAccount(session: context.session) }
+            let teams = try await awaitBound(context) { try await ALTAppleAPI.shared.fetchTeams(for: account, session: context.session) }
+            guard let ownedTeam = teams.first(where: { $0.identifier == retained.teamID }) else { throw V3PendingCertificateCreationError.ownerChanged }
+            team = ownedTeam
+        }
+        guard team.identifier == retained.teamID else { throw V3PendingCertificateCreationError.ownerChanged }
+        try verifyCurrent(context)
+        if retained.phase == .prepared {
+            try Keychain.shared.clearPreparedCertificateCreation(retained)
+            try verifyCurrent(context)
+            return nil
+        }
+        let certificates = try await awaitBound(context) { try await ALTAppleAPI.shared.fetchCertificates(for: team, session: context.session) }
+        let matches = certificates.filter { certificate in
+            guard let der = certificate.data else { return false }
+            return V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: retained.privateKey)
+        }
+        guard matches.count == 1, let der = matches[0].data else { throw V3PendingCertificateCreationError.ambiguousResult }
+        if retained.phase == .dispatchMayHaveOccurred {
+            retained = try Keychain.shared.advancePendingCertificateCreation(retained, certificateDER: der)
+        } else if retained.certificateDER != der {
+            throw V3PendingCertificateCreationError.invalidProof
+        }
+        try verifyCurrent(context)
+        let certificate = ALTCertificate(x509: matches[0], privateKey: retained.privateKey)
+        CertificateManager.shared.saveCertificate(certificate)
+        try verifyCurrent(context)
+        if retained.purpose == .importedCopy {
+            try CertificateManager.shared.v3CompletePendingCertificateIfStored(certificate)
+        }
+        return certificate
+    }
+
     public func fetchDevices(for team: ALTTeam? = nil, types: ALTDeviceType = .all) async throws -> [ALTDevice] {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.fetchDevices(for: team, types: types, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.fetchDevices(for: team, types: types, session: session) }
     }
     
     @discardableResult
     public func registerDevice(name: String, identifier: String, type: ALTDeviceType = DeveloperPortalProxy.currentDeviceType, team: ALTTeam? = nil) async throws -> ALTDevice {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.registerDevice(name: name, identifier: identifier, type: type, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.registerDevice(name: name, identifier: identifier, type: type, team: team, session: session) }
     }
 
     @discardableResult
     public func updateDevice(_ device: ALTDevice, team: ALTTeam? = nil) async throws -> ALTDevice {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.updateDevice(device, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.updateDevice(device, team: team, session: session) }
     }
 
     @discardableResult
     public func disableDevice(_ device: ALTDevice, team: ALTTeam? = nil) async throws -> ALTDevice {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.disableDevice(device, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.disableDevice(device, team: team, session: session) }
     }
 
     @discardableResult
     public func deleteDevice(_ device: ALTDevice, team: ALTTeam? = nil) async throws -> Bool {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.deleteDevice(device, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.deleteDevice(device, team: team, session: session) }
     }
 
     public func fetchAppIDs(team: ALTTeam? = nil) async throws -> [ALTAppID] {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.fetchAppIDs(for: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "appIDLookup", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation)) { try await ALTAppleAPI.shared.fetchAppIDs(for: team, session: session) } }
     }
 
     public func fetchAppIDs(for team: ALTTeam) async throws -> [ALTAppID] {
@@ -106,23 +338,26 @@ public class DeveloperPortalProxy {
 
     @discardableResult
     public func addAppID(name: String, bundleIdentifier: String, team: ALTTeam? = nil) async throws -> ALTAppID {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.addAppID(withName: name, bundleIdentifier: bundleIdentifier, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "appIDRegistration", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation, bundleID: bundleIdentifier)) { try await ALTAppleAPI.shared.addAppID(withName: name, bundleIdentifier: bundleIdentifier, team: team, session: session) } }
     }
 
     @discardableResult
     public func updateAppID(_ appID: ALTAppID, team: ALTTeam? = nil) async throws -> ALTAppID {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.updateAppID(appID, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "appIDCapabilitiesUpdate", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation, bundleID: appID.bundleIdentifier, features: Dictionary(uniqueKeysWithValues: appID.features.map { ($0.key.rawValue, $0.value) }))) { try await ALTAppleAPI.shared.updateAppID(appID, team: team, session: session) } }
     }
 
     @discardableResult
     public func deleteAppID(_ appID: ALTAppID, team: ALTTeam? = nil) async throws -> Bool {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.deleteAppID(appID, for: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.deleteAppID(appID, for: team, session: session) }
     }
 
     @discardableResult
@@ -131,9 +366,10 @@ public class DeveloperPortalProxy {
     }
 
     public func fetchAppGroups(team: ALTTeam? = nil) async throws -> [ALTAppGroup] {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.fetchAppGroups(for: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "appGroupLookup", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation)) { try await ALTAppleAPI.shared.fetchAppGroups(for: team, session: session) } }
     }
 
     public func fetchAppGroups(for team: ALTTeam) async throws -> [ALTAppGroup] {
@@ -142,23 +378,26 @@ public class DeveloperPortalProxy {
 
     @discardableResult
     public func addAppGroup(name: String, groupIdentifier: String, team: ALTTeam? = nil) async throws -> ALTAppGroup {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.addAppGroup(name: name, groupIdentifier: groupIdentifier, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "appGroupRegistration", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation, groupCount: 1, groupID: groupIdentifier)) { try await ALTAppleAPI.shared.addAppGroup(name: name, groupIdentifier: groupIdentifier, team: team, session: session) } }
     }
 
     @discardableResult
     public func updateAppGroup(_ group: ALTAppGroup, team: ALTTeam? = nil) async throws -> ALTAppGroup {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.updateAppGroup(group, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.updateAppGroup(group, team: team, session: session) }
     }
 
     @discardableResult
     public func assignAppID(_ appID: ALTAppID, to groups: [ALTAppGroup], team: ALTTeam? = nil) async throws -> ALTAppID {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.assign(appID, to: groups, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "appGroupAssignment", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation, bundleID: appID.bundleIdentifier, groupCount: groups.count)) { try await ALTAppleAPI.shared.assign(appID, to: groups, team: team, session: session) } }
     }
 
     @discardableResult
@@ -168,74 +407,84 @@ public class DeveloperPortalProxy {
 
     @discardableResult
     public func deleteAppGroup(_ group: ALTAppGroup, team: ALTTeam? = nil) async throws -> Bool {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.deleteAppGroup(group, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.deleteAppGroup(group, team: team, session: session) }
     }
 
     public func listProvisioningProfiles(includeTeamProfiles: Bool = true, team: ALTTeam? = nil) async throws -> [ALTListedProvisioningProfile] {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.listProvisioningProfiles(includeTeamProfiles: includeTeamProfiles, for: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.listProvisioningProfiles(includeTeamProfiles: includeTeamProfiles, for: team, session: session) }
     }
 
     public func downloadProvisioningProfile(for appID: ALTAppID, isTeamProfile: Bool = true, deviceType: ALTDeviceType = DeveloperPortalProxy.currentDeviceType, team: ALTTeam? = nil) async throws -> ALTProvisioningProfile {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.downloadProvisioningProfile(for: appID, isTeamProfile: isTeamProfile, deviceType: deviceType, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "provisioningProfileRetrieval", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation, bundleID: appID.bundleIdentifier, profileMode: isTeamProfile ? "team" : "manual")) { try await ALTAppleAPI.shared.downloadProvisioningProfile(for: appID, isTeamProfile: isTeamProfile, deviceType: deviceType, team: team, session: session) } }
     }
 
     public func downloadProvisioningProfile(for appID: ALTAppID, isTeamProfile: Bool = true, type: ALTProfileType, team: ALTTeam? = nil) async throws -> ALTProvisioningProfile {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.downloadProvisioningProfile(for: appID, isTeamProfile: isTeamProfile, type: type, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "provisioningProfileRetrieval", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation, bundleID: appID.bundleIdentifier, profileMode: isTeamProfile ? "team" : "manual")) { try await ALTAppleAPI.shared.downloadProvisioningProfile(for: appID, isTeamProfile: isTeamProfile, type: type, team: team, session: session) } }
     }
 
     public func downloadProvisioningProfile(profileID: String, team: ALTTeam? = nil) async throws -> ALTProvisioningProfile {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.downloadProvisioningProfile(profileID: profileID, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "provisioningProfileRetrieval", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation, profileMode: "manual")) { try await ALTAppleAPI.shared.downloadProvisioningProfile(profileID: profileID, team: team, session: session) } }
     }
 
     public func createProvisioningProfile(name: String, appID: ALTAppID, certificateIDs: [String], deviceIDs: [String], team: ALTTeam? = nil) async throws -> ALTProvisioningProfile {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
         #if os(tvOS)
         let subPlatform: String? = "tvOS"
         #else
         let subPlatform: String? = nil
         #endif
-        return try await ALTAppleAPI.shared.createProvisioningProfile(name: name, appID: appID, certificateIDs: certificateIDs, deviceIDs: deviceIDs, subPlatform: subPlatform, team: team, session: session)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "provisioningProfileCreation", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation, bundleID: appID.bundleIdentifier, profileMode: "manual")) { try await ALTAppleAPI.shared.createProvisioningProfile(name: name, appID: appID, certificateIDs: certificateIDs, deviceIDs: deviceIDs, subPlatform: subPlatform, team: team, session: session) } }
     }
 
     public func createProvisioningProfile(name: String, appID: ALTAppID, certificateIDs: [String], deviceIDs: [String] = [], type: ALTProfileType, team: ALTTeam? = nil) async throws -> ALTProvisioningProfile {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.createProvisioningProfile(name: name, appID: appID, certificateIDs: certificateIDs, deviceIDs: deviceIDs, type: type, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "provisioningProfileCreation", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation, bundleID: appID.bundleIdentifier, profileMode: "manual")) { try await ALTAppleAPI.shared.createProvisioningProfile(name: name, appID: appID, certificateIDs: certificateIDs, deviceIDs: deviceIDs, type: type, team: team, session: session) } }
     }
 
     public func updateProvisioningProfile(profileID: String, name: String, appIDId: String, certificateIDs: [String], deviceIDs: [String], team: ALTTeam? = nil) async throws -> ALTProvisioningProfile {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
         #if os(tvOS)
         let subPlatform: String? = "tvOS"
         #else
         let subPlatform: String? = nil
         #endif
-        return try await ALTAppleAPI.shared.updateProvisioningProfile(profileID: profileID, name: name, appIDId: appIDId, certificateIDs: certificateIDs, deviceIDs: deviceIDs, subPlatform: subPlatform, team: team, session: session)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "provisioningProfileUpdate", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation, profileMode: "manual")) { try await ALTAppleAPI.shared.updateProvisioningProfile(profileID: profileID, name: name, appIDId: appIDId, certificateIDs: certificateIDs, deviceIDs: deviceIDs, subPlatform: subPlatform, team: team, session: session) } }
     }
 
     public func updateProvisioningProfile(profileID: String, name: String, appIDId: String, certificateIDs: [String], deviceIDs: [String] = [], type: ALTProfileType, team: ALTTeam? = nil) async throws -> ALTProvisioningProfile {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.updateProvisioningProfile(profileID: profileID, name: name, appIDId: appIDId, certificateIDs: certificateIDs, deviceIDs: deviceIDs, type: type, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await lcPortalSigningRequest(sourceStep: "provisioningProfileUpdate", facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation, profileMode: "manual")) { try await ALTAppleAPI.shared.updateProvisioningProfile(profileID: profileID, name: name, appIDId: appIDId, certificateIDs: certificateIDs, deviceIDs: deviceIDs, type: type, team: team, session: session) } }
     }
 
     @discardableResult
     public func deleteProvisioningProfile(profileID: String, team: ALTTeam? = nil) async throws -> Bool {
-        let session = try await self.getSession()
-        let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.deleteProvisioningProfile(profileID: profileID, team: team, session: session)
+        let context = try await self.getBoundSession()
+        let session = context.session
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) { try await ALTAppleAPI.shared.deleteProvisioningProfile(profileID: profileID, team: team, session: session) }
     }
 }
 
@@ -268,3 +517,19 @@ class DeveloperPortalProxyWithAuth: DeveloperPortalProxy {
         return (authSession.account, authSession.session)
     }
 }
+
+// V3_CERTIFICATE_MUTATION_ADMISSION_BEGIN
+private enum V3CertificateMutationAdmission {
+    private static let lock = NSLock()
+    private static var owner: UUID?
+    static func acquire() throws -> UUID {
+        lock.lock(); defer { lock.unlock() }
+        guard owner == nil else { throw V3PendingCertificateCreationError.pendingCreation }
+        let token = UUID(); owner = token; return token
+    }
+    static func release(_ token: UUID) {
+        lock.lock(); defer { lock.unlock() }
+        if owner == token { owner = nil }
+    }
+}
+// V3_CERTIFICATE_MUTATION_ADMISSION_END

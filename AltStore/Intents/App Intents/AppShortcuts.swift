@@ -22,13 +22,8 @@ public struct ShortcutsProvider: AppShortcutsProvider
                     shortTitle: "Refresh All Apps",
                     systemImageName: "arrow.triangle.2.circlepath")
 
-        AppShortcut(intent: InstallIPAIntent(),
-                    phrases: [
-                        "Install IPA with \(.applicationName)",
-                        "Install an IPA with \(.applicationName)",
-                    ],
-                    shortTitle: "Install IPA",
-                    systemImageName: "square.and.arrow.down")
+        // V3_HEADLESS_INSTALL_IPA_INTENT_REMOVED_V1: the install flow is owned by LiveContainer.
+
     }
     
     public static var shortcutTileColor: ShortcutTileColor {

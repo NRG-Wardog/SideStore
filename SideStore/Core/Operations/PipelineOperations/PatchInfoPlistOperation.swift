@@ -54,9 +54,9 @@ final class PatchInfoPlistOperation: BasePipelineOperation<InstallAppOperationCo
                     }
                     
                     try bundle.updateInfoPlist(with: customPlist)
-                    debugLog("[PatchInfoPlistOperation] Successfully patched Info.plist for \(bundle.bundleIdentifier)")
+                    debugLog("[PatchInfoPlistOperation] Successfully patched Info.plist.")
                 } catch {
-                    debugLog("[PatchInfoPlistOperation] Error applying custom Info.plist for \(bundle.bundleIdentifier): \(error)")
+                    debugLog("[PatchInfoPlistOperation] Failed to apply custom Info.plist.")
                     throw error
                 }
             }
@@ -68,7 +68,7 @@ final class PatchInfoPlistOperation: BasePipelineOperation<InstallAppOperationCo
                         self.context.additionalEntitlements[ALTEntitlement(key)] = value
                     }
                 }
-                debugLog("[PatchInfoPlistOperation] Successfully loaded custom entitlements for \(bundle.bundleIdentifier)")
+                debugLog("[PatchInfoPlistOperation] Successfully loaded custom entitlements.")
             }
         }
     }
