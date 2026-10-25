@@ -17,7 +17,8 @@ enum AnisetteProvider {
             _ = AuthenticationDiagnosticTrace.current?.beginProviderObservation(.selectedBranch(onDevice: false))
             return try await remote.fetch()
         }
-        if UserDefaults.standard.useOnDeviceAnisette {
+        if V3DiagnosticProviderRoute.current == .onDevice ||
+            (V3DiagnosticProviderRoute.current == nil && UserDefaults.standard.useOnDeviceAnisette) {
             _ = AuthenticationDiagnosticTrace.current?.beginProviderObservation(.selectedBranch(onDevice: true))
             debugLog("[AnisetteProvider] Fetching anisette via On-Device Anisette (ODA)...")
             return try await OnDeviceAnisetteManager.shared.fetchAnisetteData()
@@ -38,6 +39,8 @@ enum AnisetteProvider {
         let lastServer = UserDefaults.standard.menuAnisetteURL
         let startIndex = servers.firstIndex(where: { $0.absoluteString == lastServer }) ?? 0
 
+        let diagnostic = V3DiagnosticProviderRoute.current == .remoteServer
+        if diagnostic { try Task.checkCancellation() }
         let provider = SideSign.AnisetteDataManager.shared
         // LC_ANISETTE_PAIR_PRECONDITION_V1
         let anisetteSnapshot = try await AnisetteConfigManager.shared.resolveAnisetteSnapshot()
@@ -47,13 +50,14 @@ enum AnisetteProvider {
         let headers = headerSelection.headers
 
         let (anisetteData, newAdiBlob) = try await provider.fetchAnisetteDataWithFailover(
-            servers: UserDefaults.standard.disableAnisetteRotation ? [servers[startIndex]] : servers,
-            startIndex: startIndex,
+            servers: diagnostic || UserDefaults.standard.disableAnisetteRotation ? [servers[startIndex]] : servers,
+            startIndex: diagnostic ? 0 : startIndex,
             identifier: identifier,
             existingAdiBlob: existingBlob,
             headers: headers,
             diagnosticClientInfoSource: headerSelection.clientInfoSource,
             onError: { error in
+                if diagnostic { return false }
                 if let anisetteError = error as? SideSign.AnisetteError,
                    case .outdatedV1Server(let serverURL, _) = anisetteError {
                     if UserDefaults.standard.defaultServerURL == serverURL.absoluteString {
@@ -70,11 +74,13 @@ enum AnisetteProvider {
                 return false
             },
             onSuccess: { successfulServer in
+                guard !diagnostic else { return }
                 UserDefaults.standard.menuAnisetteURL = successfulServer.absoluteString
                 debugLog("[AnisetteProvider] Successfully fetched Anisette data.")
             }
         )
 
+        if diagnostic { try Task.checkCancellation() }
         if let freshBlob = newAdiBlob {
             try await AnisetteConfigManager.shared.commitAnisetteBlob(freshBlob, snapshot: anisetteSnapshot)
         } else {

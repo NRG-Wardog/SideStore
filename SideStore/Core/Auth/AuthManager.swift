@@ -36,8 +36,16 @@ public final class AuthManager: @unchecked Sendable {
         v3IdentityStampState.beginTransition()
         V3RemoteRequestLeases.invalidateAll()
     }
+    func v3BeginIdentityTransition(ifCurrent capturedStamp: String) -> Bool {
+        guard v3IdentityStampState.beginTransition(ifCurrent: capturedStamp) else { return false }
+        V3RemoteRequestLeases.invalidateAll()
+        return true
+    }
     func v3CompleteIdentityTransition() {
         v3IdentityStampState.completeTransition()
+    }
+    func v3CompleteIdentityTransitionReturningStamp() -> String {
+        v3IdentityStampState.completeTransitionReturningStamp()
     }
     func v3ReplaceSession(_ session: ALTAppleAPISession?) {
         v3BeginIdentityTransition()

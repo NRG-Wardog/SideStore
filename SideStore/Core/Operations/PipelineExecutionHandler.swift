@@ -32,16 +32,23 @@ protocol EntitlementsReviewHandler: AnyObject, Sendable {
 enum ExtensionRemovalDecision: Sendable {
     case cancel
     case keepAll(useMainProfile: Bool)
+    case keepAllValidatedReuseMain
     case removeAll
     case removeSelected(Set<ALTApplication>)
 }
 
 protocol ExtensionRemovalHandler: AnyObject, Sendable {
+    func confirmSeparateExtensionProvisioning(reasonCodes: [String], extensionCount: Int) async throws -> Bool
     func selectAppExtensionsToRemove(
         appBundle: ALTApplication,
         localAppExtensions: [ALTApplication],
         excessExtensions: Set<ALTApplication>
     ) async throws -> ExtensionRemovalDecision
+}
+
+extension ExtensionRemovalHandler {
+    // A background/no-UI caller must not consume extra App IDs without consent.
+    func confirmSeparateExtensionProvisioning(reasonCodes: [String], extensionCount: Int) async throws -> Bool { false }
 }
 
 protocol UnsupportedVersionHandler: AnyObject, Sendable {

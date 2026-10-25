@@ -37,6 +37,7 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
         
         self.setProgress(5)
         
+        context.validatedReuseMainGeneration = context.validatedReuseMain && context.useMainProfile ? UUID().uuidString : nil
         let effectiveBundleId = self.context.targetBundleIdentifier
         let appBundleURL = try await self.prepareAppBundle(for: appBundle, profiles: profiles, appexBundleIds: context.appexBundleIds ?? [:])
         
@@ -177,6 +178,16 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
         exportedUTIs.append(installedAppUTI)
         infoDictionary[Bundle.Info.exportedUTIs] = exportedUTIs
         
+        if !appBundle.isExtension {
+            // Reserved metadata is set after user plist overrides and sealed by
+            // signing. Each new opted-in payload has a distinct generation.
+            if let generation = context.validatedReuseMainGeneration {
+                infoDictionary[V3ValidatedReuseMainRegistry.generationKey] = generation
+            } else {
+                infoDictionary.removeValue(forKey: V3ValidatedReuseMainRegistry.generationKey)
+            }
+        }
+
         try InfoPlistParser(dictionary: infoDictionary).write(to: appBundle.infoPlistURL)
         
         // Remove _CodeSignature folder (if it exists) because it will be added when resigning and it may have files that aren't overwritten when resigning
@@ -190,7 +201,18 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
     
     private func resignAppBundle(at fileURL: URL, team: ALTTeam, certificate: ALTCertificate, profiles: [ALTProvisioningProfile]) async throws -> URL {
         let signer = ALTSigner(team: team, certificate: certificate)
-        try await signer.signApp(at: fileURL, provisioningProfiles: profiles, progress: nil)
+        if context.useMainProfile && context.validatedReuseMain {
+            _ = try await signer.signApp(at: fileURL, provisioningProfiles: profiles,
+                extensionStrategy: .reuseMainWhenCompatible,
+                originalExtensionBundleIdentifiers: context.originalExtensionBundleIdentifiers,
+                previouslyReusedExtensionIdentifiers: context.previouslyReusedExtensionIdentifiers,
+                progress: nil)
+        } else if context.validateExtensionSigningCapabilities {
+            _ = try await signer.signApp(at: fileURL, provisioningProfiles: profiles,
+                extensionStrategy: .perExtensionPreservingCapabilities, progress: nil)
+        } else {
+            try await signer.signApp(at: fileURL, provisioningProfiles: profiles, progress: nil)
+        }
         return fileURL
     }
     

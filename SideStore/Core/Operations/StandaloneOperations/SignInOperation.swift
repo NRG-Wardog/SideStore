@@ -15,6 +15,13 @@ import AnisetteKit
 import Minimuxer
 import MinimuxerCommon
 
+// CoreData/SideSign objects remain confined to the existing sign-in operation.
+// This box only transfers the completed value out of its joined timeout group.
+private struct V3DiagnosticSignInValue: @unchecked Sendable {
+    let account: ALTAccount
+    let session: ALTAppleAPISession
+}
+
 struct SignInResult {
     let team: ALTTeam
     let certificate: ALTCertificate?
@@ -36,6 +43,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     private var v3RemoteAnisetteContext: ILoaderRemoteAuthenticationContext?
     private var v3RemoteAnisetteAttempt: V3RemoteAnisetteAttempt?
     private var v3AnisetteRouteResolved = false
+    private var v3DiagnosticAttemptClock: V3DiagnosticAttemptClock?
+    private var v3DiagnosticIdentityStamp: String?
+    private var v3DiagnosticCommittedIdentityStamp: String?
+    private var v3DiagnosticProvider: V3DiagnosticProvider?
     
     let signInHandler: SignInHandler
     let anisetteServerHandler: AnisetteServerHandler
@@ -290,7 +301,13 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
             await self.signInHandler.handleSignInResult(.success(silentResult))
         }
         try self.v3RemoteContextSnapshot()?.checkActive()
-        v3LoginStageSync(.sessionCommit) { AuthManager.shared.v3ReplaceSession(session) }
+        if let committedStamp = v3DiagnosticCommittedIdentityStamp {
+            guard AuthManager.shared.v3InstallSessionIfCurrent(session, capturedStamp: committedStamp) else {
+                throw V3DiagnosticSequenceStopped()
+            }
+        } else {
+            v3LoginStageSync(.sessionCommit) { AuthManager.shared.v3ReplaceSession(session) }
+        }
         self.v3RemoteAnisetteAttempt?.authorization?.adoptOwnedTransition(
             appleID: account.appleID, dsid: session.dsid, token: session.authToken)
 
@@ -309,8 +326,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     {
         // Continue only this explicitly selected attempt through its onboarding work.
         try await ILoaderRemoteAuthentication.$current.withValue(self.v3RemoteContextSnapshot()) {
-            try await v3LoginStage(.provisioning) {
-                try await self.performProvisioningLoop(account: account, session: session, reportProgress: reportProgress)
+            try await V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider) {
+                try await v3LoginStage(.provisioning) {
+                    try await self.performProvisioningLoop(account: account, session: session, reportProgress: reportProgress)
+                }
             }
         }
     }
@@ -532,6 +551,14 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
             }
             let (appleID, password) = credentials
             if self.isCancelled { throw OperationError.cancelled }
+            if let diagnosticHandler = handler as? V3HeadlessAuthHandler,
+               let plan = await diagnosticHandler.diagnosticProviderPlan {
+                let result = try await diagnosticAuthentication(appleID: appleID, password: password,
+                    plan: plan, handler: diagnosticHandler)
+                await handler.handleSignInResult(.success(result))
+                self.requiresPostAuthFlow = true
+                return result
+            }
             try await self.v3ResolveAnisetteRouteAfterCredentials()
             
             do {
@@ -563,6 +590,140 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         }
     }
     
+    // Bounded full authentication attempts. Provisioning deliberately happens
+    // after this function and never rotates providers following a session commit.
+    private func diagnosticAuthentication(appleID: String, password: String,
+        plan: V3DiagnosticProviderPlan, handler: V3HeadlessAuthHandler) async throws
+        -> (account: ALTAccount, session: ALTAppleAPISession) {
+        guard v3RequireInteractiveCredentials, v3ReauthenticateAppleID == nil,
+              !v3ForceProvisioningRetry, !v3FinishPendingCertificateActivation else {
+            throw ILoaderRemoteError.consentRequired
+        }
+        var sequence = V3DiagnosticProviderSequence(plan: plan)
+        guard var attempt = sequence.start(now: ProcessInfo.processInfo.systemUptime) else {
+            throw V3DiagnosticSequenceStopped()
+        }
+        let identityStamp = AuthManager.shared.v3IdentityStamp
+        v3DiagnosticIdentityStamp = identityStamp
+        while true {
+            try Task.checkCancellation()
+            guard !isCancelled, AuthManager.shared.v3IdentityIsStable,
+                  identityStamp == AuthManager.shared.v3IdentityStamp else {
+                throw V3DiagnosticSequenceStopped()
+            }
+            // Only this explicit new attempt may replace an invalidated context.
+            v3RemoteContextSnapshot()?.invalidate()
+            v3RemoteAnisetteLock.withLock {
+                v3RemoteAnisetteContext = nil
+                v3RemoteAnisetteAttempt = nil
+            }
+            if attempt.provider == .remoteMac {
+                let remote = try V3RemoteIdentityContinuity.manualAttempt()
+                v3RemoteAnisetteLock.withLock {
+                    v3RemoteAnisetteAttempt = remote
+                    v3RemoteAnisetteContext = remote.context
+                }
+            }
+            v3AnisetteRouteResolved = true
+            v3DiagnosticProvider = attempt.provider
+            let clock = V3DiagnosticAttemptClock()
+            v3DiagnosticAttemptClock = clock
+            await handler.setDiagnosticAttemptClock(clock)
+            await handler.recordDiagnosticProvider(attempt.provider, outcome: "working")
+            do {
+                let provider = attempt.provider
+                let result = try await withThrowingTaskGroup(of: V3DiagnosticSignInValue.self) { group in
+                    group.addTask {
+                        try await V3DiagnosticProviderRoute.$current.withValue(provider) {
+                            let result = try await self.signIn(appleID: appleID, password: password)
+                            return V3DiagnosticSignInValue(account: result.0, session: result.1)
+                        }
+                    }
+                    group.addTask {
+                        while true {
+                            try await Task.sleep(nanoseconds: 250_000_000)
+                            if await clock.expired() {
+                                await handler.recordDiagnosticProvider(provider, outcome: "cleanupPending")
+                                throw V3DiagnosticAttemptTimeout()
+                            }
+                        }
+                    }
+                    defer { group.cancelAll() }
+                    guard let result = try await group.next() else { throw CancellationError() }
+                    return result
+                }
+                v3DiagnosticAttemptClock = nil
+                await handler.setDiagnosticAttemptClock(nil)
+                sequence.succeeded(attempt)
+                await handler.recordDiagnosticProvider(attempt.provider, outcome: "succeeded")
+                return (result.account, result.session)
+            } catch {
+                // Structured task-group scope has joined both children. Never
+                // start another provider while cancelled work is still running.
+                v3DiagnosticAttemptClock = nil
+                await handler.setDiagnosticAttemptClock(nil)
+                v3RemoteContextSnapshot()?.invalidate()
+                if isCancelled || Task.isCancelled || v3IsAuthCancellation(error) { throw error }
+                let challengeSeen = await clock.challengeSeen
+                let appleStarted = await clock.appleRequestStarted
+                let failure = diagnosticRetryFailure(error, appleStarted: appleStarted, provider: attempt.provider)
+                if challengeSeen { sequence.needsUser(attempt) }
+                sequence.failed(attempt, reason: failure)
+                await handler.recordDiagnosticProvider(attempt.provider,
+                    outcome: failure == .unknown ? "stopped" : failure.rawValue)
+                await handler.handleSignInResult(.failure(error))
+                guard case .stopping = sequence.state else { throw error }
+                sequence.previousAttemptStopped(attempt,
+                    isolated: AuthManager.shared.v3IdentityIsStable,
+                    credentialsCommitted: identityStamp != AuthManager.shared.v3IdentityStamp,
+                    now: ProcessInfo.processInfo.systemUptime)
+                guard case .backoff = sequence.state else { throw error }
+                try await Task.sleep(nanoseconds: UInt64(2 * (attempt.index + 1)) * 1_000_000_000)
+                guard let next = sequence.continueAfterBackoff(now: ProcessInfo.processInfo.systemUptime) else {
+                    throw V3DiagnosticSequenceStopped()
+                }
+                attempt = next
+            }
+        }
+    }
+
+    private func diagnosticRetryFailure(_ error: Error, appleStarted: Bool,
+        provider: V3DiagnosticProvider) -> V3DiagnosticProviderSequence.Failure {
+        // A timeout after an Apple request has begun has an uncertain account
+        // outcome. It is not permission to submit credentials again.
+        if error is V3DiagnosticAttemptTimeout {
+            return appleStarted || provider != .remoteMac ? .unknown : .timedOut
+        }
+        guard let kind = v3ClassifyAuthError(error) else { return .unknown }
+        let underlying = v3AccountUnderlyingError(error)
+        if kind == .anisette {
+            if let portal = underlying as? DeveloperPortalError, case .invalidAnisetteData = portal {
+                return .providerUnavailable
+            }
+            if !appleStarted {
+                if let remote = underlying as? ILoaderRemoteError,
+                   case .httpStatus(let status) = remote, (500...599).contains(status) {
+                    return .providerUnavailable
+                }
+                if let local = underlying as? AnisetteKit.AnisetteError,
+                   case .adiError = local { return .providerUnavailable }
+                if let server = underlying as? SideSign.AnisetteError,
+                   case .noServersConfigured = server { return .providerUnavailable }
+            }
+            // Invalid profile/state, malformed data and 429 are not evidence
+            // that replaying credentials with another provider is safe.
+        }
+        if kind == .network {
+            let ns = underlying as NSError
+            let preconnection = [NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost,
+                NSURLErrorDNSLookupFailed, NSURLErrorNotConnectedToInternet]
+            if !appleStarted || (ns.domain == NSURLErrorDomain && preconnection.contains(ns.code)) {
+                return .transientNetwork
+            }
+        }
+        return .unknown
+    }
+
     private func v3ValidateReauthenticationIdentity(submittedAppleID: String, returnedAppleID: String? = nil, returnedDSID: String? = nil) throws {
         guard let expectedOwner = self.v3ReauthenticateAppleID else { return }
         let credentials = AuthManager.shared.authenticationSnapshot
@@ -604,6 +765,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         let xcodeVersion = await AnisetteConfigManager.shared.resolvedXcodeVersion()
 
         try self.v3ValidateReauthenticationIdentity(submittedAppleID: appleID)
+        await v3DiagnosticAttemptClock?.willAuthenticate()
         let (account, session) = try await v3LoginStage(.appleAuthentication) {
             try await v3AuthenticationPhase(.appleAuthentication) {
                 try await AuthManager.shared.signIn(
@@ -634,9 +796,22 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
             }
         }
         try self.v3RemoteContextSnapshot()?.checkActive()
-        AuthManager.shared.v3BeginIdentityTransition()
+        if let captured = v3DiagnosticIdentityStamp {
+            // Compare and reserve the identity transition under one lock. A
+            // sign-out/new account while this request awaited must win.
+            guard v3DiagnosticProvider != .remoteServer || !UserDefaults.standard.useOnDeviceAnisette,
+                  AuthManager.shared.v3BeginIdentityTransition(ifCurrent: captured) else {
+                throw V3DiagnosticSequenceStopped()
+            }
+        } else {
+            AuthManager.shared.v3BeginIdentityTransition()
+        }
         defer {
-            AuthManager.shared.v3CompleteIdentityTransition()
+            if v3DiagnosticIdentityStamp != nil {
+                v3DiagnosticCommittedIdentityStamp = AuthManager.shared.v3CompleteIdentityTransitionReturningStamp()
+            } else {
+                AuthManager.shared.v3CompleteIdentityTransition()
+            }
             self.v3RemoteAnisetteAttempt?.authorization?.adoptOwnedTransition(
                     appleID: account.appleID, dsid: session.dsid, token: session.authToken)
         }

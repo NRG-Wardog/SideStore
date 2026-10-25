@@ -33,9 +33,23 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         let effectiveBundleId = self.context.targetBundleIdentifier
 
         let appExtensions = targetAppBundle.appExtensions
+        if self.context.validatedReuseMain &&
+            (targetAppBundle.isAltStoreApp || targetAppBundle.bundleIdentifier == Bundle.Info.activeBundleIdentifier ||
+             self.context.bundleIdentifier == StoreApp.altstoreAppID) {
+            throw OperationError.invalidParameters("Experimental ReuseMain is not available for host self-install or self-refresh. Keep the existing signing strategy for the host.")
+        }
+        self.context.validateExtensionSigningCapabilities = self.context.validatedReuseMain
+        self.context.originalExtensionBundleIdentifiers = [:]
+        self.context.previouslyReusedExtensionIdentifiers = []
 
         if let overrideProfile = self.context.overrideProvisioningProfile {
             self.debugLog("[FetchProvisioningProfiles] Using override provisioning profile.")
+            if self.context.validatedReuseMain {
+                let reasons = try await reuseMainRejectionReasons(app: targetAppBundle, profile: overrideProfile)
+                guard reasons.isEmpty else {
+                    throw OperationError.invalidParameters("The override profile cannot safely use ReuseMain: " + reasons.joined(separator: ", ") + ". Select separate provisioning profiles instead.")
+                }
+            }
             var profiles = [effectiveBundleId: overrideProfile]
             if !self.context.useMainProfile, !appExtensions.isEmpty {
                 for appExtension in appExtensions {
@@ -58,7 +72,21 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         self.debugLog("[FetchProvisioningProfiles] Main profile prepared successfully.")
         
         var profiles = [effectiveBundleId: profile]
-        
+
+        if self.context.validatedReuseMain, !appExtensions.isEmpty {
+            let reasons = try await reuseMainRejectionReasons(app: targetAppBundle, profile: profile)
+            if !reasons.isEmpty {
+                // Decide before registering extension App IDs. A fallback keeps
+                // all extensions and never silently drops their capabilities.
+                guard try await self.context.handler.extensionRemovalHandler.confirmSeparateExtensionProvisioning(
+                    reasonCodes: reasons, extensionCount: appExtensions.count) else {
+                    throw OperationError.cancelled
+                }
+                try Task.checkCancellation()
+                self.context.useMainProfile = false
+            }
+        }
+
         guard !self.context.useMainProfile, !appExtensions.isEmpty else {
             self.setProgress(100)
             self.debugLog("[FetchProvisioningProfiles] Total profiles prepared: \(profiles.count)")
@@ -100,6 +128,38 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         return profiles
     }
 
+
+    private func reuseMainRejectionReasons(app: ALTApplication, profile: ALTProvisioningProfile) async throws -> [String] {
+        guard profile.expirationDate > Date() else { return ["mainProfileExpired"] }
+        guard self.context.customEntitlementsByBundleID.isEmpty else { return ["customEntitlementOverridesRequireSeparateProfiles"] }
+        let mainEntitlements = try ALTSigner.signingEntitlements(profile: profile, applicationEntitlements: app.entitlements)
+        let hasPersistedAssociation = await self.context.dbBackgroundContext.perform {
+            guard let installed = self.context.installedApp else { return false }
+            return installed.useMainProfile && installed.bundleIdentifier == self.context.bundleIdentifier &&
+                installed.resignedBundleIdentifier == app.bundleIdentifier &&
+                installed.resignedBundleIdentifier == profile.bundleIdentifier
+        }
+        var reasons = Set<String>()
+        for ext in app.appExtensions {
+            guard ext.bundleIdentifier.hasPrefix(app.bundleIdentifier + ".") else {
+                reasons.insert("extensionIdentifierOutsideContainer")
+                continue
+            }
+            let signedExtensionID = profile.bundleIdentifier + ext.bundleIdentifier.dropFirst(app.bundleIdentifier.count)
+            self.context.originalExtensionBundleIdentifiers[signedExtensionID] = ext.bundleIdentifier
+            let previousProfileMatches = hasPersistedAssociation && app.provisioningProfile != nil &&
+                ext.provisioningProfile?.data == app.provisioningProfile?.data
+            if previousProfileMatches { self.context.previouslyReusedExtensionIdentifiers.insert(signedExtensionID) }
+            let decision = ExtensionSigningPolicy.evaluate(strategy: .reuseMainWhenCompatible,
+                mainBundleIdentifier: profile.bundleIdentifier,
+                extensionBundleIdentifier: signedExtensionID,
+                mainEntitlements: mainEntitlements, extensionEntitlements: ext.entitlements,
+                originalExtensionBundleIdentifier: ext.bundleIdentifier,
+                allowPreviouslyReusedMainIdentity: previousProfileMatches)
+            if !decision.reuseMain { reasons.formUnion(decision.reasons) }
+        }
+        return reasons.sorted()
+    }
 
     private func getPreferredBundleID(for targetAppBundle: ALTApplication, team: ALTTeam) async -> String? {
         await DatabaseManager.shared.persistentContainer.performBackgroundTask { [weak self] (context) -> String? in

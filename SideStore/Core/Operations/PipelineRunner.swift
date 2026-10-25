@@ -409,6 +409,14 @@ final class PipelineRunner: Sendable
                                                      facts: lcRefreshFailureFacts(error))
                 }
             }
+            context.validatedReuseMain = app.useMainProfile && V3ValidatedReuseMainRegistry.contains(
+                original: app.bundleIdentifier, resigned: app.resignedBundleIdentifier,
+                profileUUID: context.targetAppBundle?.provisioningProfile?.uuid,
+                generation: context.targetAppBundle?.infoPlist[V3ValidatedReuseMainRegistry.generationKey] as? String)
+            if app.useMainProfile && !context.validatedReuseMain &&
+                V3ValidatedReuseMainRegistry.hasAssociation(original: app.bundleIdentifier, resigned: app.resignedBundleIdentifier) {
+                throw OperationError.invalidParameters("The cached app no longer matches its validated ReuseMain installation. Reinstall interactively instead of silently switching signing strategies.")
+            }
         }
         
         context.beginInstallationHandler = { (installedApp) in

@@ -184,6 +184,13 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
             try await installAppBundle(bundleID, appName: resignedAppBundle.fileURL.lastPathComponent)
         }
         
+        if !isDifferentSideStore && !isSelfReinstall && !isSideBackup {
+            V3ValidatedReuseMainRegistry.didInstall(
+                original: context.bundleIdentifier, resigned: resignedAppBundle.bundleIdentifier,
+                profileUUID: resignedAppBundle.provisioningProfile?.uuid,
+                generation: resignedAppBundle.infoPlist[V3ValidatedReuseMainRegistry.generationKey] as? String)
+        }
+
         self.setProgress(90)
         
         // Phase 3: Post-install CoreData write — update refreshedDate

@@ -15,6 +15,7 @@ public enum AppExtensionCustomization: String, CaseIterable, Identifiable, Senda
     case removeAll      = "remove-all"
     case keepAll        = "keep-all"
     case useMainProfile = "use-main-profile"
+    case validatedReuseMain = "validated-reuse-main-v1"
 
     public var id: String { rawValue }
 
@@ -27,7 +28,9 @@ public enum AppExtensionCustomization: String, CaseIterable, Identifiable, Senda
         case .keepAll:
             return "Keep All"
         case .useMainProfile:
-            return "Use Main Profile"
+            return "Use Main Profile (Legacy)"
+        case .validatedReuseMain:
+            return "Experimental ReuseMain (Compatibility Checked)"
         }
     }
 
@@ -41,6 +44,8 @@ public enum AppExtensionCustomization: String, CaseIterable, Identifiable, Senda
             return .keepAll(useMainProfile: false)
         case .useMainProfile:
             return .keepAll(useMainProfile: true)
+        case .validatedReuseMain:
+            return .keepAllValidatedReuseMain
         }
     }
 }
@@ -94,7 +99,13 @@ final class RemoveAppExtensionsOperation: BasePipelineOperation<InstallAppOperat
             case .cancel:
                 throw OperationError.cancelled
 
+            case .keepAllValidatedReuseMain:
+                self.context.useMainProfile = true
+                self.context.validatedReuseMain = true
+                self.setProgress(100)
+
             case .keepAll(let useMainProfile):
+                self.context.validatedReuseMain = false
                 self.context.useMainProfile = useMainProfile
                 self.setProgress(100)
 

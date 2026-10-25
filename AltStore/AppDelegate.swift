@@ -1600,11 +1600,28 @@ final class V3AuthIdentityStampState: @unchecked Sendable {
         lock.unlock()
     }
 
+    func beginTransition(ifCurrent capturedStamp: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard transitionDepth == 0, processNonce + ":\(revision)" == capturedStamp else { return false }
+        revision &+= 1
+        transitionDepth += 1
+        return true
+    }
+
     func completeTransition() {
         lock.lock()
         revision &+= 1
         if transitionDepth > 0 { transitionDepth -= 1 }
         lock.unlock()
+    }
+
+    func completeTransitionReturningStamp() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        revision &+= 1
+        if transitionDepth > 0 { transitionDepth -= 1 }
+        return processNonce + ":\(revision)"
     }
 
     func advanceGeneration() {
@@ -11111,6 +11128,7 @@ enum V3PromptSelectionPolicy {
     enum Extensions {
         case keepAll
         case keepAllMainProfile
+        case keepAllValidatedReuseMain
         case removeAll
         case remove(Set<String>)
     }
@@ -11159,6 +11177,7 @@ enum V3PromptSelectionPolicy {
         switch choice {
         case "keepAll": return .keepAll
         case "keepAllMainProfile": return .keepAllMainProfile
+        case "keepAllValidatedReuseMain": return .keepAllValidatedReuseMain
         case "removeAll": return .removeAll
         case "selected":
             return .remove(try rawValues(from: submittedOptionIDs, prefix: "remove:",
@@ -11716,6 +11735,7 @@ final class V3AuthCenter {
         var reauthenticationAppleID: String?
         var reauthenticationIdentityStamp: String?
         var finishPendingCertificateActivation = false
+        var diagnosticProviderResults: [[String: String]] = []
     }
 
     // Privacy-safe record of a finished-but-incomplete provisioning attempt, so
@@ -12130,6 +12150,14 @@ final class V3AuthCenter {
     }
 
     func poll(id: String) -> [String: Any]? {
+        guard var response = pollAuthenticationState(id: id) else { return nil }
+        if let rows = sessions[id]?.diagnosticProviderResults, !rows.isEmpty {
+            response["diagnosticProviderResults"] = rows
+        }
+        return response
+    }
+
+    private func pollAuthenticationState(id: String) -> [String: Any]? {
         cleanupSessions()
         guard let session = sessions[id] else {
             if cancelledBeforeBegin.contains(id) {
@@ -12171,6 +12199,16 @@ final class V3AuthCenter {
             return pending
         }
         guard session.prompt?["id"] as? String == promptID else { return nil }
+        if answer["diagnosticProviderSequence"] != nil || answer["diagnosticProviderOrder"] != nil {
+            guard session.mode == .interactive, answer["anisetteProvider"] == nil,
+                  let offered = V3DiagnosticProviderPlan.offered(
+                    kind: session.prompt?["kind"] as? String ?? "",
+                    capability: session.prompt?["diagnosticProviderSequence"] as? String,
+                    providers: session.prompt?["diagnosticProviders"] as? [String]),
+                  answer["diagnosticProviderSequence"] == V3DiagnosticProviderPlan.capability,
+                  let raw = answer["diagnosticProviderOrder"],
+                  offered.selecting(raw.components(separatedBy: ",")) != nil else { return nil }
+        }
         if let provider = answer["anisetteProvider"] {
             guard provider == "remoteMac",
                   session.prompt?["kind"] as? String == "credentials",
@@ -12361,6 +12399,22 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
     let sessionID: String
     // Nil means no credentials have been submitted. Both false and true are final.
     private var remoteMacAnisetteSelection: Bool?
+    private(set) var diagnosticProviderPlan: V3DiagnosticProviderPlan?
+    private var diagnosticAttemptClock: V3DiagnosticAttemptClock?
+    func setDiagnosticAttemptClock(_ clock: V3DiagnosticAttemptClock?) { diagnosticAttemptClock = clock }
+    func recordDiagnosticProvider(_ provider: V3DiagnosticProvider, outcome: String) {
+        guard let center = try? center(), center.ownsActiveSession(sessionID) else { return }
+        let allowed = ["working", "succeeded", "providerUnavailable", "transientNetwork", "timedOut", "cleanupPending", "stopped"]
+        guard allowed.contains(outcome) else { return }
+        var rows = center.sessions[sessionID]?.diagnosticProviderResults ?? []
+        if let index = rows.firstIndex(where: { $0["provider"] == provider.rawValue }) {
+            rows[index] = ["provider": provider.rawValue, "outcome": outcome]
+        } else if rows.count < V3DiagnosticProviderPlan.maximumProviders {
+            rows.append(["provider": provider.rawValue, "outcome": outcome])
+        }
+        center.sessions[sessionID]?.diagnosticProviderResults = rows
+        center.sessions[sessionID]?.revision += 1
+    }
     init(sessionID: String) { self.sessionID = sessionID }
 
     func remoteMacAnisetteSelected() throws -> Bool {
@@ -12383,6 +12437,11 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
                               fields: fields, options: options, destructive: destructive)
         if offersRemoteMacAnisette && kind == "credentials" {
             promptValue["remoteMacAnisette"] = "submit-v2"
+            promptValue["diagnosticProviderSequence"] = V3DiagnosticProviderPlan.capability
+            // Native ODA cancellation cannot yet be bounded. It remains a
+            // manual route, not an automatic diagnostic sequence candidate.
+            promptValue["diagnosticProviders"] = UserDefaults.standard.useOnDeviceAnisette
+                ? ["remoteMac"] : ["remoteMac", "remoteServer"]
         }
         let prompt = promptValue
         guard let promptID = prompt["id"] as? String else { throw CancellationError() }
@@ -12414,6 +12473,15 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
                                    offersRemoteMacAnisette: offersRemote)
         guard let appleID = answer["appleID"], !appleID.isEmpty,
               let password = answer["password"], !password.isEmpty else { throw CancellationError() }
+        if answer["diagnosticProviderSequence"] != nil || answer["diagnosticProviderOrder"] != nil {
+            guard offersRemote, answer["anisetteProvider"] == nil,
+                  answer["diagnosticProviderSequence"] == V3DiagnosticProviderPlan.capability,
+                  let raw = answer["diagnosticProviderOrder"],
+                  let plan = V3DiagnosticProviderPlan(raw.components(separatedBy: ",")) else {
+                throw ILoaderRemoteError.consentRequired
+            }
+            diagnosticProviderPlan = plan
+        }
         if let provider = answer["anisetteProvider"] {
             guard offersRemote, provider == "remoteMac" else { throw ILoaderRemoteError.consentRequired }
         }
@@ -12425,6 +12493,19 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
     }
 
     func verificationCode(for request: TwoFactorRequest) async throws -> TwoFactorResponse {
+        let clock = diagnosticAttemptClock
+        await clock?.beginUserInput()
+        do {
+            let result = try await diagnosticVerificationCode(for: request)
+            await clock?.endUserInput()
+            return result
+        } catch {
+            await clock?.endUserInput()
+            throw error
+        }
+    }
+
+    private func diagnosticVerificationCode(for request: TwoFactorRequest) async throws -> TwoFactorResponse {
         switch request {
         case .selectDeliveryMethod(let preferredMode, let phoneNumbers):
             _ = preferredMode
@@ -12541,13 +12622,19 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
         // reaches the host over the same command channel, so it travels in the
         // field value. `openableURL` re-validates it before anything opens it.
         let fields = [V3AuthRepairURLPolicy.promptField(url: url.absoluteString)]
+        let clock = diagnosticAttemptClock
+        await clock?.beginUserInput()
         do {
             let answer = try await ask(kind: "accountRepair", title: "Account Attention Needed",
                                        message: V3AuthRepairURLPolicy.safeMessage,
                                        fields: fields,
                                        options: [["id": "proceed", "label": "Continue"], ["id": "cancel", "label": "Cancel"]])
+            await clock?.endUserInput()
             return answer["choice"] == "proceed" ? .proceed : .cancel
-        } catch { return .cancel }
+        } catch {
+            await clock?.endUserInput()
+            return .cancel
+        }
     }
 
     func handleSignInResult(_ result: Result<(ALTAccount, ALTAppleAPISession), Error>) async {
@@ -12764,6 +12851,15 @@ final class V3HeadlessPipelineHandler: PipelineExecutionHandler, PreflightChecks
         guard answer["choice"] == "approve" else { throw CancellationError() }
     }
 
+    func confirmSeparateExtensionProvisioning(reasonCodes: [String], extensionCount: Int) async throws -> Bool {
+        let explanation = reasonCodes.sorted().joined(separator: ", ")
+        let answer = try await ask(kind: "extensionSigningFallback", title: "Separate Extension Profiles Required",
+            message: "ReuseMain cannot safely preserve this app's extension requirements (\(explanation)). Keep all extensions and provision up to \(extensionCount) separate App IDs instead?",
+            options: [["id": "separate", "label": "Keep All With Separate Profiles"],
+                      ["id": "cancel", "label": "Cancel"]])
+        return answer["choice"] == "separate"
+    }
+
     func selectAppExtensionsToRemove(appBundle: ALTApplication, localAppExtensions: [ALTApplication],
                                      excessExtensions: Set<ALTApplication>) async throws -> ExtensionRemovalDecision {
         return try await V3ExtensionRemovalPromptPolicy.decide(
@@ -12773,9 +12869,13 @@ final class V3HeadlessPipelineHandler: PipelineExecutionHandler, PreflightChecks
             whenEmpty: .keepAll(useMainProfile: false)
         ) {
             let sorted = appBundle.appExtensions.sorted { $0.bundleIdentifier < $1.bundleIdentifier }
+            let offersValidatedReuse = !appBundle.isAltStoreApp && appBundle.bundleIdentifier != Bundle.Info.activeBundleIdentifier
+            let reuseOption = offersValidatedReuse
+                ? ["id": "keepAllValidatedReuseMain", "label": "Keep All (Experimental ReuseMain)"]
+                : ["id": "keepAllMainProfile", "label": "Keep All (Use Main Profile)"]
             let answer = try await self.ask(kind: "extensions", title: "App Extensions",
-                message: "\(appBundle.bundleIdentifier) contains \(sorted.count) extension(s). Keep them using the main app's profile or register an App ID for each, or choose which to remove.",
-                options: [["id": "keepAllMainProfile", "label": "Keep All (Use Main Profile)"],
+                message: "\(appBundle.bundleIdentifier) contains \(sorted.count) extension(s). Experimental ReuseMain is for ordinary apps only, not host self-install or self-refresh. It may save up to \(sorted.count) App IDs when all extensions are compatible. Otherwise separate profiles require confirmation. Extension behavior still needs device validation. You can also register each extension or choose which to remove.",
+                options: [reuseOption,
                           ["id": "keepAll", "label": "Keep All (Register Each Extension)"]] +
                     sorted.map { ["id": "remove:\($0.bundleIdentifier)", "label": "Remove \($0.bundleIdentifier)"] } +
                     [["id": "removeAll", "label": "Remove All"], ["id": "cancel", "label": "Cancel"]])
@@ -12785,6 +12885,7 @@ final class V3HeadlessPipelineHandler: PipelineExecutionHandler, PreflightChecks
             switch selection {
             case .keepAll: return .keepAll(useMainProfile: false)
             case .keepAllMainProfile: return .keepAll(useMainProfile: true)
+            case .keepAllValidatedReuseMain: return .keepAllValidatedReuseMain
             case .removeAll: return .removeAll
             case .remove(let bundleIDs):
                 let selected = Set(sorted.filter { bundleIDs.contains($0.bundleIdentifier) })
@@ -13991,11 +14092,20 @@ enum V3BackendCommands {
         }
     }
 
+    static func developerAppIDRow(_ appID: ALTAppID) -> [String: Any] {
+        var row: [String: Any] = ["identifier": appID.identifier, "name": appID.name,
+                                  "bundleID": appID.bundleIdentifier]
+        // Send the portal's App ID expiration, not the installed app/profile
+        // signing expiry. Missing dates stay absent and remain unknown in UI.
+        if let expiration = appID.expirationDate, expiration.timeIntervalSinceReferenceDate.isFinite {
+            row["expirationDate"] = expiration
+        }
+        return row
+    }
+
     static func developerAppIDs() async throws -> [[String: Any]] {
         _ = try await AuthManager.shared.getAuthenticatedSession()
-        return try await DeveloperPortalProxy.shared.fetchAppIDs().map {
-            ["identifier": $0.identifier, "name": $0.name, "bundleID": $0.bundleIdentifier]
-        }
+        return try await DeveloperPortalProxy.shared.fetchAppIDs().map(developerAppIDRow)
     }
 
     static func developerGroups() async throws -> [[String: Any]] {

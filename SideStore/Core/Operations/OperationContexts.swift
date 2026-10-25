@@ -275,6 +275,11 @@ class InstallAppOperationContext: PipelineOperationContext
     var provisioningProfiles: [String: ALTProvisioningProfile]?
     var appexBundleIds: [String: String]?
     var useMainProfile = false
+    var validatedReuseMain = false
+    var validatedReuseMainGeneration: String?
+    var validateExtensionSigningCapabilities = false
+    var originalExtensionBundleIdentifiers: [String: String] = [:]
+    var previouslyReusedExtensionIdentifiers: Set<String> = []
     var isFinished = false
     var isCellularRefreshGroup: Bool = false
     var groupOperationsCount: Int = 1
@@ -355,5 +360,37 @@ class InstallAppOperationContext: PipelineOperationContext
             error: nil,
             dbBackgroundContext: dbBackgroundContext
         )
+    }
+}
+
+// Versioned opt-in is bound to a nonce sealed into the signed main Info.plist,
+// not just a reusable profile UUID. Activation occurs only after confirmed
+// ordinary-app installation. Host self-install remains on the legacy path.
+enum V3ValidatedReuseMainRegistry {
+    static let generationKey = "NRGValidatedReuseMainGenerationV1"
+    private static let lock = NSLock()
+    private static let storageKey = "v3.validated-reuse-main.v1"
+    private static func prefix(original: String, resigned: String) -> String { original + "|" + resigned + "|" }
+    private static func record(original: String, resigned: String, profileUUID: UUID?, generation: String?) -> String? {
+        guard let profileUUID, let generation, UUID(uuidString: generation)?.uuidString == generation else { return nil }
+        return prefix(original: original, resigned: resigned) + profileUUID.uuidString + "|" + generation
+    }
+    static func contains(original: String, resigned: String, profileUUID: UUID?, generation: String?) -> Bool {
+        guard let record = record(original: original, resigned: resigned, profileUUID: profileUUID, generation: generation) else { return false }
+        return lock.withLock { (UserDefaults.standard.stringArray(forKey: storageKey) ?? []).contains(record) }
+    }
+    static func hasAssociation(original: String, resigned: String) -> Bool {
+        lock.withLock {
+            let base = prefix(original: original, resigned: resigned)
+            return (UserDefaults.standard.stringArray(forKey: storageKey) ?? []).contains { $0.hasPrefix(base) }
+        }
+    }
+    static func didInstall(original: String, resigned: String, profileUUID: UUID?, generation: String?) {
+        lock.withLock {
+            let base = prefix(original: original, resigned: resigned)
+            var records = (UserDefaults.standard.stringArray(forKey: storageKey) ?? []).filter { !$0.hasPrefix(base) }
+            if let record = record(original: original, resigned: resigned, profileUUID: profileUUID, generation: generation) { records.append(record) }
+            UserDefaults.standard.set(records, forKey: storageKey)
+        }
     }
 }

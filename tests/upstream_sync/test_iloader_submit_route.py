@@ -182,7 +182,15 @@ class SubmitRouteTests(unittest.TestCase):
     def test_context_is_retained_on_invalidation_and_never_persisted(self):
         self.assertIn('defer { v3RemoteContextSnapshot()?.invalidate() }', OPERATION)
         self.assertIn('self.v3RemoteContextSnapshot()?.invalidate()', OPERATION)
-        self.assertNotIn('v3RemoteAnisetteContext = nil', OPERATION)
+        diagnostic = declaration(OPERATION, 'private func diagnosticAuthentication(')
+        # Only the explicitly selected diagnostic sequence may replace a joined,
+        # invalidated attempt. Cancellation/default sign-in must still retain it.
+        self.assertNotIn('v3RemoteAnisetteContext = nil', OPERATION.replace(diagnostic, ""))
+        self.assertIn('v3RemoteContextSnapshot()?.invalidate()', diagnostic)
+        self.assertLess(diagnostic.index('v3RemoteContextSnapshot()?.invalidate()'),
+                        diagnostic.index('v3RemoteAnisetteContext = nil'))
+        self.assertIn('sequence.previousAttemptStopped(attempt,', diagnostic)
+        self.assertIn('guard case .backoff = sequence.state else { throw error }', diagnostic)
         self.assertIn('ILoaderRemoteAuthentication.$current.withValue(remote)', OPERATION)
         factory = declaration(PROVIDER, 'func makeILoaderRemoteAuthenticationContext()')
         self.assertIn('try V3RemoteIdentityContinuity.manualAttempt().context', factory)

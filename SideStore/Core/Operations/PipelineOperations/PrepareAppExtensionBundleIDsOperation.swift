@@ -19,11 +19,15 @@ final class PrepareAppExtensionBundleIDsOperation: BasePipelineOperation<Install
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         
         if self.context.useMainProfile {
-            if let appBundle = self.context.targetAppBundle, let profile = self.context.provisioningProfiles?[self.context.bundleIdentifier] {
+            if let appBundle = self.context.targetAppBundle, let profile = self.context.provisioningProfiles?[self.context.targetBundleIdentifier] {
                 var appexBundleIds: [String: String] = [:]
                 for appex in appBundle.appExtensions {
-                    appexBundleIds[appex.bundleIdentifier] = appex.bundleIdentifier
-                        .replacingOccurrences(of: appBundle.bundleIdentifier, with: profile.bundleIdentifier)
+                    guard appex.bundleIdentifier.hasPrefix(appBundle.bundleIdentifier + ".") else {
+                        throw OperationError.invalidApp(reason: "Extension identifier is outside its parent bundle.")
+                    }
+                    let suffix = String(appex.bundleIdentifier.dropFirst(appBundle.bundleIdentifier.count))
+                    let effectiveExtensionID = self.context.targetBundleIdentifier + suffix
+                    appexBundleIds[effectiveExtensionID] = profile.bundleIdentifier + suffix
                 }
                 self.context.appexBundleIds = appexBundleIds
             }
