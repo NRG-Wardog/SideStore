@@ -916,6 +916,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = B3C39607284F4C8400DA9E2F /* Build.xcconfig */;
 			buildSettings = {
+				ENABLE_CODE_COVERAGE = NO;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
