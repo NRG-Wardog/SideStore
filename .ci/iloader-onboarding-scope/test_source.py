@@ -49,7 +49,24 @@ class OnboardingSourceTests(unittest.TestCase):
         for anchor, expected in {
             "override func execute(parentProgress:": "4a54bc14ab7ddc95f4dff023db39d91ca5f87101998a1284745d5bac81722b1a",
             "override func cancel()": "7a9ce1149a862281983bea580a0b8729b8c8669307b09123e9ccdd93f315f700",
-        }.items(): self.assertEqual(sha(generate.extract(operation, anchor)), expected)
+        }.items():
+            body = generate.extract(operation, anchor)
+            if anchor == "override func execute(parentProgress:":
+                scoped = ("                            try await V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider) {\n"
+                          "                                try await self.executeLoginPipeline(parentProgress: parentProgress)\n"
+                          "                            }")
+                self.assertEqual(body.count(scoped), 1)
+                body = body.replace(scoped, "                            try await self.executeLoginPipeline(parentProgress: parentProgress)")
+            self.assertEqual(sha(body), expected)
+        for anchor in ["override func execute(parentProgress:", "private func signIn(appleID:",
+                       "private func provisioningLoop(account:", "private func finalizeAuthentication(result:"]:
+            body = generate.extract(operation, anchor)
+            self.assertEqual(body.count("V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider)"), 1)
+        signin = generate.extract(operation, "private func signIn(appleID:")
+        self.assertIn("let remote = v3RemoteContextSnapshot()", signin)
+        self.assertIn("ILoaderRemoteAuthentication.$current.withValue(remote)", signin)
+        self.assertNotIn("guard let remote", signin)
+        self.assertEqual(signin.count("performSignIn("), 1)
         diagnostic = generate.extract(operation, "private func diagnosticAuthentication(appleID:")
         self.assertNotIn("v3RemoteAnisetteContext = nil", operation.replace(diagnostic, ""))
         self.assertEqual(diagnostic.count("v3RemoteAnisetteContext = nil"), 1)

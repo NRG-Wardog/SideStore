@@ -58,8 +58,13 @@ func testNilClearsAmbient(_ rows: inout [String]) async throws {
     try await V3DiagnosticProviderRoute.$current.withValue(.remoteServer) {
         let selected = try await AnisetteProvider.fetch()
         try expect(selected.route == "legacyRemote", "explicit configured server is selected")
+        try expect(FixtureLog.shared.count("legacyRemoteFetch") == 1, "explicit selection performs one configured-server acquisition")
         let result = try await SignInOperation(context: nil).fixturePhaseWrappers()
         try expect(result == "local", "nil operation clears ambient diagnostic route")
+        try expect(FixtureLog.shared.count("legacyRemoteFetch") == 1, "provisioning/finalization must not inherit ambient diagnostic server")
+        let complete = try await SignInOperation(context: nil).execute(parentProgress: nil)
+        try expect(complete.team.route == "local", "nil execute clears ambient diagnostic route throughout sign-in")
+        try expect(FixtureLog.shared.count("legacyRemoteFetch") == 1, "execute/sign-in must not inherit ambient diagnostic server")
         try expect(V3DiagnosticProviderRoute.current == .remoteServer, "outer diagnostic route restored")
     }
     unrelated.invalidate()
@@ -71,6 +76,13 @@ func testNilClearsAmbient(_ rows: inout [String]) async throws {
         }
     }
     try expect(FixtureLog.shared.count("legacyRemoteFetch") == 1, "revoked remote never falls through to configured server")
+    try await V3DiagnosticProviderRoute.$current.withValue(.onDevice) {
+        let selected = SignInOperation(context: nil, provider: .remoteServer)
+        let result = try await selected.execute(parentProgress: nil)
+        try expect(result.team.route == "legacyRemote", "own configured-server choice survives ambient ODA through sign-in/provisioning")
+        try expect(FixtureLog.shared.count("finalize:legacyRemote") == 1, "finalization retains own configured-server choice")
+        try expect(V3DiagnosticProviderRoute.current == .onDevice, "selected operation restores outer ODA scope")
+    }
     rows.append("nil-phase-wrappers-clear-unrelated-ambient-context")
 }
 

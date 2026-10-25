@@ -3,12 +3,15 @@
     private let v3RemoteAnisetteLock = NSLock()
     private var v3RemoteAnisetteContext: ILoaderRemoteAuthenticationContext?
     private let v3RemoteAnisetteAttempt: FixtureManualAttempt? = nil
-    private let v3DiagnosticProvider: V3DiagnosticProvider? = nil
+    private let v3DiagnosticProvider: V3DiagnosticProvider?
     let loginDiagnosticTrace = LoginDiagnosticTrace()
     let authenticationDiagnosticTrace = AuthenticationDiagnosticTrace()
     let signInHandler = FixtureHandler()
     let anisetteServerHandler = FixtureHandler()
-    init(context: ILoaderRemoteAuthenticationContext?) { v3RemoteAnisetteContext = context }
+    init(context: ILoaderRemoteAuthenticationContext?, provider: V3DiagnosticProvider? = nil) {
+        v3RemoteAnisetteContext = context
+        v3DiagnosticProvider = provider
+    }
     func verboseLog(_ value: String) {}
     func debugLog(_ value: String) {}
 

@@ -162,7 +162,9 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 try await AuthenticationDiagnosticTrace.$current.withValue(authenticationDiagnosticTrace) {
                     try await v3LoginStage(.login) {
                         var result = try await ILoaderRemoteAuthentication.$current.withValue(self.v3RemoteContextSnapshot()) {
-                            try await self.executeLoginPipeline(parentProgress: parentProgress)
+                            try await V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider) {
+                                try await self.executeLoginPipeline(parentProgress: parentProgress)
+                            }
                         }
                         if let attempt = self.v3RemoteAnisetteAttempt {
                             result.v3RemoteIdentityHandoff = try await attempt.handoff()
@@ -750,13 +752,12 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     private func signIn(appleID: String, password: String,
                         recoveryCandidate: LCEmbeddedAuthenticationCandidate? = nil,
                         capturedStamp: String? = nil) async throws -> (ALTAccount, ALTAppleAPISession) {
-        guard let remote = v3RemoteContextSnapshot() else {
-            return try await performSignIn(appleID: appleID, password: password,
-                recoveryCandidate: recoveryCandidate, capturedStamp: capturedStamp)
-        }
-        return try await ILoaderRemoteAuthentication.$current.withValue(remote) {
-            try await self.performSignIn(appleID: appleID, password: password,
-                recoveryCandidate: recoveryCandidate, capturedStamp: capturedStamp)
+        let remote = v3RemoteContextSnapshot()
+        return try await V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider) {
+            try await ILoaderRemoteAuthentication.$current.withValue(remote) {
+                try await self.performSignIn(appleID: appleID, password: password,
+                    recoveryCandidate: recoveryCandidate, capturedStamp: capturedStamp)
+            }
         }
     }
 
@@ -877,8 +878,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     private func finalizeAuthentication(result: Result<SignInResult, Error>) async throws {
         // Final validation may read certificates through the same queued portal path.
         try await ILoaderRemoteAuthentication.$current.withValue(self.v3RemoteContextSnapshot()) {
-            try await v3LoginStage(.accountFinalize) {
-                try await self.performFinalizeAuthentication(result: result)
+            try await V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider) {
+                try await v3LoginStage(.accountFinalize) {
+                    try await self.performFinalizeAuthentication(result: result)
+                }
             }
         }
     }
