@@ -187,3 +187,25 @@ actor V3DiagnosticAttemptClock {
 
 struct V3DiagnosticAttemptTimeout: Error {}
 struct V3DiagnosticSequenceStopped: Error {}
+
+// Advertisement is not native admission. Custom metadata must still supply a
+// bounded, checksum-verified archive before any immutable library snapshot runs.
+enum V3OwnedODASourceEligibility: String, Equatable, Sendable {
+    case verifiedVendor, customIntegrityCheckRequired, unsupportedSource, missingStorage, lifecycleNotQualified
+    // Exact trusted-startup and ownership qualification passed. Final packaging
+    // still requires the final graph's native, context and identity suites.
+    static let ownedLifecycleQualified = true
+    var mayAttempt: Bool { self == .verifiedVendor || self == .customIntegrityCheckRequired }
+    static func selectionMatches(captured: String, current: String) -> Bool { captured == current }
+    static func evaluate(configuredSource: String, defaultSource: String,
+                         ownedLifecycleQualified: Bool, hasBuiltInStorage: Bool) -> Self {
+        guard ownedLifecycleQualified else { return .lifecycleNotQualified }
+        if configuredSource.isEmpty || configuredSource == defaultSource {
+            return hasBuiltInStorage ? .verifiedVendor : .missingStorage
+        }
+        guard let url = URL(string: configuredSource), url.scheme?.lowercased() == "https",
+              let host = url.host, !host.isEmpty, url.user == nil, url.password == nil,
+              url.fragment == nil else { return .unsupportedSource }
+        return .customIntegrityCheckRequired
+    }
+}

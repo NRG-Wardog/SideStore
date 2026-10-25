@@ -36,6 +36,23 @@ import Foundation
   precondition(!state.beginTransition(ifCurrent: legacy))
   state.completeTransition()
   precondition(state.snapshot.stable)
+  func eligible(_ source: String, enabled: Bool = true, storage: Bool = true) -> V3OwnedODASourceEligibility {
+   V3OwnedODASourceEligibility.evaluate(configuredSource: source, defaultSource: "https://vendor.example/list",
+     ownedLifecycleQualified: enabled, hasBuiltInStorage: storage)
+  }
+  precondition(V3OwnedODASourceEligibility.selectionMatches(captured: "", current: ""))
+  precondition(!V3OwnedODASourceEligibility.selectionMatches(captured: "", current: "https://changed.example"))
+  precondition(!V3OwnedODASourceEligibility.selectionMatches(captured: "https://first.example", current: "https://second.example"))
+  precondition(eligible("") == .verifiedVendor)
+  precondition(eligible("https://vendor.example/list") == .verifiedVendor)
+  precondition(eligible("", enabled: false) == .lifecycleNotQualified)
+  precondition(eligible("", storage: false) == .missingStorage)
+  precondition(eligible("https://custom.example/metadata") == .customIntegrityCheckRequired)
+  for invalid in ["http://custom.example", "https://user@custom.example", "https://user:password@custom.example", "https://", "not a url", "file:///tmp/metadata", "https://custom.example/file#fragment"] {
+   precondition(eligible(invalid) == .unsupportedSource)
+  }
+  precondition(!eligible("http://custom.example").mayAttempt)
+  precondition(eligible("https://custom.example").mayAttempt)
   print("PASS actual identity reservation: success, stale, signout overlap, cancel, legacy")
  }
 }

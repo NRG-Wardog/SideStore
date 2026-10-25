@@ -12,14 +12,25 @@ class OwnedODAIntegrationTests(unittest.TestCase):
   self.assertIn('if ownedODA == nil { v3LoginStageSync(.sessionCommit)',text)
   self.assertIn('v3CompleteOwnedODAIdentityTransition(reserved)',text)
   self.assertIn('try self.v3OwnedODAContextSnapshot()?.checkActive()',text)
+  self.assertIn('let source = try await handler.ownedODASourceForAttempt()',text)
+  self.assertIn('self.isCancelled || !self.v3OwnedODASourceUnchanged()',text)
  def test_queued_owner_and_commit_gate(self):
   text=(ROOT/'SideStore/Core/Anisette/AnisetteProvider.swift').read_text()
   for value in ['ownedODAContext', 'OwnedODAAuthentication.$current.withValue', 'context.commitStagedBlob(blob)', 'v3CommitDuringOwnedODAIdentityTransition', 'commitAnisetteBlob', 'installSession()']:
    self.assertIn(value,text)
   owned=text.split('final class V3OwnedODAAttempt:',1)[1]
-  self.assertEqual(owned.count('UserDefaults.standard.menuAnisetteList'),1)
+  self.assertNotIn('UserDefaults.standard.menuAnisetteList',owned)
+  self.assertIn('init(configuredSource: String',owned)
   proxy=(ROOT/'SideStore/Core/Auth/DeveloperPortalProxy.swift').read_text()
   self.assertIn('OwnedODAAuthentication.$current.withValue(context.admission.ownedODAContext)',proxy)
+ def test_prompt_admission_is_finite_private_and_does_not_mutate_settings(self):
+  text=(ROOT/'AltStore/AppDelegate.swift').read_text()
+  prompt=text.split('if offersRemoteMacAnisette && kind == "credentials" {',1)[1].split('let prompt = promptValue',1)[0]
+  self.assertIn('if ownedEligibility.mayAttempt { providers.append("onDevice") }',prompt)
+  self.assertIn('diagnosticOwnedODASource = ownedEligibility.mayAttempt ? configuredSource : nil',prompt)
+  self.assertIn('promptValue["diagnosticOnDeviceSource"] = ownedEligibility.rawValue',prompt)
+  self.assertNotIn('UserDefaults.standard.useOnDeviceAnisette =',prompt)
+  self.assertNotIn('] = configuredSource',prompt)
  def test_generator_other_cwd_symlink_parent(self):
   with tempfile.TemporaryDirectory() as temp:
    base=Path(temp).resolve(); link=base/'alias';link.symlink_to(ROOT,target_is_directory=True)

@@ -79,7 +79,7 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
                 // Decide before registering extension App IDs. A fallback keeps
                 // all extensions and never silently drops their capabilities.
                 guard try await self.context.handler.extensionRemovalHandler.confirmSeparateExtensionProvisioning(
-                    reasonCodes: reasons, extensionCount: appExtensions.count) else {
+                    reasonCodes: reasons, extensionReasonCodes: reuseMainRejectionDetails, extensionCount: appExtensions.count) else {
                     throw OperationError.cancelled
                 }
                 try Task.checkCancellation()
@@ -129,9 +129,18 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
     }
 
 
+    // Explanation metadata only; the existing aggregate rejection and group
+    // fallback decisions remain unchanged.
+    private var reuseMainRejectionDetails: [String: [String]] = [:]
+
     private func reuseMainRejectionReasons(app: ALTApplication, profile: ALTProvisioningProfile) async throws -> [String] {
-        guard profile.expirationDate > Date() else { return ["mainProfileExpired"] }
-        guard self.context.customEntitlementsByBundleID.isEmpty else { return ["customEntitlementOverridesRequireSeparateProfiles"] }
+        reuseMainRejectionDetails = [:]
+        func rejectAll(_ reason: String) -> [String] {
+            for ext in app.appExtensions { reuseMainRejectionDetails[ext.bundleIdentifier] = [reason] }
+            return [reason]
+        }
+        guard profile.expirationDate > Date() else { return rejectAll("mainProfileExpired") }
+        guard self.context.customEntitlementsByBundleID.isEmpty else { return rejectAll("customEntitlementOverridesRequireSeparateProfiles") }
         let mainEntitlements = try ALTSigner.signingEntitlements(profile: profile, applicationEntitlements: app.entitlements)
         let hasPersistedAssociation = await self.context.dbBackgroundContext.perform {
             guard let installed = self.context.installedApp else { return false }
@@ -142,6 +151,7 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         var reasons = Set<String>()
         for ext in app.appExtensions {
             guard ext.bundleIdentifier.hasPrefix(app.bundleIdentifier + ".") else {
+                reuseMainRejectionDetails[ext.bundleIdentifier] = ["extensionIdentifierOutsideContainer"]
                 reasons.insert("extensionIdentifierOutsideContainer")
                 continue
             }
@@ -156,7 +166,10 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
                 mainEntitlements: mainEntitlements, extensionEntitlements: ext.entitlements,
                 originalExtensionBundleIdentifier: ext.bundleIdentifier,
                 allowPreviouslyReusedMainIdentity: previousProfileMatches)
-            if !decision.reuseMain { reasons.formUnion(decision.reasons) }
+            if !decision.reuseMain {
+                reuseMainRejectionDetails[ext.bundleIdentifier] = decision.reasons
+                reasons.formUnion(decision.reasons)
+            }
         }
         return reasons.sorted()
     }

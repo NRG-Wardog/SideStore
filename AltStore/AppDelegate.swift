@@ -12423,6 +12423,14 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
     // Nil means no credentials have been submitted. Both false and true are final.
     private var remoteMacAnisetteSelection: Bool?
     private(set) var diagnosticProviderPlan: V3DiagnosticProviderPlan?
+    private var diagnosticOwnedODASource: String?
+    func ownedODASourceForAttempt() throws -> String {
+        guard diagnosticProviderPlan?.providers.contains(.onDevice) == true,
+              let captured = diagnosticOwnedODASource,
+              V3OwnedODASourceEligibility.selectionMatches(captured: captured,
+                current: UserDefaults.standard.menuAnisetteList) else { throw V3DiagnosticSequenceStopped() }
+        return captured
+    }
     private var diagnosticAttemptClock: V3DiagnosticAttemptClock?
     func setDiagnosticAttemptClock(_ clock: V3DiagnosticAttemptClock?) { diagnosticAttemptClock = clock }
     func recordDiagnosticProvider(_ provider: V3DiagnosticProvider, outcome: String) {
@@ -12461,10 +12469,17 @@ final class V3HeadlessAuthHandler: SignInHandler, AnisetteServerHandler {
         if offersRemoteMacAnisette && kind == "credentials" {
             promptValue["remoteMacAnisette"] = "submit-v2"
             promptValue["diagnosticProviderSequence"] = V3DiagnosticProviderPlan.capability
-            // Native ODA cancellation cannot yet be bounded. It remains a
-            // manual route, not an automatic diagnostic sequence candidate.
-            promptValue["diagnosticProviders"] = UserDefaults.standard.useOnDeviceAnisette
-                ? ["remoteMac"] : ["remoteMac", "remoteServer"]
+            let configuredSource = UserDefaults.standard.menuAnisetteList
+            let ownedEligibility = V3OwnedODASourceEligibility.evaluate(
+                configuredSource: configuredSource, defaultSource: AnisetteServersManager.defaultSource,
+                ownedLifecycleQualified: V3OwnedODASourceEligibility.ownedLifecycleQualified,
+                hasBuiltInStorage: OnDeviceAnisetteManager.shared.baseAnisetteDirectory != nil)
+            diagnosticOwnedODASource = ownedEligibility.mayAttempt ? configuredSource : nil
+            var providers = ["remoteMac"]
+            if ownedEligibility.mayAttempt { providers.append("onDevice") }
+            if !UserDefaults.standard.useOnDeviceAnisette { providers.append("remoteServer") }
+            promptValue["diagnosticProviders"] = providers
+            promptValue["diagnosticOnDeviceSource"] = ownedEligibility.rawValue
         }
         let prompt = promptValue
         guard let promptID = prompt["id"] as? String else { throw CancellationError() }
@@ -12874,10 +12889,10 @@ final class V3HeadlessPipelineHandler: PipelineExecutionHandler, PreflightChecks
         guard answer["choice"] == "approve" else { throw CancellationError() }
     }
 
-    func confirmSeparateExtensionProvisioning(reasonCodes: [String], extensionCount: Int) async throws -> Bool {
-        let explanation = reasonCodes.sorted().joined(separator: ", ")
+    func confirmSeparateExtensionProvisioning(reasonCodes: [String], extensionReasonCodes: [String: [String]], extensionCount: Int) async throws -> Bool {
+        let explanation = V3ReuseMainExplanation.fallback(reasonCodes: reasonCodes, extensionReasonCodes: extensionReasonCodes, extensionCount: extensionCount)
         let answer = try await ask(kind: "extensionSigningFallback", title: "Separate Extension Profiles Required",
-            message: "ReuseMain cannot safely preserve this app's extension requirements (\(explanation)). Keep all extensions and provision up to \(extensionCount) separate App IDs instead?",
+            message: explanation,
             options: [["id": "separate", "label": "Keep All With Separate Profiles"],
                       ["id": "cancel", "label": "Cancel"]])
         return answer["choice"] == "separate"
@@ -12897,7 +12912,7 @@ final class V3HeadlessPipelineHandler: PipelineExecutionHandler, PreflightChecks
                 ? ["id": "keepAllValidatedReuseMain", "label": "Keep All (Experimental ReuseMain)"]
                 : ["id": "keepAllMainProfile", "label": "Keep All (Use Main Profile)"]
             let answer = try await self.ask(kind: "extensions", title: "App Extensions",
-                message: "\(appBundle.bundleIdentifier) contains \(sorted.count) extension(s). Experimental ReuseMain is for ordinary apps only, not host self-install or self-refresh. It may save up to \(sorted.count) App IDs when all extensions are compatible. Otherwise separate profiles require confirmation. Extension behavior still needs device validation. You can also register each extension or choose which to remove.",
+                message: "\(appBundle.bundleIdentifier) contains \(sorted.count) extension(s). Experimental ReuseMain is for ordinary apps only, not host self-install or self-refresh. \(V3ReuseMainExplanation.offer(extensionCount: sorted.count)) Separate profiles require confirmation. Extension behavior still needs device validation. You can also register each extension or choose which to remove.",
                 options: [reuseOption,
                           ["id": "keepAll", "label": "Keep All (Register Each Extension)"]] +
                     sorted.map { ["id": "remove:\($0.bundleIdentifier)", "label": "Remove \($0.bundleIdentifier)"] } +

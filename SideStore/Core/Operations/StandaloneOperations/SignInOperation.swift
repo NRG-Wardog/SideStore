@@ -49,18 +49,24 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     private var v3DiagnosticProvider: V3DiagnosticProvider?
     private var v3OwnedODAAttempt: V3OwnedODAAttempt?
     private var v3OwnedODAIdentityStamp: String?
+    private var v3OwnedODASource: String?
 
     private func v3OwnedODAContextSnapshot() -> OwnedODAAuthenticationContext? {
         v3RemoteAnisetteLock.withLock { v3OwnedODAAttempt?.context }
     }
+    private func v3OwnedODASourceUnchanged() -> Bool {
+        guard let captured = v3RemoteAnisetteLock.withLock({ v3OwnedODASource }) else { return false }
+        return V3OwnedODASourceEligibility.selectionMatches(captured: captured,
+            current: UserDefaults.standard.menuAnisetteList)
+    }
     private func v3OwnedODAIsAuthorized() -> Bool {
         let stamp = v3RemoteAnisetteLock.withLock { v3OwnedODAIdentityStamp }
-        return !isCancelled && AuthManager.shared.v3IdentityIsStable &&
+        return !isCancelled && v3OwnedODASourceUnchanged() && AuthManager.shared.v3IdentityIsStable &&
             stamp != nil && stamp == AuthManager.shared.v3IdentityStamp
     }
-    private func v3PrepareOwnedODA(identityStamp: String) async throws {
-        v3RemoteAnisetteLock.withLock { v3OwnedODAIdentityStamp = identityStamp }
-        let attempt = try await V3OwnedODAAttempt(isAuthorized: { [weak self] in
+    private func v3PrepareOwnedODA(identityStamp: String, configuredSource: String) async throws {
+        v3RemoteAnisetteLock.withLock { v3OwnedODAIdentityStamp = identityStamp; v3OwnedODASource = configuredSource }
+        let attempt = try await V3OwnedODAAttempt(configuredSource: configuredSource, isAuthorized: { [weak self] in
             self?.v3OwnedODAIsAuthorized() == true
         })
         v3RemoteAnisetteLock.withLock { v3OwnedODAAttempt = attempt }
@@ -651,7 +657,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
             }
             // Only this explicit new attempt may replace an invalidated context.
             if let owned = v3OwnedODAContextSnapshot() { await owned.finish() }
-            v3RemoteAnisetteLock.withLock { v3OwnedODAAttempt = nil; v3OwnedODAIdentityStamp = nil }
+            v3RemoteAnisetteLock.withLock { v3OwnedODAAttempt = nil; v3OwnedODAIdentityStamp = nil; v3OwnedODASource = nil }
             v3RemoteContextSnapshot()?.invalidate()
             v3RemoteAnisetteLock.withLock {
                 v3RemoteAnisetteContext = nil
@@ -665,7 +671,8 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 }
             }
             if attempt.provider == .onDevice {
-                try await v3PrepareOwnedODA(identityStamp: identityStamp)
+                let source = try await handler.ownedODASourceForAttempt()
+                try await v3PrepareOwnedODA(identityStamp: identityStamp, configuredSource: source)
             }
             // cancel() may have run between clearing the old route and installing
             // this one. Retain the revoked sentinel and never admit new work.
@@ -916,7 +923,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
             if let ownedODA {
                 guard let reserved = ownedReservation else { throw OwnedODAAuthenticationError.revoked }
                 try ownedODA.commitStagedBlob(ownedBlob, reservedStamp: reserved,
-                    isCancelled: { self.isCancelled }, commitCredentials: commitCredentials,
+                    isCancelled: { self.isCancelled || !self.v3OwnedODASourceUnchanged() }, commitCredentials: commitCredentials,
                     installSession: { AuthManager.shared.session = session })
             } else {
                 try commitCredentials()

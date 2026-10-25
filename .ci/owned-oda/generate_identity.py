@@ -12,5 +12,7 @@ while depth:
     elif text[end]=='}':depth-=1
     end+=1
 out=Path(a.output).resolve();out.mkdir(parents=True,exist_ok=True)
-(out/'Identity.swift').write_text('import Foundation\n'+text[start:end]+'\n')
-(out/'source-evidence.json').write_text(json.dumps({'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'extracted_sha256':hashlib.sha256((out/'Identity.swift').read_bytes()).hexdigest()},indent=2)+'\n')
+policy=(root/'SideStore/Core/Anisette/V3DiagnosticProviderSequence.swift').read_text()
+policy=policy[policy.index('enum V3OwnedODASourceEligibility:'):]
+(out/'Identity.swift').write_text('import Foundation\n'+text[start:end]+'\n'+policy+'\n')
+(out/'source-evidence.json').write_text(json.dumps({'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'eligibility_source_sha256':hashlib.sha256((root/'SideStore/Core/Anisette/V3DiagnosticProviderSequence.swift').read_bytes()).hexdigest(),'extracted_sha256':hashlib.sha256((out/'Identity.swift').read_bytes()).hexdigest()},indent=2)+'\n')

@@ -38,7 +38,7 @@ enum ExtensionRemovalDecision: Sendable {
 }
 
 protocol ExtensionRemovalHandler: AnyObject, Sendable {
-    func confirmSeparateExtensionProvisioning(reasonCodes: [String], extensionCount: Int) async throws -> Bool
+    func confirmSeparateExtensionProvisioning(reasonCodes: [String], extensionReasonCodes: [String: [String]], extensionCount: Int) async throws -> Bool
     func selectAppExtensionsToRemove(
         appBundle: ALTApplication,
         localAppExtensions: [ALTApplication],
@@ -48,7 +48,7 @@ protocol ExtensionRemovalHandler: AnyObject, Sendable {
 
 extension ExtensionRemovalHandler {
     // A background/no-UI caller must not consume extra App IDs without consent.
-    func confirmSeparateExtensionProvisioning(reasonCodes: [String], extensionCount: Int) async throws -> Bool { false }
+    func confirmSeparateExtensionProvisioning(reasonCodes: [String], extensionReasonCodes: [String: [String]], extensionCount: Int) async throws -> Bool { false }
 }
 
 protocol UnsupportedVersionHandler: AnyObject, Sendable {
@@ -139,3 +139,47 @@ extension UserCustomizationHandler {
         throw OperationError.invalidParameters("Provisioning profile customization requires a supported host prompt.")
     }
 }
+
+// V3_REUSE_MAIN_EXPLANATION_BEGIN
+/// Presentation only. Does not select profiles, alter capabilities or promise
+/// observed portal savings. Unknown values never become arbitrary UI text.
+enum V3ReuseMainExplanation {
+    private static let reasons: [String: String] = [
+        "extensionIdentifierOutsideContainer": "extension identifier is outside its container",
+        "mainSigningIdentityUnavailable": "main signing identity is unavailable",
+        "invalidExtensionApplicationIdentifier": "extension application identifier does not match",
+        "debugEntitlementMismatch": "debug capability differs",
+        "keychainGroupsMismatch": "keychain groups differ",
+        "appGroupsMismatch": "app groups differ",
+        "capabilitiesMismatch": "required capabilities differ",
+        "mainProfileExpired": "main profile has expired",
+        "customEntitlementOverridesRequireSeparateProfiles": "custom entitlement overrides require separate profiles"
+    ]
+    static func identifier(_ raw: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
+        guard !raw.isEmpty, raw.utf8.count <= 255,
+              raw.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            return "[unrecognized extension identifier]"
+        }
+        return raw
+    }
+    static func reasonText(_ codes: [String]) -> String {
+        let labels = Set(codes.map { reasons[$0] ?? "compatibility could not be established" })
+        return labels.sorted().joined(separator: "; ")
+    }
+    static func offer(extensionCount: Int) -> String {
+        let count = max(0, extensionCount)
+        return "If all \(count) extensions pass compatibility checks, ReuseMain may avoid up to \(count) additional App IDs. If any extension fails, this version uses separate profiles for all \(count) extensions, avoiding 0 additional App IDs. Existing App IDs may already be registered; these are estimates, not measured savings."
+    }
+    static func fallback(reasonCodes: [String], extensionReasonCodes: [String: [String]], extensionCount: Int) -> String {
+        let count = max(0, extensionCount)
+        let details = extensionReasonCodes.keys.sorted().map { id in
+            "• " + identifier(id) + ": " + reasonText(extensionReasonCodes[id] ?? [])
+        }.joined(separator: "\n")
+        let summary = reasonText(reasonCodes)
+        let detailText = details.isEmpty ? summary : details
+        return "Extensions that could not qualify for ReuseMain:\n" + detailText +
+            "\n\nThis version falls back as a group: all \(count) extensions stay installed and use separate profiles. This fallback avoids 0 additional App IDs and may require up to \(count) separate App IDs (some may already exist). No extension is removed and no required capability is discarded. Continue with separate provisioning?"
+    }
+}
+// V3_REUSE_MAIN_EXPLANATION_END

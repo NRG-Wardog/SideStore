@@ -442,9 +442,8 @@ final class V3OwnedODAAttempt: @unchecked Sendable {
     let context: OwnedODAAuthenticationContext
     private let snapshot: LCEmbeddedAnisetteSnapshot
 
-    init(isAuthorized: @escaping @Sendable () -> Bool) async throws {
+    init(configuredSource: String, isAuthorized: @escaping @Sendable () -> Bool) async throws {
         guard isAuthorized() else { throw OwnedODAAuthenticationError.revoked }
-        let configuredSource = UserDefaults.standard.menuAnisetteList
         let usesBuiltInSource = configuredSource.isEmpty ||
             configuredSource == AnisetteServersManager.defaultSource
         let source: OwnedODALibrarySource

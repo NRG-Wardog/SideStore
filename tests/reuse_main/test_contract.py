@@ -27,7 +27,11 @@ class Contract(unittest.TestCase):
         s = (ROOT / 'AltStore/AppDelegate.swift').read_text()
         self.assertIn('extensionSigningFallback', s)
         self.assertIn('Keep All With Separate Profiles', s)
-        self.assertIn('reasonCodes.sorted()', s)
+        self.assertIn('V3ReuseMainExplanation.fallback(', s)
+        self.assertIn('V3ReuseMainExplanation.offer(extensionCount: sorted.count)', s)
+        fetch = (ROOT / 'SideStore/Core/Operations/PipelineOperations/FetchProvisioningProfilesOperation.swift').read_text()
+        self.assertIn('extensionReasonCodes: reuseMainRejectionDetails', fetch)
+        self.assertIn('reuseMainRejectionDetails[ext.bundleIdentifier] = decision.reasons', fetch)
         self.assertIn('Experimental ReuseMain', s)
 
     def test_legacy_is_not_enrolled(self):
