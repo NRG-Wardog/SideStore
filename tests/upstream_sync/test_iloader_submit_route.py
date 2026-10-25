@@ -5,6 +5,9 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[3]
+# This suite consumes a regular sibling source graph, never another checkout.
+if (ROOT / "SideStore").resolve() != Path(__file__).resolve().parents[2]:
+    raise RuntimeError("Run this suite from a regular candidate graph named SideStore/LiveContainer")
 HOST = (ROOT / "LiveContainer/LiveContainerSwiftUI/Views/V3UnifiedShell.swift").read_text()
 SERVICE = (ROOT / "SideStore/AltStore/AppDelegate.swift").read_text()
 OPERATION = (ROOT / "SideStore/SideStore/Core/Operations/StandaloneOperations/SignInOperation.swift").read_text()
@@ -180,7 +183,7 @@ class SubmitRouteTests(unittest.TestCase):
                         loop.index('shouldReuseCredentialsForCodeRetry'))
 
     def test_context_is_retained_on_invalidation_and_never_persisted(self):
-        self.assertIn('defer { v3RemoteContextSnapshot()?.invalidate() }', OPERATION)
+        self.assertIn('defer {\n            v3RemoteContextSnapshot()?.invalidate()\n            v3OwnedODAContextSnapshot()?.invalidate()\n        }', OPERATION)
         self.assertIn('self.v3RemoteContextSnapshot()?.invalidate()', OPERATION)
         diagnostic = declaration(OPERATION, 'private func diagnosticAuthentication(')
         # Only the explicitly selected diagnostic sequence may replace a joined,
