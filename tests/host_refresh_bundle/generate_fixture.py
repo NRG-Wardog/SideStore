@@ -27,7 +27,13 @@ def main():
     here = root / 'tests/host_refresh_bundle'
     runner = root / 'SideStore/Core/Operations/PipelineRunner.swift'
     fingerprint = args.fingerprint_source or root / 'SideStore/Utils/common/AppBundleFingerprint.swift'
-    inputs = [runner, fingerprint]
+    contexts = root / 'SideStore/Core/Operations/OperationContexts.swift'
+    inputs = [runner, fingerprint, contexts]
+    context_text = contexts.read_text()
+    registry_start = context_text.index('enum V3ValidatedReuseMainRegistry {')
+    registry_end = context_text.index('\n}', registry_start) + 2
+    registry = context_text[registry_start:registry_end]
+    assert registry.count('{') == registry.count('}'), 'Registry extraction must remain complete'
     support = [here / n for n in ['BoundaryDoubles.swift', 'Cases.swift', 'test_contract.py', 'generate_fixture.py']]
     text = runner.read_text()
     helper = text.split('// V3_HOST_REFRESH_BUNDLE_PREPARATION_BEGIN\n', 1)[1].split('// V3_HOST_REFRESH_BUNDLE_PREPARATION_END', 1)[0]
@@ -45,7 +51,7 @@ def main():
         else:
             names.append(name)
     assert len(names) == len(set(names)), 'Duplicate fixture names'
-    source = '\n'.join([(here / 'BoundaryDoubles.swift').read_text(), fingerprint.read_text(), helper, integration, cases])
+    source = '\n'.join([(here / 'BoundaryDoubles.swift').read_text(), fingerprint.read_text(), registry, helper, integration, cases])
     out.mkdir(parents=True, exist_ok=True)
     generated = out / 'host-refresh-bundle.swift'
     generated.write_text(source)

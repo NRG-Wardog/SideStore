@@ -31,12 +31,14 @@ class OnboardingSourceTests(unittest.TestCase):
     def test_provider_default_body_is_byte_identical_after_explicit_branch(self):
         method = generate.extract(read("SideStore/Core/Anisette/AnisetteProvider.swift"), "static func fetch(handler:")
         start = method.index("        // A latched attempt")
-        end = method.index("        if UserDefaults.standard.useOnDeviceAnisette")
+        route = "        if V3DiagnosticProviderRoute.current == .onDevice ||\n            (V3DiagnosticProviderRoute.current == nil && UserDefaults.standard.useOnDeviceAnisette) {"
+        self.assertEqual(method.count(route), 1)
+        end = method.index(route)
         branch = method[start:end]
         self.assertIn("if let remote = ILoaderRemoteAuthentication.current", branch)
         self.assertIn("return try await remote.fetch()", branch)
         self.assertNotIn("catch", branch)
-        self.assertEqual(sha(method[:start] + method[end:]), "f5554f878bc6146851d4ba29bca6766202323f5806c970edaa9a37dcc2e546a4")
+        self.assertEqual(sha(method[:start] + method[end:].replace(route, "        if UserDefaults.standard.useOnDeviceAnisette {", 1)), "f5554f878bc6146851d4ba29bca6766202323f5806c970edaa9a37dcc2e546a4")
 
     def test_phase_scope_and_existing_cancellation_are_preserved(self):
         operation = read("SideStore/Core/Operations/StandaloneOperations/SignInOperation.swift")
@@ -48,7 +50,35 @@ class OnboardingSourceTests(unittest.TestCase):
             "override func execute(parentProgress:": "4a54bc14ab7ddc95f4dff023db39d91ca5f87101998a1284745d5bac81722b1a",
             "override func cancel()": "7a9ce1149a862281983bea580a0b8729b8c8669307b09123e9ccdd93f315f700",
         }.items(): self.assertEqual(sha(generate.extract(operation, anchor)), expected)
-        self.assertNotIn("v3RemoteAnisetteContext = nil", operation)
+        diagnostic = generate.extract(operation, "private func diagnosticAuthentication(appleID:")
+        self.assertNotIn("v3RemoteAnisetteContext = nil", operation.replace(diagnostic, ""))
+        self.assertEqual(diagnostic.count("v3RemoteAnisetteContext = nil"), 1)
+        ordered = ["guard v3RequireInteractiveCredentials", "while true", "try Task.checkCancellation()",
+                   "guard !isCancelled", "v3RemoteContextSnapshot()?.invalidate()",
+                   "v3RemoteAnisetteLock.withLock", "v3RemoteAnisetteContext = nil",
+                   "withThrowingTaskGroup", "defer { group.cancelAll() }", "} catch {",
+                   "if isCancelled || Task.isCancelled || v3IsAuthCancellation(error) { throw error }",
+                   "if challengeSeen { sequence.needsUser(attempt) }", "sequence.failed(attempt, reason: failure)",
+                   "guard case .stopping", "sequence.previousAttemptStopped(attempt,",
+                   "guard case .backoff", "try await Task.sleep(nanoseconds: UInt64(2 * (attempt.index + 1))",
+                   "sequence.continueAfterBackoff", "attempt = next"]
+        positions = [diagnostic.index(value) for value in ordered]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("credentialsCommitted: identityStamp != AuthManager.shared.v3IdentityStamp", diagnostic)
+        self.assertIn("isolated: AuthManager.shared.v3IdentityIsStable", diagnostic)
+        installed = diagnostic.index("v3RemoteAnisetteContext = remote.context")
+        admitted = diagnostic.index("v3AnisetteRouteResolved = true", installed)
+        self.assertIn("if isCancelled || Task.isCancelled {", diagnostic[installed:admitted])
+        self.assertIn("v3RemoteContextSnapshot()?.invalidate()", diagnostic[installed:admitted])
+        self.assertIn("throw CancellationError()", diagnostic[installed:admitted])
+        child = diagnostic[diagnostic.index("group.addTask {"):diagnostic.index("let result = try await self.signIn")]
+        self.assertIn("guard !self.isCancelled, !Task.isCancelled else { throw CancellationError() }", child)
+        auth = generate.extract(operation, "private func performSignIn(appleID:")
+        pre_apple = auth[auth.index("await v3DiagnosticAttemptClock?.willAuthenticate()"):auth.index("let (account, session)")]
+        self.assertIn("guard !isCancelled, !Task.isCancelled else { throw CancellationError() }", pre_apple)
+        self.assertIn("try v3RemoteContextSnapshot()?.checkActive()", pre_apple)
+        provisioning = generate.extract(operation, "private func provisioningLoop(account:")
+        self.assertIn("V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider)", provisioning)
 
     def test_real_coalescer_and_explicit_capture_partition_rebind(self):
         actual = generate.extract(read("SideStore/Utils/concurrency/TaskChainCoalescer.swift"), "actor TaskChainCoalescer {")
@@ -163,7 +193,7 @@ class OnboardingSourceTests(unittest.TestCase):
             a = generate.generate(Path(one), ROOT, SIGN)
             b = generate.generate(Path(two), ROOT, SIGN)
             self.assertEqual(a, b)
-            self.assertEqual(len(a["production_extracts"]), 52)
+            self.assertEqual(len(a["production_extracts"]), 54)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

@@ -4,7 +4,8 @@ import Dispatch
 // Only iOS/SideSign boundary types are doubled. Bundle IDs and extension
 // enumeration come from real synthetic plists; copy, cleanup and the complete
 // preservation fingerprint algorithm are the production implementations.
-enum OperationError: Error { case invalidApp(reason: String) }
+enum OperationError: Error { case invalidApp(reason: String); case invalidParameters(String) }
+struct FixtureProfile { let uuid: UUID }
 struct ALTApplication: Hashable, Sendable {
     let fileURL: URL
     let bundleIdentifier: String
@@ -12,8 +13,15 @@ struct ALTApplication: Hashable, Sendable {
         let children = (try? FileManager.default.contentsOfDirectory(at: fileURL.appendingPathComponent("PlugIns"), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
         return Set(children.filter { $0.pathExtension.lowercased() == "appex" }.compactMap { ALTApplication(fileURL: $0) })
     }
-    var provisioningProfile: Data? {
-        try? Data(contentsOf: fileURL.appendingPathComponent("embedded.mobileprovision"))
+    // Synthetic profile presence/identity only, not CMS or signing validation.
+    var provisioningProfile: FixtureProfile? {
+        guard (try? Data(contentsOf: fileURL.appendingPathComponent("embedded.mobileprovision"))) != nil else { return nil }
+        return FixtureProfile(uuid: UUID(uuidString: "00000000-0000-0000-0000-000000000050")!)
+    }
+    var infoPlist: [String: Any] {
+        guard let data = try? Data(contentsOf: fileURL.appendingPathComponent("Info.plist")),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return [:] }
+        return plist
     }
     init?(fileURL: URL) {
         guard let data = try? Data(contentsOf: fileURL.appendingPathComponent("Info.plist")),
@@ -38,7 +46,7 @@ final class InstalledApp {
     let resignedBundleIdentifier: String
     var appExtensions: [InstalledExtension]
     let appBundleFingerprint = "preserve-existing-fingerprint"
-    let useMainProfile = true
+    var useMainProfile = true
     let customBundleIdentifier: String? = "preserve-custom-id"
     init(fileURL: URL, bundleIdentifier: String, resignedBundleIdentifier: String,
          appExtensions: [InstalledExtension]) {
@@ -61,6 +69,7 @@ final class FixtureContext {
     var installedApp: InstalledApp?
     var appBundleFingerprint: String?
     var useMainProfile = false
+    var validatedReuseMain = false
     var customBundleIdentifier: String?
     var targetAppBundle: ALTApplication?
 }

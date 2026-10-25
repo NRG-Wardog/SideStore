@@ -53,7 +53,24 @@ func testNilClearsAmbient(_ rows: inout [String]) async throws {
     }
     try expect(FixtureLog.shared.count("portal:local") == 2 && FixtureLog.shared.count("finalize:local") == 1, "nil finalization stays local")
     try expect(FixtureLog.shared.count("remoteFetch:unrelated-ambient") == 0, "no unconsented ambient provider request")
+    // A nil operation also clears an unrelated diagnostic override, while a
+    // directly selected configured server overrides the unchanged ODA default.
+    try await V3DiagnosticProviderRoute.$current.withValue(.remoteServer) {
+        let selected = try await AnisetteProvider.fetch()
+        try expect(selected.route == "legacyRemote", "explicit configured server is selected")
+        let result = try await SignInOperation(context: nil).fixturePhaseWrappers()
+        try expect(result == "local", "nil operation clears ambient diagnostic route")
+        try expect(V3DiagnosticProviderRoute.current == .remoteServer, "outer diagnostic route restored")
+    }
     unrelated.invalidate()
+    try await V3DiagnosticProviderRoute.$current.withValue(.remoteServer) {
+        try await ILoaderRemoteAuthentication.$current.withValue(unrelated) {
+            try await expectFailure({ try await AnisetteProvider.fetch() },
+                "revoked remote sentinel yielded to diagnostic server",
+                matching: { ($0 as? ILoaderRemoteError)?.reasonCode == "consentRequired" })
+        }
+    }
+    try expect(FixtureLog.shared.count("legacyRemoteFetch") == 1, "revoked remote never falls through to configured server")
     rows.append("nil-phase-wrappers-clear-unrelated-ambient-context")
 }
 

@@ -3,6 +3,7 @@
     private let v3RemoteAnisetteLock = NSLock()
     private var v3RemoteAnisetteContext: ILoaderRemoteAuthenticationContext?
     private let v3RemoteAnisetteAttempt: FixtureManualAttempt? = nil
+    private let v3DiagnosticProvider: V3DiagnosticProvider? = nil
     let loginDiagnosticTrace = LoginDiagnosticTrace()
     let authenticationDiagnosticTrace = AuthenticationDiagnosticTrace()
     let signInHandler = FixtureHandler()

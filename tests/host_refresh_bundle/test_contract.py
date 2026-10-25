@@ -38,6 +38,10 @@ def validate(repo: Path) -> int:
     check('try copy.updateInfoPlist' in helper and 'try appExtension.updateInfoPlist' in helper, 'Only scratch metadata normalized')
     for forbidden in ['cachePayload(', 'targetSigningCertificate', 'appendTeamID =', 'appBundleFingerprint =', 'source.updateInfoPlist', 'removeItem(at: activeBundleURL)', 'URLSession', 'DeveloperPortalProxy']:
         check(forbidden not in helper, 'No broadened mutation: ' + forbidden)
+    check('context.validatedReuseMain = app.useMainProfile && V3ValidatedReuseMainRegistry.contains(' in integration, 'Explicit opt-in and persisted payload association required')
+    check('profileUUID: context.targetAppBundle?.provisioningProfile?.uuid' in integration, 'Profile UUID bound to cached payload')
+    check('generation: context.targetAppBundle?.infoPlist[V3ValidatedReuseMainRegistry.generationKey]' in integration, 'Signed generation bound to cached payload')
+    check('if app.useMainProfile && !context.validatedReuseMain &&' in integration and 'V3ValidatedReuseMainRegistry.hasAssociation(' in integration and 'throw OperationError.invalidParameters(' in integration, 'Known validated association cannot silently downgrade')
     return checks
 
 

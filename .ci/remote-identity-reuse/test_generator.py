@@ -12,6 +12,22 @@ spec.loader.exec_module(module)
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_production_diagnostic_policy_closure(self):
+        production = (HERE.parents[1] / "SideStore/Core/Anisette/V3DiagnosticProviderSequence.swift").read_text()
+        declarations = "\n".join(module.extract(production, anchor) for anchor in
+                                 ["enum V3DiagnosticProvider:", "enum V3DiagnosticProviderRoute {"])
+        projection = declarations + "\nlet selected = V3DiagnosticProviderRoute.current"
+        module.validate_diagnostic_policy_closure(projection, production)
+        for invalid in ["let selected = V3DiagnosticProviderRoute.current",
+                        projection + declarations,
+                        projection.replace("case remoteMac, onDevice, remoteServer", "case remoteMac"),
+                        projection + "\nlet missing: V3DiagnosticNewPolicy"]:
+            with self.assertRaises(ValueError):
+                module.validate_diagnostic_policy_closure(invalid, production)
+        self.assertEqual(module.CANDIDATE_ONLY_SOURCES, {"diagnostic_policy"})
+        self.assertEqual(module.SOURCE_PATHS["diagnostic_policy"],
+                         "SideStore/SideStore/Core/Anisette/V3DiagnosticProviderSequence.swift")
+
     def test_braces_inside_comments_and_strings(self):
         source = 'func actual() { let x = "}"; /* nested { /* } */ */ if true { print(x) } }\nfunc next() {}'
         self.assertEqual(module.extract(source, "func actual()"), source.split("\n")[0])

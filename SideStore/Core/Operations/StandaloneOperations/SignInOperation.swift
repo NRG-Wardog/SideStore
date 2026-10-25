@@ -624,6 +624,12 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                     v3RemoteAnisetteContext = remote.context
                 }
             }
+            // cancel() may have run between clearing the old route and installing
+            // this one. Retain the revoked sentinel and never admit new work.
+            if isCancelled || Task.isCancelled {
+                v3RemoteContextSnapshot()?.invalidate()
+                throw CancellationError()
+            }
             v3AnisetteRouteResolved = true
             v3DiagnosticProvider = attempt.provider
             let clock = V3DiagnosticAttemptClock()
@@ -635,6 +641,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 let result = try await withThrowingTaskGroup(of: V3DiagnosticSignInValue.self) { group in
                     group.addTask {
                         try await V3DiagnosticProviderRoute.$current.withValue(provider) {
+                            guard !self.isCancelled, !Task.isCancelled else { throw CancellationError() }
                             let result = try await self.signIn(appleID: appleID, password: password)
                             return V3DiagnosticSignInValue(account: result.0, session: result.1)
                         }
@@ -756,6 +763,9 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     private func performSignIn(appleID: String, password: String,
                         recoveryCandidate: LCEmbeddedAuthenticationCandidate? = nil,
                         capturedStamp: String? = nil) async throws -> (ALTAccount, ALTAppleAPISession) {
+        if v3DiagnosticIdentityStamp != nil {
+            guard !isCancelled, !Task.isCancelled else { throw CancellationError() }
+        }
         try self.v3ValidateReauthenticationIdentity(submittedAppleID: appleID)
         self.appleIDEmailAddress = appleID
         
@@ -766,6 +776,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
 
         try self.v3ValidateReauthenticationIdentity(submittedAppleID: appleID)
         await v3DiagnosticAttemptClock?.willAuthenticate()
+        if v3DiagnosticIdentityStamp != nil {
+            guard !isCancelled, !Task.isCancelled else { throw CancellationError() }
+            try v3RemoteContextSnapshot()?.checkActive()
+        }
         let (account, session) = try await v3LoginStage(.appleAuthentication) {
             try await v3AuthenticationPhase(.appleAuthentication) {
                 try await AuthManager.shared.signIn(

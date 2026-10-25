@@ -8,6 +8,7 @@ from pathlib import Path
 
 PACKAGE = "SideStore/.ci/remote-identity-reuse"
 SOURCE_PATHS = {
+    "diagnostic_policy": "SideStore/SideStore/Core/Anisette/V3DiagnosticProviderSequence.swift",
     "keychain": "SideStore/AltStore/Core/Components/Keychain.swift",
     "provider": "SideStore/SideStore/Core/Anisette/AnisetteProvider.swift",
     "auth": "SideStore/SideStore/Core/Auth/AuthManager.swift",
@@ -23,6 +24,7 @@ SOURCE_PATHS = {
     "appmanager": "SideStore/AltStore/Managing Apps/AppManager.swift",
     "background": "SideStore/SideStore/Core/Operations/StandaloneOperations/BackgroundRefreshAppsOperation.swift",
 }
+CANDIDATE_ONLY_SOURCES = frozenset({"diagnostic_policy"})
 SUPPORT_PATHS = ("generate_fixture.py", "BoundaryDoubles.swift", "CoreCases.swift", "RuntimeDoubles.swift",
                  "RuntimeCases.swift", "run.sh", "README.md", "test_generator.py")
 
@@ -117,6 +119,8 @@ def runtime_projection(sources, spans):
     if context.count("URLSession") != 1:
         raise ValueError("Remote session type injection changed")
     parts.append(context.replace("URLSession", "FixtureRemoteSession"))
+    for anchor in ["enum V3DiagnosticProvider:", "enum V3DiagnosticProviderRoute {"]:
+        parts.append(take("diagnostic_policy", anchor))
     parts.append(take("provider", marker="V3_REMOTE_IDENTITY_RUNTIME"))
     parts.append(take("provider", "private actor ILoaderAttemptAnisetteSource"))
     parts.append("enum AnisetteProvider {\n" + take("provider", "static func fetch(handler:") +
@@ -174,13 +178,27 @@ def runtime_projection(sources, spans):
     parts.append("extension BackgroundRefreshAppsOperation {\n" +
         take("background", "private func refresh(_ apps:") +
         "\nfunc runFixture(_ apps: [InstalledApp]) async throws -> [String: Result<InstalledApp, Error>] { try await refresh(apps) }\n}")
-    return "\n\n".join(parts).encode() + b"\n"
+    projected = "\n\n".join(parts)
+    validate_diagnostic_policy_closure(projected, sources["diagnostic_policy"].decode())
+    return projected.encode() + b"\n"
+
+
+def validate_diagnostic_policy_closure(projected, production):
+    # Production provider dispatch now references these policy types. Require
+    # their exact declarations once, never an ad-hoc fixture replacement.
+    for anchor in ["enum V3DiagnosticProvider:", "enum V3DiagnosticProviderRoute {"]:
+        if extract(projected, anchor) != extract(production, anchor):
+            raise ValueError("Diagnostic policy declaration differs from production: " + anchor)
+    required = set(re.findall(r"\bV3Diagnostic\w+", projected))
+    if required != {"V3DiagnosticProvider", "V3DiagnosticProviderRoute"}:
+        raise ValueError("Unresolved diagnostic policy dependency: " + repr(sorted(required)))
 
 
 def generate(candidate, baseline, output):
     candidate, baseline, output = map(Path, (candidate, baseline, output))
     source = {name: read(candidate, path) for name, path in SOURCE_PATHS.items()}
-    previous = {name: read(baseline, path) for name, path in SOURCE_PATHS.items()}
+    previous = {name: read(baseline, path) for name, path in SOURCE_PATHS.items()
+                if name not in CANDIDATE_ONLY_SOURCES}
     support = {path: read(candidate, PACKAGE + "/" + path) for path in SUPPORT_PATHS}
     keychain = source["keychain"].decode()
     spans = []

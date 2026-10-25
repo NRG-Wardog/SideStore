@@ -10,6 +10,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 OUTPUTS = ("CandidateOnboarding.swift", "BoundaryDoubles.swift", "RuntimeTests.swift")
 SOURCE_PATHS = (
+    "SideStore/Core/Anisette/V3DiagnosticProviderSequence.swift",
     "SideStore/Core/Operations/StandaloneOperations/SignInOperation.swift",
     "SideStore/Core/Auth/AuthManager.swift",
     "SideStore/Core/Auth/DeveloperPortalProxy.swift",
@@ -85,6 +86,8 @@ def generate(output, sidestore_root=ROOT, sidesign_root=None):
                    "final class V3AuthIdentityStampState:", "enum V3AuthIdentityBindingPolicy {"]:
         parts.append(take(service, anchor))
     parts.append(take("SideStore/Utils/concurrency/TaskChainCoalescer.swift", "actor TaskChainCoalescer {"))
+    for anchor in ["enum V3DiagnosticProvider:", "enum V3DiagnosticProviderRoute {"]:
+        parts.append(take("SideStore/Core/Anisette/V3DiagnosticProviderSequence.swift", anchor))
     provider = take("SideStore/Core/Anisette/AnisetteProvider.swift", "static func fetch(handler:")
     parts.append("enum AnisetteProvider {\n" + provider + "\n" +
                  "private static func fetchRemote(handler: AnisetteServerHandler? = nil) async throws -> ALTAnisetteData {\n" +
