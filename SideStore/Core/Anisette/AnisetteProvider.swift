@@ -444,8 +444,9 @@ final class V3OwnedODAAttempt: @unchecked Sendable {
 
     init(isAuthorized: @escaping @Sendable () -> Bool) async throws {
         guard isAuthorized() else { throw OwnedODAAuthenticationError.revoked }
-        let usesBuiltInSource = UserDefaults.standard.menuAnisetteList.isEmpty ||
-            UserDefaults.standard.menuAnisetteList == AnisetteServersManager.defaultSource
+        let configuredSource = UserDefaults.standard.menuAnisetteList
+        let usesBuiltInSource = configuredSource.isEmpty ||
+            configuredSource == AnisetteServersManager.defaultSource
         let source: OwnedODALibrarySource
         if usesBuiltInSource {
             guard let base = OnDeviceAnisetteManager.shared.baseAnisetteDirectory else {
@@ -453,7 +454,7 @@ final class V3OwnedODAAttempt: @unchecked Sendable {
             }
             source = .verifiedAppleMusic(baseDirectory: base)
         } else {
-            guard let url = URL(string: UserDefaults.standard.menuAnisetteList) else {
+            guard let url = URL(string: configuredSource) else {
                 throw SideSign.AnisetteError.invalidURL
             }
             source = .customMetadata(sourceURL: url, fallbackURL: AppConstants.Anisette.defaultODAMetadataURL)

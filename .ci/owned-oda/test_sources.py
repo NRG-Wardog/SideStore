@@ -5,6 +5,8 @@ class OwnedODAIntegrationTests(unittest.TestCase):
  def test_scope_and_drain(self):
   text=(ROOT/'SideStore/Core/Operations/StandaloneOperations/SignInOperation.swift').read_text()
   self.assertGreaterEqual(text.count('try await self.v3WithOwnedODA {'),4)
+  self.assertNotIn('self.v3LoginStageSync',text)
+  self.assertNotIn('self.v3AccountOperationFailure',text)
   self.assertIn('if let owned = v3OwnedODAContextSnapshot() { await owned.finish() }',text)
   self.assertIn('installSession: { AuthManager.shared.session = session }',text)
   self.assertIn('if ownedODA == nil { v3LoginStageSync(.sessionCommit)',text)
@@ -14,6 +16,8 @@ class OwnedODAIntegrationTests(unittest.TestCase):
   text=(ROOT/'SideStore/Core/Anisette/AnisetteProvider.swift').read_text()
   for value in ['ownedODAContext', 'OwnedODAAuthentication.$current.withValue', 'context.commitStagedBlob(blob)', 'v3CommitDuringOwnedODAIdentityTransition', 'commitAnisetteBlob', 'installSession()']:
    self.assertIn(value,text)
+  owned=text.split('final class V3OwnedODAAttempt:',1)[1]
+  self.assertEqual(owned.count('UserDefaults.standard.menuAnisetteList'),1)
   proxy=(ROOT/'SideStore/Core/Auth/DeveloperPortalProxy.swift').read_text()
   self.assertIn('OwnedODAAuthentication.$current.withValue(context.admission.ownedODAContext)',proxy)
  def test_generator_other_cwd_symlink_parent(self):

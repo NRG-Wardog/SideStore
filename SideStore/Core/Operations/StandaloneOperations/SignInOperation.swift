@@ -899,13 +899,13 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                     appleID: account.appleID, dsid: session.dsid, token: session.authToken)
         }
         let commitCredentials = {
-            try self.v3LoginStageSync(.credentialCommit) {
+            try v3LoginStageSync(.credentialCommit) {
                 if let candidate = recoveryCandidate {
                     do {
                         try Keychain.shared.writeVerifiedAuthentication(candidate, appleID: account.appleID,
                             dsid: session.dsid, authToken: session.authToken,
                             remoteProvider: self.v3RemoteContextSnapshot() != nil)
-                    } catch { throw self.v3AccountOperationFailure(error, step: .credentialCommit) }
+                    } catch { throw v3AccountOperationFailure(error, step: .credentialCommit) }
                 } else {
                     try Keychain.shared.writeAuthenticationCredentials(appleID: appleID, password: password, dsid: session.dsid, authToken: session.authToken,
                             remoteProvider: self.v3RemoteContextSnapshot() != nil)
