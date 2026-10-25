@@ -1,3 +1,6 @@
+    // RemoteMac-specific fixture leaves ODA explicitly nil; actual owned context
+    // lifecycle, source admission and commit are covered by .ci/owned-oda.
+    private func v3OwnedODAContextSnapshot() -> OwnedODAAuthenticationContext? { nil }
     // Only surrounding app/database/UI work is synthetic; the methods appended by
     // generate.py are copied unchanged from the candidate source.
     private let v3RemoteAnisetteLock = NSLock()

@@ -119,7 +119,7 @@ def generate(output, sidestore_root=ROOT, sidesign_root=None):
                  "func fixtureRegister(team: ALTTeam, session: ALTAppleAPISession) async throws -> ALTDevice { try await registerCurrentDevice(for: team, session: session) }\n" +
                  take(op_path, "private func registerCurrentDevice(for team:") + "\n}")
 
-    operation = [take(op_path, a) for a in ["private func v3RemoteContextSnapshot()", "override func cancel()",
+    operation = [take(op_path, a) for a in ["private func v3RemoteContextSnapshot()", "private func v3WithOwnedODA<T>(", "override func cancel()",
                  "override func execute(parentProgress:", "private func getAnisetteData()",
                  "private func signIn(appleID:", "private func provisioningLoop(account:",
                  "private func finalizeAuthentication(result:", "private func fetchTeam(for account:"]]
@@ -140,6 +140,7 @@ def generate(output, sidestore_root=ROOT, sidesign_root=None):
                 "outputs": {name: digest((output / name).read_bytes()) for name in OUTPUTS},
                 "output_closure": list(OUTPUTS), "production_extracts": extracts,
                 "boundary_replacements": ["URLSession type -> inert FakeSession; no HTTP or native provider",
+                    "Owned ODA context snapshot is explicitly nil; actual phase wrapper is extracted, owned lifecycle executes in the separate .ci/owned-oda suite",
                     "Apple authentication and portal response -> synthetic in-memory boundary",
                     "Keychain, defaults and version lookup -> locked in-memory doubles",
                     "SignInOperation pipeline orchestration and certificate-finalization work -> minimal owned drivers; production phase wrappers, execute/cancel and fetchTeam retained",

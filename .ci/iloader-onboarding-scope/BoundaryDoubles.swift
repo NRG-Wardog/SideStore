@@ -181,3 +181,13 @@ enum V3RemoteRequestLeases {
     static func invalidateAll() { FixtureLog.shared.record("leaseInvalidation:regular") }
     static func invalidateManualAttempts() { FixtureLog.shared.record("leaseInvalidation:manual") }
 }
+
+// Separate owned ODA is never executed by this legacy/RemoteMac fixture.
+enum OwnedODAAuthenticationError: Error { case conflictingRoutes }
+enum OwnedODAAuthentication {
+    @TaskLocal static var current: OwnedODAAuthenticationContext?
+}
+final class OwnedODAAuthenticationContext: @unchecked Sendable {
+    func invalidate() {}
+    func fetch() async throws -> AnisetteData { throw CancellationError() }
+}

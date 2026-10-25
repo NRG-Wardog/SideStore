@@ -30,6 +30,13 @@ def sha(text): return hashlib.sha256(text.encode()).hexdigest()
 class OnboardingSourceTests(unittest.TestCase):
     def test_provider_default_body_is_byte_identical_after_explicit_branch(self):
         method = generate.extract(read("SideStore/Core/Anisette/AnisetteProvider.swift"), "static func fetch(handler:")
+        owned_guard = ("        if ILoaderRemoteAuthentication.current != nil && OwnedODAAuthentication.current != nil {\n"
+                       "            throw OwnedODAAuthenticationError.conflictingRoutes\n"
+                       "        }\n")
+        self.assertEqual(method.count(owned_guard), 1)
+        self.assertIn("if let owned = OwnedODAAuthentication.current", method)
+        self.assertIn("return try await owned.fetch()", method)
+        method = method.replace(owned_guard, "", 1)
         start = method.index("        // A latched attempt")
         route = "        if V3DiagnosticProviderRoute.current == .onDevice ||\n            (V3DiagnosticProviderRoute.current == nil && UserDefaults.standard.useOnDeviceAnisette) {"
         self.assertEqual(method.count(route), 1)
@@ -51,7 +58,21 @@ class OnboardingSourceTests(unittest.TestCase):
             "override func cancel()": "7a9ce1149a862281983bea580a0b8729b8c8669307b09123e9ccdd93f315f700",
         }.items():
             body = generate.extract(operation, anchor)
+            # Exact additive ODA reversal preserves the frozen legacy hashes.
+            expected_invalidations = 2 if anchor == "override func execute(parentProgress:" else 1
+            self.assertEqual(body.count("v3OwnedODAContextSnapshot()?.invalidate()"), expected_invalidations)
+            body = re.sub(r"(?m)^ +(?:self\.)?v3OwnedODAContextSnapshot\(\)\?\.invalidate\(\)\n", "", body)
             if anchor == "override func execute(parentProgress:":
+                expanded_defer = ("        defer {\n"
+                                  "            v3RemoteContextSnapshot()?.invalidate()\n"
+                                  "        }")
+                self.assertEqual(body.count(expanded_defer), 1)
+                body = body.replace(expanded_defer, "        defer { v3RemoteContextSnapshot()?.invalidate() }")
+                owned_scope = ("                                try await self.v3WithOwnedODA {\n"
+                               "                    try await self.executeLoginPipeline(parentProgress: parentProgress)\n"
+                               "                }")
+                self.assertEqual(body.count(owned_scope), 1)
+                body = body.replace(owned_scope, "                                try await self.executeLoginPipeline(parentProgress: parentProgress)")
                 scoped = ("                            try await V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider) {\n"
                           "                                try await self.executeLoginPipeline(parentProgress: parentProgress)\n"
                           "                            }")
@@ -62,6 +83,7 @@ class OnboardingSourceTests(unittest.TestCase):
                        "private func provisioningLoop(account:", "private func finalizeAuthentication(result:"]:
             body = generate.extract(operation, anchor)
             self.assertEqual(body.count("V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider)"), 1)
+            self.assertEqual(body.count("try await self.v3WithOwnedODA {"), 1)
         signin = generate.extract(operation, "private func signIn(appleID:")
         self.assertIn("let remote = v3RemoteContextSnapshot()", signin)
         self.assertIn("ILoaderRemoteAuthentication.$current.withValue(remote)", signin)
@@ -72,7 +94,7 @@ class OnboardingSourceTests(unittest.TestCase):
         self.assertEqual(diagnostic.count("v3RemoteAnisetteContext = nil"), 1)
         ordered = ["guard v3RequireInteractiveCredentials", "while true", "try Task.checkCancellation()",
                    "guard !isCancelled", "v3RemoteContextSnapshot()?.invalidate()",
-                   "v3RemoteAnisetteLock.withLock", "v3RemoteAnisetteContext = nil",
+                   "v3RemoteAnisetteLock.withLock {\n                v3RemoteAnisetteContext = nil", "v3RemoteAnisetteContext = nil",
                    "withThrowingTaskGroup", "defer { group.cancelAll() }", "} catch {",
                    "if isCancelled || Task.isCancelled || v3IsAuthCancellation(error) { throw error }",
                    "if challengeSeen { sequence.needsUser(attempt) }", "sequence.failed(attempt, reason: failure)",
@@ -210,7 +232,8 @@ class OnboardingSourceTests(unittest.TestCase):
             a = generate.generate(Path(one), ROOT, SIGN)
             b = generate.generate(Path(two), ROOT, SIGN)
             self.assertEqual(a, b)
-            self.assertEqual(len(a["production_extracts"]), 54)
+            self.assertEqual(len(a["production_extracts"]), 55)
+            self.assertEqual(sum(entry["anchor"] == "private func v3WithOwnedODA<T>(" for entry in a["production_extracts"]), 1)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
