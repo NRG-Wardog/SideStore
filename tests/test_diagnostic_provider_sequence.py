@@ -30,6 +30,14 @@ class ProviderSequenceTests(unittest.TestCase):
         self.assertIn('v3DiagnosticProvider != .remoteServer || !UserDefaults.standard.useOnDeviceAnisette', operation)
         self.assertIn('func beginTransition(ifCurrent capturedStamp: String) -> Bool', service)
         self.assertIn('v3InstallSessionIfCurrent(session, capturedStamp: committedStamp)', operation)
+        fixture = (ROOT / "tests/provider_sequence/noncooperative.swift").read_text()
+        self.assertNotIn("Task.sleep", fixture)
+        self.assertIn("await probe.waitUntilBlocked()", fixture)
+        self.assertIn("await probe.waitUntilPending()", fixture)
+        observed = fixture.index("} catch {")
+        self.assertLess(fixture.index("group.cancelAll()", observed),
+                        fixture.index("await probe.markPending()", observed))
+        self.assertEqual(fixture.count("precondition("), 4)
 
     def test_production_policy(self):
         swift = shutil.which("swiftc")
@@ -86,8 +94,26 @@ print("Identity reservation: 8 checks passed")
             subprocess.run([swift, "-parse-as-library", str(POLICY),
                             str(ROOT / "tests/provider_sequence/noncooperative.swift"),
                             "-o", str(binary)], check=True)
-            result = subprocess.run([str(binary)], check=True, text=True, capture_output=True, timeout=10)
-            self.assertIn("4 checks passed", result.stdout)
+            # Exercise scheduler ordering repeatedly without recompiling. The
+            # prior SIGTRAP lacked stderr; scheduling was a suspected cause,
+            # not a conclusively diagnosed crash.
+            for iteration in range(10):
+                try:
+                    result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=10)
+                except subprocess.TimeoutExpired as error:
+                    # Keep scheduler deadlocks bounded and make captured diagnostics
+                    # visible without flooding the CI log with an entire crash dump.
+                    def tail(value):
+                        if isinstance(value, bytes):
+                            value = value.decode(errors="replace")
+                        return (value or "")[-8000:]
+                    self.fail(f"Cancellation fixture iteration {iteration + 1} exceeded 10s watchdog\nstdout:\n" +
+                              tail(error.stdout) + "\nstderr:\n" + tail(error.stderr))
+                self.assertEqual(result.returncode, 0,
+                                 f"Cancellation fixture iteration {iteration + 1} exit {result.returncode}\n"
+                                 f"stdout:\n{result.stdout[-8000:]}\nstderr:\n{result.stderr[-8000:]}")
+                self.assertIn("4 checks passed", result.stdout)
+
 
 
 
