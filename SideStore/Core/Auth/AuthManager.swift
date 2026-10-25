@@ -41,6 +41,17 @@ public final class AuthManager: @unchecked Sendable {
         V3RemoteRequestLeases.invalidateAll()
         return true
     }
+    func v3BeginOwnedODAIdentityTransition(ifCurrent capturedStamp: String) -> String? {
+        guard let reserved = v3IdentityStampState.beginOwnedTransition(ifCurrent: capturedStamp) else { return nil }
+        V3RemoteRequestLeases.invalidateAll()
+        return reserved
+    }
+    func v3CommitDuringOwnedODAIdentityTransition(_ reservedStamp: String, commit: () throws -> Void) rethrows -> Bool {
+        try v3IdentityStampState.commitDuringOwnedTransition(reservedStamp, commit: commit)
+    }
+    func v3CompleteOwnedODAIdentityTransition(_ reservedStamp: String) -> String? {
+        v3IdentityStampState.completeOwnedTransition(reservedStamp)
+    }
     func v3CompleteIdentityTransition() {
         v3IdentityStampState.completeTransition()
     }

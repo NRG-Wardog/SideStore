@@ -1609,6 +1609,29 @@ final class V3AuthIdentityStampState: @unchecked Sendable {
         return true
     }
 
+    // Only owned ODA uses this additive reservation token. Legacy transition APIs remain unchanged.
+    func beginOwnedTransition(ifCurrent capturedStamp: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard transitionDepth == 0, processNonce + ":\(revision)" == capturedStamp else { return nil }
+        revision &+= 1; transitionDepth += 1
+        return processNonce + ":\(revision)"
+    }
+    func commitDuringOwnedTransition(_ reservedStamp: String, commit: () throws -> Void) rethrows -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard transitionDepth == 1, processNonce + ":\(revision)" == reservedStamp else { return false }
+        // Lock order: context -> identity -> shared Keychain transaction. The
+        // snapshot-CAS writer never calls back into identity/context and never suspends.
+        try commit()
+        return true
+    }
+    func completeOwnedTransition(_ reservedStamp: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        let owned = transitionDepth == 1 && processNonce + ":\(revision)" == reservedStamp
+        revision &+= 1
+        if transitionDepth > 0 { transitionDepth -= 1 }
+        return owned ? processNonce + ":\(revision)" : nil
+    }
+
     func completeTransition() {
         lock.lock()
         revision &+= 1

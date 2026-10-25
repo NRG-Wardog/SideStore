@@ -195,7 +195,9 @@ public class DeveloperPortalProxy {
         try verifyCurrent(context)
         let certificate = try await V3RemoteRequestLeases.$admitted.withValue(context.admission) {
             try await ILoaderRemoteAuthentication.$current.withValue(context.remoteContext) {
-                try await ALTAppleAPI.shared.addCertificate(request: request, machineIdentifier: dispatched.machineIdentifier, type: type, to: team, session: context.session)
+                try await OwnedODAAuthentication.$current.withValue(context.admission.ownedODAContext) {
+                    try await ALTAppleAPI.shared.addCertificate(request: request, machineIdentifier: dispatched.machineIdentifier, type: type, to: team, session: context.session)
+                }
             }
         }
         guard let der = certificate.data, V3PendingCertificateKeyProof.matches(certificateDER: der, privateKeyPEM: dispatched.privateKey) else { throw V3PendingCertificateCreationError.invalidProof }

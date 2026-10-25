@@ -12,10 +12,18 @@ import AnisetteKit
 
 enum AnisetteProvider {
     static func fetch(handler: AnisetteServerHandler? = nil) async throws -> ALTAnisetteData {
+        if ILoaderRemoteAuthentication.current != nil && OwnedODAAuthentication.current != nil {
+            throw OwnedODAAuthenticationError.conflictingRoutes
+        }
         // A latched attempt is authoritative, including after revocation: never fall back.
         if let remote = ILoaderRemoteAuthentication.current {
             _ = AuthenticationDiagnosticTrace.current?.beginProviderObservation(.selectedBranch(onDevice: false))
             return try await remote.fetch()
+        }
+        if let owned = OwnedODAAuthentication.current {
+            guard ILoaderRemoteAuthentication.current == nil else { throw OwnedODAAuthenticationError.conflictingRoutes }
+            _ = AuthenticationDiagnosticTrace.current?.beginProviderObservation(.selectedBranch(onDevice: true))
+            return try await owned.fetch()
         }
         if V3DiagnosticProviderRoute.current == .onDevice ||
             (V3DiagnosticProviderRoute.current == nil && UserDefaults.standard.useOnDeviceAnisette) {
@@ -240,6 +248,7 @@ enum V3RemoteIdentityContinuity {
 // A nil remote context is still an admitted local route. Retain its exact owner through queues.
 final class V3RemoteRequestAdmission: @unchecked Sendable {
     let context: ILoaderRemoteAuthenticationContext?
+    let ownedODAContext: OwnedODAAuthenticationContext?
     let stamp: String
     private let credentials: LCEmbeddedAuthenticationSnapshot?
     private let marker: Data?
@@ -250,7 +259,11 @@ final class V3RemoteRequestAdmission: @unchecked Sendable {
         stamp = auth.v3IdentityStamp
         credentials = try Keychain.shared.authenticationSnapshot()
         marker = try Keychain.shared.remoteIdentityRouteBytes()
-        ownedLease = ILoaderRemoteAuthentication.current == nil ? try V3RemoteRequestLeases.makeLease(id: id) : nil
+        ownedODAContext = OwnedODAAuthentication.current
+        guard ownedODAContext == nil || ILoaderRemoteAuthentication.current == nil else {
+            throw OwnedODAAuthenticationError.conflictingRoutes
+        }
+        ownedLease = ILoaderRemoteAuthentication.current == nil && ownedODAContext == nil ? try V3RemoteRequestLeases.makeLease(id: id) : nil
         context = ILoaderRemoteAuthentication.current ?? ownedLease?.context
         try check()
     }
@@ -261,6 +274,7 @@ final class V3RemoteRequestAdmission: @unchecked Sendable {
         guard auth.v3IdentityIsStable, auth.v3IdentityStamp == stamp,
               try Keychain.shared.authenticationSnapshot() == credentials,
               try Keychain.shared.remoteIdentityRouteBytes() == marker else { throw V3RemoteIdentityError.stateChanged }
+        try ownedODAContext?.checkActive()
         do { try context?.checkActive() }
         catch is CancellationError { throw CancellationError() }
         catch ILoaderRemoteError.consentRequired { throw V3RemoteIdentityError.stateChanged }
@@ -271,13 +285,15 @@ final class V3RemoteRequestAdmission: @unchecked Sendable {
             return try await withTaskCancellationHandler {
                 try await V3RemoteRequestLeases.$admitted.withValue(self) {
                     try await ILoaderRemoteAuthentication.$current.withValue(context) {
-                        try check()
-                        let result = try await operation()
-                        try check()
-                        return result
+                        try await OwnedODAAuthentication.$current.withValue(ownedODAContext) {
+                            try check()
+                            let result = try await operation()
+                            try check()
+                            return result
+                        }
                     }
                 }
-            } onCancel: { self.context?.invalidate() }
+            } onCancel: { self.context?.invalidate(); self.ownedODAContext?.invalidate() }
         } catch ILoaderRemoteError.consentRequired {
             if Task.isCancelled { throw CancellationError() }
             throw V3RemoteIdentityError.stateChanged
@@ -326,13 +342,15 @@ enum V3RemoteRequestLeases {
         contexts.forEach { $0.invalidate() }
     }
     static func coalescerKey(_ key: String) -> String {
-        ILoaderRemoteAuthentication.current.map { key + ".remoteLease.\(ObjectIdentifier($0))" } ?? key
+        let remoteKey = ILoaderRemoteAuthentication.current.map { key + ".remoteLease.\(ObjectIdentifier($0))" } ?? key
+        return OwnedODAAuthentication.current.map { remoteKey + ".ownedODA.\(ObjectIdentifier($0))" } ?? remoteKey
     }
     static func coalesce<T: Sendable>(key: String,
         operation: @escaping @Sendable () async throws -> T) async throws -> T {
         let admission = try admitted ?? capture()
         let scopedKey = admission.context.map { key + ".remoteLease.\(ObjectIdentifier($0))" } ?? key
-        let key = scopedKey + ".identity." + admission.stamp
+        let ownedKey = admission.ownedODAContext.map { scopedKey + ".ownedODA.\(ObjectIdentifier($0))" } ?? scopedKey
+        let key = ownedKey + ".identity." + admission.stamp
         let result = try await TaskChainCoalescer.shared.coalesce(key: key) {
             try await admission.withScope(operation)
         }
@@ -416,3 +434,54 @@ private actor ILoaderAttemptAnisetteSource {
         return data
     }
 }
+
+// V3_OWNED_ODA_AUTHENTICATION_BEGIN
+// Native header generation is request-owned and blob bytes stay staged until
+// this operation successfully reserves and commits its verified credential route.
+final class V3OwnedODAAttempt: @unchecked Sendable {
+    let context: OwnedODAAuthenticationContext
+    private let snapshot: LCEmbeddedAnisetteSnapshot
+
+    init(isAuthorized: @escaping @Sendable () -> Bool) async throws {
+        guard isAuthorized() else { throw OwnedODAAuthenticationError.revoked }
+        let usesBuiltInSource = UserDefaults.standard.menuAnisetteList.isEmpty ||
+            UserDefaults.standard.menuAnisetteList == AnisetteServersManager.defaultSource
+        let source: OwnedODALibrarySource
+        if usesBuiltInSource {
+            guard let base = OnDeviceAnisetteManager.shared.baseAnisetteDirectory else {
+                throw OwnedODAAuthenticationError.conflictingRoutes
+            }
+            source = .verifiedAppleMusic(baseDirectory: base)
+        } else {
+            guard let url = URL(string: UserDefaults.standard.menuAnisetteList) else {
+                throw SideSign.AnisetteError.invalidURL
+            }
+            source = .customMetadata(sourceURL: url, fallbackURL: AppConstants.Anisette.defaultODAMetadataURL)
+        }
+        let snapshot = try await AnisetteConfigManager.shared.resolveAnisetteSnapshot()
+        let selection = await AnisetteConfigManager.shared.makeRequestHeaderSelection(forOnDeviceAndroid: true)
+        try Task.checkCancellation()
+        guard isAuthorized() else { throw OwnedODAAuthenticationError.revoked }
+        self.snapshot = snapshot
+        context = OwnedODAAuthenticationContext.onDevice(source: source,
+            scratchParent: FileManager.default.temporaryDirectory, identifier: snapshot.identifier,
+            existingBlob: snapshot.adiBlob, headers: selection.headers, isAuthorized: isAuthorized)
+    }
+
+    // Synchronously gates verified credential/session publication under the caller's
+    // reserved identity transition. Keychain separately CAS-checks
+    // the exact captured identifier/blob pair; no stale or other-account blob wins.
+    func commitStagedBlob(_ blob: Data?, reservedStamp: String,
+                          isCancelled: () -> Bool, commitCredentials: () throws -> Void,
+                          installSession: () -> Void) throws {
+        try context.commitStagedBlob(blob) { value in
+            guard try AuthManager.shared.v3CommitDuringOwnedODAIdentityTransition(reservedStamp, commit: {
+                guard !isCancelled() else { throw CancellationError() }
+                try commitCredentials()
+                if let value { try Keychain.shared.commitAnisetteBlob(value, snapshot: snapshot) }
+                installSession()
+            }) else { throw OwnedODAAuthenticationError.revoked }
+        }
+    }
+}
+// V3_OWNED_ODA_AUTHENTICATION_END

@@ -47,6 +47,32 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     private var v3DiagnosticIdentityStamp: String?
     private var v3DiagnosticCommittedIdentityStamp: String?
     private var v3DiagnosticProvider: V3DiagnosticProvider?
+    private var v3OwnedODAAttempt: V3OwnedODAAttempt?
+    private var v3OwnedODAIdentityStamp: String?
+
+    private func v3OwnedODAContextSnapshot() -> OwnedODAAuthenticationContext? {
+        v3RemoteAnisetteLock.withLock { v3OwnedODAAttempt?.context }
+    }
+    private func v3OwnedODAIsAuthorized() -> Bool {
+        let stamp = v3RemoteAnisetteLock.withLock { v3OwnedODAIdentityStamp }
+        return !isCancelled && AuthManager.shared.v3IdentityIsStable &&
+            stamp != nil && stamp == AuthManager.shared.v3IdentityStamp
+    }
+    private func v3PrepareOwnedODA(identityStamp: String) async throws {
+        v3RemoteAnisetteLock.withLock { v3OwnedODAIdentityStamp = identityStamp }
+        let attempt = try await V3OwnedODAAttempt(isAuthorized: { [weak self] in
+            self?.v3OwnedODAIsAuthorized() == true
+        })
+        v3RemoteAnisetteLock.withLock { v3OwnedODAAttempt = attempt }
+        if isCancelled || Task.isCancelled || !v3OwnedODAIsAuthorized() {
+            attempt.context.invalidate()
+            await attempt.context.finish()
+            throw CancellationError()
+        }
+    }
+    private func v3WithOwnedODA<T>(_ body: () async throws -> T) async rethrows -> T {
+        try await OwnedODAAuthentication.$current.withValue(v3OwnedODAContextSnapshot(), operation: body)
+    }
     
     let signInHandler: SignInHandler
     let anisetteServerHandler: AnisetteServerHandler
@@ -150,20 +176,26 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     override func cancel() {
         super.cancel()
         v3RemoteContextSnapshot()?.invalidate()
+        v3OwnedODAContextSnapshot()?.invalidate()
     }
     
     // Main Pipeline Execution
     override func execute(parentProgress: Progress?) async throws -> SignInResult {
         // Invalidation deliberately retains the selected context: it must throw,
         // never turn a cancelled remote attempt into the default local route.
-        defer { v3RemoteContextSnapshot()?.invalidate() }
+        defer {
+            v3RemoteContextSnapshot()?.invalidate()
+            v3OwnedODAContextSnapshot()?.invalidate()
+        }
         return try await withTaskCancellationHandler {
             try await LoginDiagnosticTrace.$current.withValue(loginDiagnosticTrace) {
                 try await AuthenticationDiagnosticTrace.$current.withValue(authenticationDiagnosticTrace) {
                     try await v3LoginStage(.login) {
                         var result = try await ILoaderRemoteAuthentication.$current.withValue(self.v3RemoteContextSnapshot()) {
                             try await V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider) {
-                                try await self.executeLoginPipeline(parentProgress: parentProgress)
+                                try await self.v3WithOwnedODA {
+                    try await self.executeLoginPipeline(parentProgress: parentProgress)
+                }
                             }
                         }
                         if let attempt = self.v3RemoteAnisetteAttempt {
@@ -175,6 +207,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
             }
         } onCancel: {
             self.v3RemoteContextSnapshot()?.invalidate()
+            self.v3OwnedODAContextSnapshot()?.invalidate()
         }
     }
 
@@ -303,6 +336,7 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
             await self.signInHandler.handleSignInResult(.success(silentResult))
         }
         try self.v3RemoteContextSnapshot()?.checkActive()
+        try self.v3OwnedODAContextSnapshot()?.checkActive()
         if let committedStamp = v3DiagnosticCommittedIdentityStamp {
             guard AuthManager.shared.v3InstallSessionIfCurrent(session, capturedStamp: committedStamp) else {
                 throw V3DiagnosticSequenceStopped()
@@ -330,7 +364,9 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         try await ILoaderRemoteAuthentication.$current.withValue(self.v3RemoteContextSnapshot()) {
             try await V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider) {
                 try await v3LoginStage(.provisioning) {
+                    try await self.v3WithOwnedODA {
                     try await self.performProvisioningLoop(account: account, session: session, reportProgress: reportProgress)
+                }
                 }
             }
         }
@@ -614,6 +650,8 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 throw V3DiagnosticSequenceStopped()
             }
             // Only this explicit new attempt may replace an invalidated context.
+            if let owned = v3OwnedODAContextSnapshot() { await owned.finish() }
+            v3RemoteAnisetteLock.withLock { v3OwnedODAAttempt = nil; v3OwnedODAIdentityStamp = nil }
             v3RemoteContextSnapshot()?.invalidate()
             v3RemoteAnisetteLock.withLock {
                 v3RemoteAnisetteContext = nil
@@ -626,10 +664,15 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                     v3RemoteAnisetteContext = remote.context
                 }
             }
+            if attempt.provider == .onDevice {
+                try await v3PrepareOwnedODA(identityStamp: identityStamp)
+            }
             // cancel() may have run between clearing the old route and installing
             // this one. Retain the revoked sentinel and never admit new work.
             if isCancelled || Task.isCancelled {
                 v3RemoteContextSnapshot()?.invalidate()
+                v3OwnedODAContextSnapshot()?.invalidate()
+                if let owned = v3OwnedODAContextSnapshot() { await owned.finish() }
                 throw CancellationError()
             }
             v3AnisetteRouteResolved = true
@@ -672,6 +715,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 v3DiagnosticAttemptClock = nil
                 await handler.setDiagnosticAttemptClock(nil)
                 v3RemoteContextSnapshot()?.invalidate()
+                if let owned = v3OwnedODAContextSnapshot() {
+                    await handler.recordDiagnosticProvider(attempt.provider, outcome: "cleanupPending")
+                    await owned.finish()
+                }
                 if isCancelled || Task.isCancelled || v3IsAuthCancellation(error) { throw error }
                 let challengeSeen = await clock.challengeSeen
                 let appleStarted = await clock.appleRequestStarted
@@ -755,8 +802,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         let remote = v3RemoteContextSnapshot()
         return try await V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider) {
             try await ILoaderRemoteAuthentication.$current.withValue(remote) {
-                try await self.performSignIn(appleID: appleID, password: password,
+                try await self.v3WithOwnedODA {
+                    try await self.performSignIn(appleID: appleID, password: password,
                     recoveryCandidate: recoveryCandidate, capturedStamp: capturedStamp)
+                }
             }
         }
     }
@@ -811,42 +860,70 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
             }
         }
         try self.v3RemoteContextSnapshot()?.checkActive()
+        let ownedODA = v3RemoteAnisetteLock.withLock { v3OwnedODAAttempt }
+        let ownedBlob = try ownedODA?.context.stagedBlobForCommit()
+        var ownedCredentialCommitSucceeded = false
+        var ownedReservation: String?
         if let captured = v3DiagnosticIdentityStamp {
             // Compare and reserve the identity transition under one lock. A
             // sign-out/new account while this request awaited must win.
-            guard v3DiagnosticProvider != .remoteServer || !UserDefaults.standard.useOnDeviceAnisette,
-                  AuthManager.shared.v3BeginIdentityTransition(ifCurrent: captured) else {
-                throw V3DiagnosticSequenceStopped()
+            if ownedODA != nil {
+                guard let reserved = AuthManager.shared.v3BeginOwnedODAIdentityTransition(ifCurrent: captured) else {
+                    throw V3DiagnosticSequenceStopped()
+                }
+                ownedReservation = reserved
+            } else {
+                guard v3DiagnosticProvider != .remoteServer || !UserDefaults.standard.useOnDeviceAnisette,
+                      AuthManager.shared.v3BeginIdentityTransition(ifCurrent: captured) else {
+                    throw V3DiagnosticSequenceStopped()
+                }
             }
         } else {
             AuthManager.shared.v3BeginIdentityTransition()
         }
         defer {
             if v3DiagnosticIdentityStamp != nil {
-                v3DiagnosticCommittedIdentityStamp = AuthManager.shared.v3CompleteIdentityTransitionReturningStamp()
+                if let reserved = ownedReservation {
+                    let committed = AuthManager.shared.v3CompleteOwnedODAIdentityTransition(reserved)
+                    v3DiagnosticCommittedIdentityStamp = committed ?? "revoked-owned-oda-transition"
+                    if ownedCredentialCommitSucceeded, let committed {
+                        v3RemoteAnisetteLock.withLock { v3OwnedODAIdentityStamp = committed }
+                    } else { ownedODA?.context.invalidate() }
+                } else {
+                    v3DiagnosticCommittedIdentityStamp = AuthManager.shared.v3CompleteIdentityTransitionReturningStamp()
+                }
             } else {
                 AuthManager.shared.v3CompleteIdentityTransition()
             }
             self.v3RemoteAnisetteAttempt?.authorization?.adoptOwnedTransition(
                     appleID: account.appleID, dsid: session.dsid, token: session.authToken)
         }
-        do {
-            try v3LoginStageSync(.credentialCommit) {
+        let commitCredentials = {
+            try self.v3LoginStageSync(.credentialCommit) {
                 if let candidate = recoveryCandidate {
                     do {
                         try Keychain.shared.writeVerifiedAuthentication(candidate, appleID: account.appleID,
                             dsid: session.dsid, authToken: session.authToken,
                             remoteProvider: self.v3RemoteContextSnapshot() != nil)
-                    } catch { throw v3AccountOperationFailure(error, step: .credentialCommit) }
+                    } catch { throw self.v3AccountOperationFailure(error, step: .credentialCommit) }
                 } else {
                     try Keychain.shared.writeAuthenticationCredentials(appleID: appleID, password: password, dsid: session.dsid, authToken: session.authToken,
                             remoteProvider: self.v3RemoteContextSnapshot() != nil)
                 }
             }
-        } catch {
-            throw v3AccountOperationFailure(error, step: .credentialCommit)
         }
-        v3LoginStageSync(.sessionCommit) { AuthManager.shared.session = session }
+        do {
+            if let ownedODA {
+                guard let reserved = ownedReservation else { throw OwnedODAAuthenticationError.revoked }
+                try ownedODA.commitStagedBlob(ownedBlob, reservedStamp: reserved,
+                    isCancelled: { self.isCancelled }, commitCredentials: commitCredentials,
+                    installSession: { AuthManager.shared.session = session })
+            } else {
+                try commitCredentials()
+            }
+            ownedCredentialCommitSucceeded = true
+        } catch { throw v3AccountOperationFailure(error, step: .credentialCommit) }
+        if ownedODA == nil { v3LoginStageSync(.sessionCommit) { AuthManager.shared.session = session } }
         
         return (account, session)
     }
@@ -880,7 +957,9 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
         try await ILoaderRemoteAuthentication.$current.withValue(self.v3RemoteContextSnapshot()) {
             try await V3DiagnosticProviderRoute.$current.withValue(self.v3DiagnosticProvider) {
                 try await v3LoginStage(.accountFinalize) {
+                    try await self.v3WithOwnedODA {
                     try await self.performFinalizeAuthentication(result: result)
+                }
                 }
             }
         }

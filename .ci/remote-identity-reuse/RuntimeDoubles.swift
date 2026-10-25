@@ -301,3 +301,15 @@ func fixtureAsyncThrows(_ label: String, _ operation: () async throws -> Void) a
     catch { return }
     throw FixtureFailure.assertion(label + ": expected failure")
 }
+
+// This pre-existing RemoteMac suite leaves the separate ODA route nil. Actual
+// ODA staging/cancellation/commit gates execute in .ci/owned-oda, not this double.
+enum OwnedODAAuthenticationError: Error { case conflictingRoutes }
+enum OwnedODAAuthentication {
+    @TaskLocal static var current: OwnedODAAuthenticationContext?
+}
+final class OwnedODAAuthenticationContext: @unchecked Sendable {
+    func checkActive() throws { throw FixtureFailure.nativeBoundary }
+    func invalidate() {}
+    func fetch() async throws -> AnisetteData { throw FixtureFailure.nativeBoundary }
+}
