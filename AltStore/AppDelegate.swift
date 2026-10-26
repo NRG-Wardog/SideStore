@@ -6694,7 +6694,12 @@ struct V3RefreshAdmissionLease {
     private(set) var expiresAt: Date?
     private(set) var ownerLost = false
 
+    // A retained run still fences new mutations after its owner is lost.
     var isActive: Bool { runID != nil }
+    // Snapshot activity must describe a live owner, not a durable recovery hold.
+    // Otherwise a restarted host cannot accept the very snapshot needed to
+    // present and explicitly reconcile an interrupted refresh.
+    var hasLiveOwner: Bool { isActive && !ownerLost }
 
     mutating func expire(now: Date = Date()) -> Bool {
         guard let expiresAt, expiresAt <= now, !ownerLost else { return false }
@@ -10869,8 +10874,14 @@ final class V3SideStoreService: NSObject {
             operationRecovery = nil; recoveryJournalUnreadable = true
             recoveryStorageFailure = V3RecoveryStorageFailure(.readFailure, underlying: error)
         }
+        // Restore before deriving snapshot facts, including callers that did
+        // not arrive through the normal readiness request admission path.
+        if let operationRecovery, operationRecovery.kind == "refreshAll",
+           !refreshAdmission.owns(operationRecovery.sessionID) {
+            _ = refreshAdmission.restoreLost(runID: operationRecovery.sessionID)
+        }
         let activeMutation = mutationID != nil || activeAuthenticationSessionID != nil ||
-            V3HeadlessRuntime.shared.operations.activeMutationID != nil || refreshAdmission.isActive
+            V3HeadlessRuntime.shared.operations.activeMutationID != nil || refreshAdmission.hasLiveOwner
         let provisioningState = V3HeadlessRuntime.shared.auth.provisioningCompletion.status(
             owner: credentialAppleID, identityStamp: identityStampAtStart, identityStable: identityReadStable,
             activeAccountPresent: activeAccount != nil, activeTeamPresent: team != nil,
@@ -10946,10 +10957,6 @@ final class V3SideStoreService: NSObject {
         }
         if let directRecoveryRecord {
             response["directRecovery"] = safeDirectRecovery(directRecoveryRecord)
-        }
-        if let operationRecovery, operationRecovery.kind == "refreshAll",
-           !refreshAdmission.owns(operationRecovery.sessionID) {
-            _ = refreshAdmission.restoreLost(runID: operationRecovery.sessionID)
         }
         if let operationRecovery, operationRecovery.kind == "refreshAll",
            refreshAdmission.ownerLost {
