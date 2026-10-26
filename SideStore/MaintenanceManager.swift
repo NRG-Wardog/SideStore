@@ -29,14 +29,14 @@ public final class MaintenanceManager: @unchecked Sendable {
     public func preparePersistentStoreURLs(in container: PersistentContainer) throws {
         #if !os(tvOS)
         guard FileManager.default.altstoreSharedDirectory != nil else {
-            throw DatabaseError.missingAppGroup(reason: "The shared container is unavailable. Existing data has not been moved or reset.")
+            throw V3DatabaseStartupGuardFailure(cause: .databaseAppGroupUnavailable, underlying: DatabaseError.missingAppGroup(reason: "The shared container is unavailable. Existing data has not been moved or reset."))
         }
         #endif
         guard container.persistentStoreCoordinator.persistentStores.isEmpty,
               container.persistentStoreDescriptions.count == 1,
               let description = container.persistentStoreDescriptions.first,
               description.type == NSSQLiteStoreType else {
-            throw DatabaseError.migrationFailed(reason: "Cannot safely choose the database before loading its store. Existing data has not been moved or reset.")
+            throw V3DatabaseStartupGuardFailure(cause: .databaseStartupFailed, underlying: DatabaseError.migrationFailed(reason: "Cannot safely choose the database before loading its store. Existing data has not been moved or reset."))
         }
         let directory = PersistentContainer.defaultDirectoryURL()
         let fm = FileManager.default
@@ -47,7 +47,7 @@ public final class MaintenanceManager: @unchecked Sendable {
             for name in [AppConstants.Database.legacyFileName, AppConstants.Database.fileName] {
                 for suffix in ["", "-wal", "-shm"] {
                     if fm.fileExists(atPath: privateDirectory.appendingPathComponent(name + suffix).path) {
-                        throw DatabaseError.migrationFailed(reason: "A database remains in the previous private container. This validation build will not relocate or overwrite it. Keep the existing data and resolve the App Group migration before continuing.")
+                        throw V3DatabaseStartupGuardFailure(cause: .databaseLayoutBlocked, underlying: DatabaseError.migrationFailed(reason: "A database remains in the previous private container. This validation build will not relocate or overwrite it. Keep the existing data and resolve the App Group migration before continuing."))
                     }
                 }
             }
@@ -58,7 +58,7 @@ public final class MaintenanceManager: @unchecked Sendable {
            oldApps.resolvingSymlinksInPath().standardizedFileURL != sharedApps.resolvingSymlinksInPath().standardizedFileURL,
            fm.fileExists(atPath: oldApps.path) {
             guard try fm.contentsOfDirectory(at: oldApps, includingPropertiesForKeys: nil).isEmpty else {
-                throw DatabaseError.migrationFailed(reason: "App data remains in the previous private container and migration is pending. Startup stopped without moving or replacing it. Keep the existing data and resolve the App Group migration before continuing.")
+                throw V3DatabaseStartupGuardFailure(cause: .databaseLayoutBlocked, underlying: DatabaseError.migrationFailed(reason: "App data remains in the previous private container and migration is pending. Startup stopped without moving or replacing it. Keep the existing data and resolve the App Group migration before continuing."))
             }
         }
         let legacy = directory.appendingPathComponent(AppConstants.Database.legacyFileName)
@@ -70,13 +70,13 @@ public final class MaintenanceManager: @unchecked Sendable {
         guard !(legacyExists && currentExists),
               !(!legacyExists && legacySidecars),
               !(!currentExists && currentSidecars) else {
-            throw DatabaseError.migrationFailed(reason: "Multiple database layouts or orphaned SQLite sidecars were found. Startup stopped without changing them. Keep both layouts and contact support; do not reset the database.")
+            throw V3DatabaseStartupGuardFailure(cause: .databaseLayoutConflict, underlying: DatabaseError.migrationFailed(reason: "Multiple database layouts or orphaned SQLite sidecars were found. Startup stopped without changing them. Keep both layouts and contact support; do not reset the database."))
         }
         let selected = legacyExists ? legacy : current
         if legacyExists || currentExists {
             let values = try selected.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             guard values.isRegularFile == true, values.isSymbolicLink != true else {
-                throw DatabaseError.migrationFailed(reason: "The existing database is not a regular store file. Startup stopped without changing it.")
+                throw V3DatabaseStartupGuardFailure(cause: .databaseLayoutConflict, underlying: DatabaseError.migrationFailed(reason: "The existing database is not a regular store file. Startup stopped without changing it."))
             }
         }
         description.url = selected

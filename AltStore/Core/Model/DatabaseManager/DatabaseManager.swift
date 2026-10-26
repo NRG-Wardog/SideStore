@@ -19,6 +19,49 @@ private let ReceivedWillMigrateDatabaseNotification: @convention(c) (CFNotificat
     DatabaseManager.shared.receivedWillMigrateDatabaseNotification()
 }
 
+// V3_DATABASE_STARTUP_OUTCOME_V1: finite process-local diagnostics only.
+// This reports the end of an attempt, not permanent database corruption.
+// No Error, path, account, store URL, or error description is retained.
+enum V3DatabaseStartupFailure: String, Error, Sendable, CaseIterable {
+    case databaseLayoutBlocked, databaseLayoutConflict, databaseAppGroupUnavailable
+    case databasePersistenceFailed, databaseStartupFailed
+}
+
+// Preserve existing local DatabaseError codes/reasons for callers, but only
+// the typed cause is retained by the startup outcome or sent to the host.
+struct V3DatabaseStartupGuardFailure: Error, CustomNSError, LocalizedError, Sendable {
+    let cause: V3DatabaseStartupFailure
+    let underlying: DatabaseError
+    static var errorDomain: String { DatabaseError.errorDomain }
+    var errorCode: Int { underlying.errorCode }
+    var errorDescription: String? { underlying.errorDescription }
+    var failureReason: String? { underlying.failureReason }
+}
+
+struct V3DatabaseStartupOutcome: Sendable {
+    enum Phase: String, Sendable { case waiting, selectingStore, loadingStore, preparingDatabase, ready, failed }
+    private(set) var phase: Phase = .waiting
+    private(set) var failure: V3DatabaseStartupFailure?
+    private(set) var events: [String] = ["database_startup=waiting"]
+
+    mutating func transition(_ next: Phase) {
+        phase = next
+        if next != .failed { failure = nil }
+        events.append("database_startup=\(next.rawValue)")
+        if events.count > 16 { events.removeFirst(events.count - 16) }
+    }
+
+    mutating func fail(_ cause: V3DatabaseStartupFailure) {
+        failure = cause
+        transition(.failed)
+        events.append("database_startup_cause=\(cause.rawValue)")
+        if events.count > 16 { events.removeFirst(events.count - 16) }
+    }
+
+    var logTail: String { events.joined(separator: "\n") }
+}
+// V3_DATABASE_STARTUP_OUTCOME_END
+
 public class DatabaseManager: @unchecked Sendable
 {
     public static private(set) var shared = DatabaseManager()
@@ -27,6 +70,8 @@ public class DatabaseManager: @unchecked Sendable
     
     private let lock = NSLock()
     private var _isStarted = false
+    private var _startupOutcome = V3DatabaseStartupOutcome()
+    var startupOutcome: V3DatabaseStartupOutcome { self.lock.withLock { self._startupOutcome } }
     public var isStarted: Bool {
         self.lock.withLock { self._isStarted }
     }
@@ -96,18 +141,36 @@ public class DatabaseManager: @unchecked Sendable
         
         let task = self.lock.withLock {
             if let startTask { return startTask }
-            let task = Task<Void, Error>.detached(priority: .userInitiated) { try await self.performStart() }
+            self._startupOutcome.transition(.selectingStore)
+            let task = Task<Void, Error>.detached(priority: .userInitiated) {
+                do {
+                    try await self.performStart()
+                    self.lock.withLock {
+                        self._isStarted = true
+                        self._startupOutcome.transition(.ready)
+                    }
+                } catch {
+                    self.lock.withLock {
+                        let cause = (error as? V3DatabaseStartupGuardFailure)?.cause ??
+                            (self._startupOutcome.phase == .loadingStore ? .databasePersistenceFailed : .databaseStartupFailed)
+                        self._startupOutcome.fail(cause)
+                        // Only the owning task clears itself. Awaiters of an old
+                        // failed attempt must not clear a newer explicit retry.
+                        self.startTask = nil
+                    }
+                    // Local launch callers still receive the original typed
+                    // DatabaseError and retain their existing safe UI handling.
+                    if let guarded = error as? V3DatabaseStartupGuardFailure {
+                        throw guarded.underlying
+                    }
+                    throw error
+                }
+            }
             self.startTask = task
             return task
         }
         
-        do {
-            try await task.value
-            self.lock.withLock { self._isStarted = true }
-        } catch {
-            self.lock.withLock { self.startTask = nil }
-            throw error
-        }
+        try await task.value
     }
 
 
@@ -117,6 +180,7 @@ public class DatabaseManager: @unchecked Sendable
         if self.persistentContainer.persistentStoreCoordinator.persistentStores.isEmpty {
             try MaintenanceManager.shared.preparePersistentStoreURLs(in: self.persistentContainer)
         }
+        self.lock.withLock { self._startupOutcome.transition(.loadingStore) }
         if self.persistentContainer.isMigrationRequired
         {
             // Quit any other running AltStore processes to prevent concurrent database access during and after migration.
@@ -130,6 +194,7 @@ public class DatabaseManager: @unchecked Sendable
         } else {
             debugLog("[SIDESTORE_STARTUP] reusing_attached_persistent_store_after_startup_failure")
         }
+        self.lock.withLock { self._startupOutcome.transition(.preparingDatabase) }
         try await self.prepareDatabase()
     }
 

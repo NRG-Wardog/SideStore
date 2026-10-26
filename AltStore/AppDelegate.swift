@@ -183,7 +183,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             }
             catch
             {
-                debugLog("Failed to start DatabaseManager. Error: \(error)")
+                debugLog("[SIDESTORE_STARTUP] database_startup_failed; see sanitized startup diagnostics.")
             }
         }
         
@@ -960,6 +960,7 @@ enum V3ServiceReadinessReply: Equatable {
     // executable vocabulary-parity harness verifies every typed cause and
     // source step is accepted here while unknown values remain rejected.
     static let knownSafeCauseValues: Set<String> = [
+        "databaseLayoutBlocked", "databaseLayoutConflict", "databaseAppGroupUnavailable", "databasePersistenceFailed", "databaseStartupFailed",
         "networkConnectionLost", "networkTimedOut", "networkUnavailable",
         "anisetteServerUnavailable", "anisetteServerRejected", "anisetteRequestTimedOut",
         "anisetteRateLimited", "anisetteInvalidResponse", "anisetteUnknownFailure",
@@ -1045,6 +1046,12 @@ enum V3ServiceReadinessReply: Equatable {
                 // The typed failure boundary validates the fixed keys
                 // and values before any diagnostic publication.
                 failure.signingContext = fields
+            }
+            if ["databaseLayoutBlocked", "databaseLayoutConflict", "databaseAppGroupUnavailable",
+                "databasePersistenceFailed", "databaseStartupFailed"].contains(failure.safeCause ?? "") {
+                guard ["snapshot", "status"].contains(failure.operation),
+                      failure.stage == "serviceReadiness", failure.code == "failed",
+                      failure.retryable == false else { return .invalid }
             }
             if ["snapshot", "status"].contains(failure.operation) && failure.stage == "serviceReadiness" &&
                failure.code == "notReady" && failure.retryable == true {
@@ -9467,6 +9474,38 @@ final class V3SideStoreService: NSObject {
             reply(encode(response, operation: operation))
             return
         }
+        // V3_BOOTSTRAP_READINESS_DIAGNOSTICS_V1: after strict validation and
+        // replay/cancel checks, before auth, journal, context, or mutation access.
+        // Only finite enum-derived in-memory startup records cross this boundary.
+        if !DatabaseManager.shared.isStarted {
+            let startup = DatabaseManager.shared.startupOutcome
+            if operation == "logTail" {
+                reply(encode(["version": 1, "id": id, "ok": true,
+                              "result": ["tail": startup.logTail]], operation: operation))
+                return
+            }
+            if let cause = startup.failure,
+               let safeCause = CombinedFailure.SafeCause(rawValue: cause.rawValue) {
+                let failure = CombinedFailure(operation: operation, stage: .serviceReadiness,
+                    code: .failed, id: id, retryable: false, safeCause: safeCause)
+                var response: [String: Any] = ["version": 1, "id": id,
+                    "error": "startupFailed", "failure": failure.wire]
+                if !V3WireContract.readOperations.contains(operation) {
+                    response["operationNotDispatched"] = true
+                }
+                reply(encode(response, operation: operation))
+                return
+            }
+            let failure = CombinedFailure(operation: operation, stage: .serviceReadiness,
+                code: .notReady, id: id, retryable: operation == "snapshot")
+            var response: [String: Any] = ["version": 1, "id": id, "error": "notReady",
+                "failure": failure.wire]
+            if !V3WireContract.readOperations.contains(operation) {
+                response["operationNotDispatched"] = true
+            }
+            reply(encode(response, operation: operation))
+            return
+        }
         let mutation = !V3WireContract.readOperations.contains(operation)
         let authenticationActive = V3HeadlessRuntime.shared.auth.hasActiveSession
         let authContinuation = V3ServiceMutationAdmissionPolicy.permitsAuthenticationControl(
@@ -14842,6 +14881,7 @@ public struct CombinedFailure: Error, LocalizedError {
     }
 
     public enum SafeCause: String, CaseIterable {
+        case databaseLayoutBlocked, databaseLayoutConflict, databaseAppGroupUnavailable, databasePersistenceFailed, databaseStartupFailed
         case networkConnectionLost
         case networkTimedOut
         case networkUnavailable
@@ -14920,6 +14960,8 @@ public struct CombinedFailure: Error, LocalizedError {
 
         fileprivate var inferredRetryable: Bool? {
             switch self {
+            case .databaseLayoutBlocked, .databaseLayoutConflict, .databaseAppGroupUnavailable, .databasePersistenceFailed, .databaseStartupFailed:
+                return false
             case .networkConnectionLost, .networkTimedOut, .networkUnavailable,
                  .signingNetworkConnectionLost, .signingNetworkTimedOut, .signingNetworkUnavailable,
                  .wifiUnavailable, .localDevVPNUnavailable:
@@ -15415,7 +15457,30 @@ public struct CombinedFailure: Error, LocalizedError {
         }
         return nil
     }
+    public var isTerminalDatabaseStartupFailure: Bool {
+        guard let safeCause else { return false }
+        return stage == .serviceReadiness && code == .failed && retryable == false &&
+            [.databaseLayoutBlocked, .databaseLayoutConflict, .databaseAppGroupUnavailable,
+             .databasePersistenceFailed, .databaseStartupFailed].contains(safeCause)
+    }
+    private var databaseStartupMessage: String? {
+        guard isTerminalDatabaseStartupFailure else { return nil }
+        switch safeCause {
+        case .databaseLayoutBlocked:
+            return "SideStore stopped startup because its private data layout could not be verified."
+        case .databaseLayoutConflict:
+            return "SideStore stopped startup because conflicting saved data locations were found."
+        case .databaseAppGroupUnavailable:
+            return "SideStore could not access its required shared storage."
+        case .databasePersistenceFailed:
+            return "SideStore could not open or prepare its saved database."
+        case .databaseStartupFailed:
+            return "SideStore database startup failed before readiness."
+        default: return nil
+        }
+    }
     public var message: String {
+        if let startup = databaseStartupMessage { return startup }
         if let message = V3AccountOperationError.remoteIdentityMessage(signingContext["typed_error"]) { return message }
         if signingContext["typed_error"] == "anisetteIdentityStateInvalid" { return LCAnisettePairError.safeMessage }
         if operation == "delete", code == .timedOut {
@@ -15437,6 +15502,8 @@ public struct CombinedFailure: Error, LocalizedError {
         if code == .timedOut { return "SideStore could not \(timeoutAction) in time while \(timeoutContext)." }
         if let local = localRefreshMessage { return local }
         if let safeCause {            switch safeCause {
+            case .databaseLayoutBlocked, .databaseLayoutConflict, .databaseAppGroupUnavailable, .databasePersistenceFailed, .databaseStartupFailed:
+                break
             case .networkConnectionLost: return "The network connection was lost during \(operation)."
             case .networkTimedOut: return "The network request timed out during \(operation)."
             case .networkUnavailable: return "A network connection was unavailable during \(operation)."
@@ -15634,6 +15701,9 @@ public struct CombinedFailure: Error, LocalizedError {
     }
 
     public var recovery: String {
+        if isTerminalDatabaseStartupFailure {
+            return "Open Operation Logs and copy the startup diagnostics. Keep the existing app and its data; do not delete, reset, or move its database as a workaround."
+        }
         if let recovery = V3AccountOperationError.remoteIdentityRecovery(signingContext["typed_error"]) { return recovery }
         if signingContext["typed_error"] == "anisetteIdentityStateInvalid" { return LCAnisettePairError.recovery }
         if let local = localRefreshRecovery { return local }
@@ -15646,6 +15716,8 @@ public struct CombinedFailure: Error, LocalizedError {
            safeCause != .responseTooLarge, let catalog = catalogFailureRecovery { return catalog }
         if let safeCause {
             switch safeCause {
+            case .databaseLayoutBlocked, .databaseLayoutConflict, .databaseAppGroupUnavailable, .databasePersistenceFailed, .databaseStartupFailed:
+                break
             case .networkConnectionLost, .networkTimedOut, .networkUnavailable:
                 return "Check the network used by this request, then retry when the connection is stable. If a device operation still fails, run Connection Check."
             case .anisetteServerUnavailable:
@@ -17922,6 +17994,12 @@ extension CombinedFailure.Code {
 extension CombinedFailure.SafeCause {
     fileprivate var diagnosticToken: String {
         switch self {
+        case .databaseLayoutBlocked: return "F69"
+        case .databaseLayoutConflict: return "F70"
+        case .databaseAppGroupUnavailable: return "F71"
+        case .databasePersistenceFailed: return "F72"
+        case .databaseStartupFailed: return "F73"
+
         case .networkConnectionLost: return "F01"
         case .networkTimedOut: return "F02"
         case .networkUnavailable: return "F03"
