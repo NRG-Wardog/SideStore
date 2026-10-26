@@ -76,21 +76,46 @@ def extract(text, marker):
         end += 1
     return text[start:end]
 
-# The only admitted host change is the reviewed opt-in ReuseMain registry guard.
+# The original reviewed host change is the opt-in ReuseMain registry guard.
+# A separately hash-bound exact cold-VPN delta is projected before this proof.
 # Remove this exact insertion, then retain the original whole-file fingerprint.
 REVIEWED_REUSE_MAIN_INSERTION = '            context.validatedReuseMain = app.useMainProfile && V3ValidatedReuseMainRegistry.contains(\n                original: app.bundleIdentifier, resigned: app.resignedBundleIdentifier,\n                profileUUID: context.targetAppBundle?.provisioningProfile?.uuid,\n                generation: context.targetAppBundle?.infoPlist[V3ValidatedReuseMainRegistry.generationKey] as? String)\n            if app.useMainProfile && !context.validatedReuseMain &&\n                V3ValidatedReuseMainRegistry.hasAssociation(original: app.bundleIdentifier, resigned: app.resignedBundleIdentifier) {\n                throw OperationError.invalidParameters("The cached app no longer matches its validated ReuseMain installation. Reinstall interactively instead of silently switching signing strategies.")\n            }\n'
 REVIEWED_REUSE_MAIN_SHA256 = 'cd11ece003588f8aeac44bab28c1d3797c11dfb5e23e9facd7a947c8a7057af6'
 
 
+REVIEWED_COLD_VPN_DELTA_SHA256 = '7c10bae55feec2ebaf8f70eddc1c0a470804a5e5d0bb6cf3442c91ec890ff7e9'
+
+
+def project_reviewed_cold_vpn(text):
+    """Reverse only exact, uniquely occurring reviewed hunks, never arbitrary code."""
+    raw = (HERE / 'reviewed-cold-vpn-host-delta.json').read_bytes()
+    assert digest(raw) == REVIEWED_COLD_VPN_DELTA_SHA256, 'Reviewed cold-VPN delta changed'
+    receipt = json.loads(raw)
+    if '// V3_OWNED_REFRESH_READINESS_WAIT_V1:' not in text:
+        return text, False
+    for hunk in receipt['hunks']:
+        assert text.count(hunk['after']) == 1, 'Changed, absent or duplicate cold-VPN hunk'
+        text = text.replace(hunk['after'], hunk['before'], 1)
+    assert digest(text.encode()) == receipt['before_sha256'], 'Changes outside reviewed cold-VPN hunks'
+    return text, True
+
+
 def verify_host_preservation(text):
+    text, cold_vpn = project_reviewed_cold_vpn(text)
     if digest(text.encode()) == PINNED['host']:
         return {'host_pipeline_byte_identical': True}
     assert text.count(REVIEWED_REUSE_MAIN_INSERTION) == 1, 'Unreviewed host pipeline insertion'
     normalized = text.replace(REVIEWED_REUSE_MAIN_INSERTION, '', 1)
     assert digest(normalized.encode()) == PINNED['host'], 'Host pipeline changed beyond reviewed ReuseMain guard'
+    if cold_vpn:
+        return {'host_pipeline_byte_identical': False,
+                'host_pipeline_except_reviewed_cold_vpn_and_reuse_main_byte_identical': True,
+                'reviewed_cold_vpn_delta_sha256': REVIEWED_COLD_VPN_DELTA_SHA256,
+                'reviewed_reuse_main_insertion_sha256': REVIEWED_REUSE_MAIN_SHA256}
     return {'host_pipeline_byte_identical': False,
             'host_pipeline_except_reviewed_reuse_main_byte_identical': True,
             'reviewed_reuse_main_insertion_sha256': REVIEWED_REUSE_MAIN_SHA256}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -187,7 +212,7 @@ class InstalledApp {
         "swift_compiled": False, "swift_executed": False,
         "native_provider_executed": False, "network_executed": False,
         "inputs_sha256": {"SideStore/" + path: digest(source[key].encode()) for key, path in PRODUCTION.items()},
-        "fixture_inputs_sha256": {name: digest((HERE / name).read_bytes()) for name in ["generate_fixture.py", "Cases.swift", *ORIGINAL_PINS]},
+        "fixture_inputs_sha256": {name: digest((HERE / name).read_bytes()) for name in ["generate_fixture.py", "reviewed-cold-vpn-host-delta.json", "Cases.swift", *ORIGINAL_PINS]},
         "generated_sha256": digest(generated.encode()),
         "expected_case_names": cases, "expected_case_count": len(cases),
         "strict_compute_byte_identical": True, **host_proof,
