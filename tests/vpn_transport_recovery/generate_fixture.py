@@ -42,7 +42,7 @@ def no_imports(text):
 
 
 def producer_branch(text):
-    ready = declaration(text, '    func isReady(withNetworkCheck:')
+    ready = declaration(text, '    private func readinessObservation(withNetworkCheck:')
     return declaration(ready, '        if decision.transport == .unavailable {')
 
 
@@ -56,6 +56,15 @@ def readiness_helper(snapshot, branch, suffix=''):
     # Arguments represent a single immutable selection input. The runtime never
     # re-reads an interface or mode after producer error classification.
     snapshot = re.sub(r'\bRefreshTransportPolicy\b', 'RefreshTransportPolicy' + suffix, snapshot)
+    if not suffix:
+        # Preserve the current producer branch verbatim; only adapt its typed
+        # observation return envelope to the historical Result test boundary.
+        branch = ('    func observe() -> MinimuxerOwnedReadinessObservation {\n'
+                  '        let transientAllowed = false\n' + branch +
+                  '\n        return .init(result: .success(true))\n    }\n'
+                  '    return observe().result')
+    else:
+        branch += '\n    return .success(true)'
     return '''
 func fixtureTransportDecision%(suffix)s(modernOS: Bool = true,
     mode: DeviceConnectionMode = .localVPN, pairing inputPairing: PairingProtocol = .lockdown,
@@ -67,7 +76,6 @@ func fixtureTransportDecision%(suffix)s(modernOS: Bool = true,
 }
 func fixtureReadinessResult%(suffix)s(decision: RefreshTransportDecision%(suffix)s) -> Result<Bool, MinimuxerError> {
 %(branch)s
-    return .success(true)
 }
 func fixtureReadiness%(suffix)s(modernOS: Bool = true,
     mode: DeviceConnectionMode = .localVPN, pairing: PairingProtocol = .lockdown,
@@ -91,6 +99,8 @@ def generate_source(root, include_operation_classifier=True, include_baseline=Tr
     if include_operation_classifier:
         swift += 'func debugLog(_ text: String) {}\nfunc verboseLog(_ text: String) {}\n'
     swift += declaration(s['api'], 'public enum DeviceConnectionMode:') + '\n'
+    swift += declaration(s['api'], 'public enum MinimuxerOwnedReadinessTransient:') + '\n'
+    swift += declaration(s['api'], 'public struct MinimuxerOwnedReadinessObservation') + '\n'
     swift += 'enum MinimuxerConstants { static let remotePairingPort: UInt16 = 58783; static let lockdowndPort: UInt16 = 62078 }\n'
     swift += declaration(s['pairing'], 'public enum PairingProtocol:') + '\n'
     swift += declaration(s['gateway_error'], 'open class DeviceGatewayError:') + '\n'

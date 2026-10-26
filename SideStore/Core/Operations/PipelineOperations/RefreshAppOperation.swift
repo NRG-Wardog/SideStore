@@ -12,6 +12,9 @@ import SideSign
 
 final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContext, InstalledApp>, @unchecked Sendable {
     
+    // Set before execution; only refresh pipelines supply this owned admission.
+    var refreshAdmission: (() throws -> Void)?
+
     override func execute(parentProgress: Progress?) async throws -> InstalledApp {
         let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[RefreshAppOperation] execute() started")
@@ -47,6 +50,10 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         
         do {
             await CellularRefreshManager.shared.turnOffDataIfNeeded()
+            // V3_REFRESH_PROFILE_ADMISSION_V1: the cellular await may expire the
+            // owner. Check once before first injection, never between injected
+            // profiles or before recording the resulting database state.
+            try refreshAdmission?()
             for p in profiles {
                 try await installProvisioningProfiles(p.value.data)
             }

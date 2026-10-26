@@ -26,7 +26,8 @@ final class PipelineExecutor: @unchecked Sendable {
         group: RefreshGroup,
         downloadingApp: AppProtocol,
         permissionsMode: PermissionReviewMode,
-        operationProgress: Progress?
+        operationProgress: Progress?,
+        refreshAdmission: (() throws -> Void)? = nil
     ) async throws -> InstalledApp {
         var finalApp: InstalledApp?
         
@@ -38,7 +39,8 @@ final class PipelineExecutor: @unchecked Sendable {
                 group: group,
                 downloadingApp: downloadingApp,
                 permissionsMode: permissionsMode,
-                progress: operationProgress
+                progress: operationProgress,
+                refreshAdmission: refreshAdmission
             ) {
                 finalApp = result
             }
@@ -57,20 +59,20 @@ final class PipelineExecutor: @unchecked Sendable {
         group: RefreshGroup,
         downloadingApp: AppProtocol,
         permissionsMode: PermissionReviewMode,
-        progress: Progress?
+        progress: Progress?,
+        refreshAdmission: (() throws -> Void)?
     ) async throws -> InstalledApp? {
-        var result: Any? = "()"
-        var loggerType: any OperationLogging.Type
-        
-        defer {
-            logOperationResult(result: result, loggerType: loggerType, operation: step)
-        }
-
         // V3_PIPELINE_PHASE_REPORTING_V1: report the authoritative step before it runs.
         if let headlessHandler = context.handler as? V3HeadlessPipelineHandler {
             await headlessHandler.recordPipelinePhase(step,
                 downloadUsesNetwork: downloadingApp.url?.isFileURL == false)
         }
+        // V3_REFRESH_STEP_ADMISSION_V1: after phase reporting suspends, but before
+        // starting another refresh step. No post-mutation bookkeeping is gated.
+        if case .refresh = appOperation { try refreshAdmission?() }
+        var result: Any? = "()"
+        var loggerType: any OperationLogging.Type
+        defer { logOperationResult(result: result, loggerType: loggerType, operation: step) }
         do {
             switch step {
             case .preflightChecks:
@@ -195,6 +197,7 @@ final class PipelineExecutor: @unchecked Sendable {
             case .refreshApp:
                 loggerType = RefreshAppOperation.self
                 let step = try RefreshAppOperation(context: context)
+                if case .refresh = appOperation { step.refreshAdmission = refreshAdmission }
                 let installedApp = try await step.execute(parentProgress: progress)
                 context.installedApp = installedApp
                 result = installedApp

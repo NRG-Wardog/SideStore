@@ -9,7 +9,85 @@
 @preconcurrency import UIKit
 import CoreData
 import SideSign
+import Minimuxer
 
+
+// V3_OWNED_REFRESH_READINESS_WAIT_V1: observations only, before app mutation.
+// The budget bounds starting/repeating probes, not preemption of an in-flight
+// network probe. Native device initialization runs once, outside this grace budget.
+final class V3RefreshReadinessLifetime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var expired = false
+    private var ended = false
+    func expire() { lock.withLock { expired = true } }
+    func check() throws {
+        if lock.withLock({ expired }) { throw OperationError.timedOut }
+    }
+    func claimEnd() -> Bool {
+        lock.withLock {
+            guard !ended else { return false }
+            ended = true
+            return true
+        }
+    }
+}
+
+enum V3OwnedRefreshReadinessWait {
+    static let budget: TimeInterval = 10
+    static let maximumProbes = 12
+    static func run(probe: () async -> MinimuxerOwnedReadinessObservation,
+                    checkOwnership: () throws -> Void,
+                    diagnostic: (Int, TimeInterval, String, String) -> Void = { _, _, _, _ in },
+                    now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                    sleep: (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }) async throws {
+        let started = now()
+        guard started.isFinite, started >= 0 else { throw OperationError.timedOut }
+        func elapsed() throws -> TimeInterval {
+            let value = now() - started
+            guard value.isFinite, value >= 0 else { throw OperationError.timedOut }
+            return value
+        }
+        var count = 0
+        while true {
+            try Task.checkCancellation()
+            try checkOwnership()
+            let beforeProbe = try elapsed()
+            guard count < maximumProbes, beforeProbe < budget else {
+                diagnostic(count, min(beforeProbe, budget), "none", "deadline")
+                throw OperationError.timedOut
+            }
+            count += 1
+            let observation = await probe()
+            try Task.checkCancellation()
+            try checkOwnership()
+            let afterProbe = try elapsed()
+            guard afterProbe < budget else {
+                diagnostic(count, min(afterProbe, budget), "none", "lateProbe")
+                throw OperationError.timedOut
+            }
+            switch observation.result {
+            case .success(true):
+                diagnostic(count, afterProbe, "none", "ready")
+                return
+            case .success(false):
+                // UI-only observations are never owned network readiness proof.
+                throw OperationError.minimuxerNotStarted(reason: "The owned transport probe did not confirm network readiness.")
+            case .failure(let error):
+                guard let reason = observation.transient else {
+                    diagnostic(count, afterProbe, "none", "terminal")
+                    throw error
+                }
+                diagnostic(count, afterProbe, reason.rawValue, "pending")
+            }
+            guard count < maximumProbes else { throw OperationError.timedOut }
+            let delay = min(count == 1 ? 0.2 : count == 2 ? 0.4 : count == 3 ? 0.8 : 1.0,
+                            max(0, budget - (try elapsed())))
+            guard delay > 0 else { throw OperationError.timedOut }
+            try await sleep(UInt64(delay * 1_000_000_000))
+        }
+    }
+}
+// V3_OWNED_REFRESH_READINESS_WAIT_END
 
 protocol PipelineProgress: Sendable{
     func progress(for operation: AppOperation) -> Progress?
@@ -140,10 +218,12 @@ final class PipelineRunner: Sendable
         let operations = operations.filter { progress.progress(for: $0) == nil || progress.progress(for: $0)?.isCancelled == true }
         guard !operations.isEmpty else { throw OperationError.cancelled }
         
+        let readinessLifetime = V3RefreshReadinessLifetime()
         let backgroundTaskID = await MainActor.run {
             var taskID = UIBackgroundTaskIdentifier.invalid
             taskID = UIApplication.shared.beginBackgroundTask(withName: "com.altstore.AppManager.perform") {
-                UIApplication.shared.endBackgroundTask(taskID)
+                readinessLifetime.expire()
+                if readinessLifetime.claimEnd() { UIApplication.shared.endBackgroundTask(taskID) }
             }
             return taskID
         }
@@ -171,7 +251,7 @@ final class PipelineRunner: Sendable
                 if UIApplication.shared.isIdleTimerDisabled && !context.isActivelyManagingAnyApp {
                     UIApplication.shared.isIdleTimerDisabled = false
                 }
-                if backgroundTaskID != .invalid {
+                if backgroundTaskID != .invalid, readinessLifetime.claimEnd() {
                     UIApplication.shared.endBackgroundTask(backgroundTaskID)
                 }
             }
@@ -179,14 +259,62 @@ final class PipelineRunner: Sendable
         
         // COMBINED_COREDEVICE_PIPELINE_BATCH_V1: lease before readiness, release on every returning path.
         let transportCore = minimuxer.core
+        let transportCoreIdentity = ObjectIdentifier(transportCore)
         await transportCore.beginTransportBatch()
         do {
         /* Minimuxer Readiness Check */
-        if !CellularRefreshManager.shared.isEnabled,
-           case .failure(let error) = await isMinimuxerReady()
-        {
+        func checkReadinessOwnership() throws {
+            try Task.checkCancellation()
+            try V3RemoteRequestLeases.admitted?.check()
+            try readinessLifetime.check()
+            guard ObjectIdentifier(minimuxer.core) == transportCoreIdentity else {
+                throw OperationError.invalidOperationContext("The owned readiness transport changed.")
+            }
+        }
+        do {
+            try checkReadinessOwnership()
+            if !CellularRefreshManager.shared.isEnabled {
+                let initialMode = await transportCore.getConnectionMode()
+                try checkReadinessOwnership()
+                if initialMode == .localVPN {
+                    try await V3OwnedRefreshReadinessWait.run(probe: {
+                        guard await transportCore.getConnectionMode() == initialMode else {
+                            return .init(result: .success(false), transient: nil)
+                        }
+                        let observation = await transportCore.ownedNetworkReadinessProbe(withNetworkCheck: true)
+                        guard await transportCore.getConnectionMode() == initialMode else {
+                            return .init(result: .success(false), transient: nil)
+                        }
+                        return observation
+                    }, checkOwnership: checkReadinessOwnership, diagnostic: { count, elapsed, reason, outcome in
+                        debugLog("[V3_OWNED_READINESS] attempt=\(count) elapsed=\(Int(elapsed * 1000))ms reason=\(reason) outcome=\(outcome)")
+                    })
+                    // Network readiness is not device readiness. The original native
+                    // initialization runs exactly once, without the network grace deadline.
+                    try checkReadinessOwnership()
+                    let nativeResult = await transportCore.isReady(
+                        withNetworkCheck: true, withDDIMountCheck: false)
+                    try checkReadinessOwnership()
+                    switch nativeResult {
+                    case .success(true): break
+                    case .success(false): throw OperationError.minimuxerNotStarted(reason: "Device readiness was not confirmed.")
+                    case .failure(let error): throw error
+                    }
+                } else {
+                    // Remote and unconfigured routes retain their original
+                    // one-shot behavior, without a new local-VPN grace deadline.
+                    if case .failure(let error) = await transportCore.isReady(
+                        withNetworkCheck: true, withDDIMountCheck: false) { throw error }
+                }
+            }
+            try checkReadinessOwnership()
+        } catch {
+            if error is CancellationError { throw error }
+            let typedError: Error
+            if let native = error as? MinimuxerError { typedError = native.asOperationError }
+            else { typedError = error }
             let opError = V3RefreshEarlyFailureBoundary.readiness.preserving(
-                V3HeadlessPairingFailure.tagIfInvalidPairing(error.asOperationError), operations: operations)
+                V3HeadlessPairingFailure.tagIfInvalidPairing(typedError), operations: operations)
             group.context.error = opError
             for operation in operations {
                 let elapsed = CFAbsoluteTimeGetCurrent() - group.operationStartTime
@@ -195,6 +323,7 @@ final class PipelineRunner: Sendable
             throw opError
         }
         
+        try checkReadinessOwnership()
         group.progress.totalUnitCount = Int64(operations.count * 100)
         // V3_PROGRESS_BASELINE_FIX_V1: child weights already span the full total.
         group.progress.completedUnitCount = 0
@@ -252,14 +381,20 @@ final class PipelineRunner: Sendable
         try await withThrowingTaskGroup(of: Void.self) { taskGroup in
             for operation in normalOperations {
                 taskGroup.addTask {
-                    try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount)
+                    try Task.checkCancellation()
+                    try V3RemoteRequestLeases.admitted?.check()
+                    try readinessLifetime.check()
+                    guard ObjectIdentifier(minimuxer.core) == transportCoreIdentity else {
+                        throw OperationError.invalidOperationContext("The owned readiness transport changed.")
+                    }
+                    try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: checkReadinessOwnership)
                 }
             }
             while let _ = try await taskGroup.next() {}
         }
         for operation in hostOperations {
-            try Task.checkCancellation()
-            try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount)
+            try checkReadinessOwnership()
+            try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: checkReadinessOwnership)
         }
         // Outer entry wrappers publish completion after their final admission checks.
         await transportCore.endTransportBatch()
@@ -270,7 +405,7 @@ final class PipelineRunner: Sendable
         }
     }
 
-    func performOperation(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1) async throws {
+    func performOperation(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1, refreshAdmission: (() throws -> Void)? = nil) async throws {
         debugLog("[AppManager] performOperation: Starting execution for app: \(operation.bundleIdentifier)")
         defer {
             // request update view context's in-mem coredata caches (coz we worked so far on bg context)
@@ -279,7 +414,7 @@ final class PipelineRunner: Sendable
             }
         }
         do {
-            let result = try await self.performPipeline(for: operation, handler: handler, group: group, operationsCount: operationsCount)
+            let result = try await self.performPipeline(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: refreshAdmission)
             if operationsCount <= 1 {
                 progress.set(nil, for: operation)
                 debugLog("[AppManager] performOperation: completed successfully; progress was reset.")
@@ -346,7 +481,7 @@ final class PipelineRunner: Sendable
         }
     }
     
-    private func performPipeline(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1) async throws -> InstalledApp
+    private func performPipeline(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1, refreshAdmission: (() throws -> Void)? = nil) async throws -> InstalledApp
     {
         let pipelineSteps = PipelineStepDefinition.steps(for: operation)
         let context = InstallAppOperationContext(
@@ -447,7 +582,8 @@ final class PipelineRunner: Sendable
             group: group,
             downloadingApp: downloadingApp,
             permissionsMode: permissionsMode,
-            operationProgress: operationProgress
+            operationProgress: operationProgress,
+            refreshAdmission: refreshAdmission
         )
     }
 }
