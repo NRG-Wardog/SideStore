@@ -83,7 +83,7 @@ REVIEWED_REUSE_MAIN_INSERTION = '            context.validatedReuseMain = app.us
 REVIEWED_REUSE_MAIN_SHA256 = 'cd11ece003588f8aeac44bab28c1d3797c11dfb5e23e9facd7a947c8a7057af6'
 
 
-REVIEWED_COLD_VPN_DELTA_SHA256 = '7c10bae55feec2ebaf8f70eddc1c0a470804a5e5d0bb6cf3442c91ec890ff7e9'
+REVIEWED_COLD_VPN_DELTA_SHA256 = '923df9acc16531a738f8ac9a3f5e6df6a4b29228d955f213f7a75c8c681fdc6f'
 
 
 def project_reviewed_cold_vpn(text):

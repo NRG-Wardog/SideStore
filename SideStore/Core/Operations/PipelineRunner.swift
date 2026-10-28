@@ -78,12 +78,21 @@ enum V3OwnedRefreshReadinessWait {
                     throw error
                 }
                 diagnostic(count, afterProbe, reason.rawValue, "pending")
+                // A final sleep cannot produce another observation. Preserve this
+                // fresh, owned negative instead of replacing it with a timeout:
+                // the host requires its typed pre-mutation evidence to activate VPN.
+                // Never retain a negative across sleep or accept a late probe.
+                let schedulingElapsed = try elapsed()
+                guard schedulingElapsed < budget else { throw OperationError.timedOut }
+                let delay: TimeInterval = count == 1 ? 0.2 : count == 2 ? 0.4 : count == 3 ? 0.8 : 1.0
+                if count >= maximumProbes || delay >= budget - schedulingElapsed {
+                    try Task.checkCancellation()
+                    try checkOwnership()
+                    diagnostic(count, schedulingElapsed, reason.rawValue, "graceExhausted")
+                    throw error
+                }
+                try await sleep(UInt64(delay * 1_000_000_000))
             }
-            guard count < maximumProbes else { throw OperationError.timedOut }
-            let delay = min(count == 1 ? 0.2 : count == 2 ? 0.4 : count == 3 ? 0.8 : 1.0,
-                            max(0, budget - (try elapsed())))
-            guard delay > 0 else { throw OperationError.timedOut }
-            try await sleep(UInt64(delay * 1_000_000_000))
         }
     }
 }

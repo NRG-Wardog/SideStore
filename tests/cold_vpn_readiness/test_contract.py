@@ -85,7 +85,7 @@ class ColdVPNReadinessTests(unittest.TestCase):
         source = '''import Foundation
 // Inert boundary types. The wait/lifetime below are unmodified production source.
 enum OperationError: Error, Equatable { case timedOut; case minimuxerNotStarted(reason: String) }
-enum MinimuxerError: Error, Equatable { case waiting; case terminal }
+enum MinimuxerError: Error, Equatable { case waiting; case terminal; case noVPN; case noDevice; case invalidVPN; case noConnection }
 enum MinimuxerOwnedReadinessTransient: String { case wifiPending, vpnInterfacePending, peerAddressPending, peerProbePending }
 struct MinimuxerOwnedReadinessObservation {
  let result: Result<Bool, MinimuxerError>
