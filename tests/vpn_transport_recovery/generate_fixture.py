@@ -17,6 +17,7 @@ INPUTS = {
     'producer': 'SideStore/Dependencies/minimuxer/Sources/MinimuxerImpl.swift',
     'scanner': 'SideStore/Dependencies/minimuxer/Sources/Services/NetworkIfaceScanner.swift',
     'observer': 'SideStore/Dependencies/minimuxer/Sources/Services/NetworkObserverService.swift',
+    'connection_manager': 'SideStore/Dependencies/minimuxer/Sources/Services/DeviceConnectionManager.swift',
     'minimuxer_error': 'SideStore/Dependencies/minimuxer/Sources/MinimuxerError.swift',
     'api': 'SideStore/Dependencies/minimuxer/Sources/MinimuxerApi.swift',
     'pairing': 'SideStore/Dependencies/minimuxer/Common/PairingProtocol.swift',
@@ -45,6 +46,49 @@ def producer_branch(text):
     ready = declaration(text, '    private func readinessObservation(withNetworkCheck:')
     return declaration(ready, '        if decision.transport == .unavailable {')
 
+
+def wifi_readiness_branch(text):
+    ready = declaration(text, '    private func readinessObservation(withNetworkCheck:')
+    start = ready.index('        let readinessConfiguration = await network.connectionManager.configurationIdentity()')
+    end = ready.index('        // check connection mode', start)
+    return ready[start:end]
+
+
+def wifi_readiness_fixture(producer, observer, manager):
+    # Snapshot predicate and readiness decisions are byte-exact production.
+    # Only OS observation storage and connection-mode IO are inert boundaries.
+    snapshot = declaration(observer, '    struct Snapshot {')
+    branch = wifi_readiness_branch(producer)
+    unavailable = producer_branch(producer)
+    identity = declaration(manager, '    struct ConfigurationIdentity:')
+    recheck = declaration(declaration(producer, '    private func readinessObservation(withNetworkCheck:'), '        if let failure = await localObservationFailure()')
+    return ('enum DeviceConnectionManager {\n' + identity + '\n}\n' + 'enum LocalVPNWiFiObservation {\n' + snapshot + '\n}\n' + r"""
+struct FixtureWiFiManager {
+    let mode: DeviceConnectionMode
+    func configurationIdentity() async -> DeviceConnectionManager.ConfigurationIdentity {
+        .init(generation: 1, mode: mode, overridePeer: "", remotePeer: "")
+    }
+}
+struct FixtureWiFiNetwork {
+    let mode: DeviceConnectionMode
+    var connectionManager: FixtureWiFiManager { .init(mode: mode) }
+    let localVPNWiFiSnapshot: LocalVPNWiFiObservation.Snapshot
+    let isWifiSatisfied: Bool
+    func logReadinessWiFiObservation(_ snapshot: LocalVPNWiFiObservation.Snapshot) {}
+}
+struct FixtureWiFiReadiness {
+    let network: FixtureWiFiNetwork
+    let mode: DeviceConnectionMode
+    func getConnectionMode() async -> DeviceConnectionMode { mode }
+    func observe(decision: RefreshTransportDecision, withNetworkCheck: Bool = true,
+                 owned: Bool = true, transientAllowed: Bool = true) async -> MinimuxerOwnedReadinessObservation {
+""" + branch + recheck + "\n" + unavailable + r"""
+        // This boundary means the extracted network/interface guards passed,
+        // not that native device initialization or any mutation was executed.
+        return .init(result: .success(true))
+    }
+}
+""")
 
 def transport_snapshot(text):
     configure = declaration(text, '    private func configureRefreshTransport()')
@@ -114,6 +158,7 @@ def generate_source(root, include_operation_classifier=True, include_baseline=Tr
     swift += '}\n' + no_imports(s['policy']) + '\n'
     swift += 'struct FixtureGatewaySnapshot { let pairingFileType: PairingProtocol; let supportsCoreDeviceTransport: Bool }\n'
     swift += readiness_helper(transport_snapshot(s['producer']), producer_branch(s['producer']))
+    swift += wifi_readiness_fixture(s['producer'], s['observer'], s['connection_manager'])
     if include_operation_classifier:
         swift += no_imports(s['operation_error']) + '\n'
         swift += declaration(s['classifier'], 'func lcRefreshFailureFacts(') + '\n'

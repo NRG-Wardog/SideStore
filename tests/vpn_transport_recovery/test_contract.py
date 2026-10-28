@@ -10,7 +10,7 @@ import tempfile
 import unittest
 import sys
 sys.dont_write_bytecode = True
-from generate_fixture import generate_source, declaration, producer_branch, transport_snapshot, INPUTS, HERE
+from generate_fixture import generate_source, declaration, producer_branch, transport_snapshot, wifi_readiness_branch, INPUTS, HERE
 
 ROOT = Path(os.environ.get('VPN_TRANSPORT_SOURCE_ROOT', str(HERE.parents[2]))).resolve()
 
@@ -25,6 +25,9 @@ class VPNTransportContract(unittest.TestCase):
         producer = paths['producer'].read_text()
         self.assertIn(producer_branch(producer), text)
         self.assertIn(transport_snapshot(producer), text)
+        self.assertIn(wifi_readiness_branch(producer), text)
+        self.assertIn(declaration(paths['observer'].read_text(), '    struct Snapshot {'), text)
+        self.assertIn('connectionMode == .localVPN ? localWiFi.satisfied : network.isWifiSatisfied', text)
         self.assertNotIn('import Darwin', text)
         self.assertNotIn('import DeviceGatewayAPI', text)
         self.assertNotIn('import MinimuxerCommon', text)
