@@ -32,6 +32,8 @@ final class InstalledApp {
  var expirationDate = Date(timeIntervalSince1970: 0)
  func update(provisioningProfile: ALTProvisioningProfile) { expirationDate = provisioningProfile.expirationDate }
 }
+// CoreData is intentionally inert; the production operation keeps its exact type names.
+typealias NSManagedObjectContext = DatabaseContext
 final class DatabaseContext {
  var app = InstalledApp(); var performCount = 0; var failUpdate = false
  var hasChanges = true; var failSave = false
@@ -48,7 +50,7 @@ final class SharedContext { func addPendingProfileBatch(_ batch:PendingProfileBa
 final class InstallAppOperationContext {
  var provisioningProfiles: [String:ALTProvisioningProfile]?
  var targetAppBundle: ALTApplication? = ALTApplication()
- var dbBackgroundContext = DatabaseContext()
+ var dbBackgroundContext: NSManagedObjectContext = DatabaseContext()
  var isCellularRefreshGroup = false; var sharedContext = SharedContext()
  var bundleIdentifier = "app"; var targetBundleIdentifier = "app"
  var installedApp: InstalledApp?

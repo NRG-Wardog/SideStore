@@ -9,6 +9,13 @@ class Contract(unittest.TestCase):
   self.assertIn('context.previouslyReusedExtensionIdentifiers.contains',s)
   self.assertLess(s.index('self.selectProfiles('),s.index('try await installProvisioningProfiles'))
   self.assertIn('$0.serialNumber == certificateSerial && $0.data == certificateData',s)
+  doubles=source('tests/refresh_truth/operation_doubles.swift')
+  self.assertIn('typealias NSManagedObjectContext = DatabaseContext',doubles)
+  self.assertIn('var dbBackgroundContext: NSManagedObjectContext = DatabaseContext()',doubles)
+  for name in ['ALTApplication','ALTProvisioningProfile','ALTEntitlement','InstalledApp','InstalledExtension',
+               'CertificateManager','InstallAppOperationContext','BasePipelineOperation','CellularRefreshManager',
+               'PendingProfileBatch','V3RefreshFailureBoundary','OperationError']:
+   self.assertRegex(doubles,r'(?:class|struct|enum) '+name+r'\b')
  def test_ack_before_bookkeeping(self):
   s=source('SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift')
   self.assertLess(s.index('context.recordRefreshVerification?(acknowledged)'),s.index('self.updateInstalledApp'))
@@ -62,8 +69,11 @@ class Contract(unittest.TestCase):
   with tempfile.TemporaryDirectory(prefix='refresh-truth-') as temporary:
    root=pathlib.Path(temporary).resolve(); src=root/'Fixture.swift'; exe=root/'fixture'
    src.write_text(fixture)
-   subprocess.run([swift,'-parse-as-library',str(src),'-o',str(exe)],check=True,timeout=120,capture_output=True,text=True)
-   report=json.loads(subprocess.run([str(exe)],check=True,timeout=30,capture_output=True,text=True).stdout)
+   compiled=subprocess.run([swift,'-parse-as-library',str(src),'-o',str(exe)],timeout=120,capture_output=True,text=True)
+   self.assertEqual(compiled.returncode,0,compiled.stdout+compiled.stderr)
+   executed=subprocess.run([str(exe)],timeout=30,capture_output=True,text=True)
+   self.assertEqual(executed.returncode,0,executed.stdout+executed.stderr)
+   report=json.loads(executed.stdout)
    self.assertEqual(report['schema'],'refresh-truth-runtime-v1'); self.assertEqual(report['status'],'PASS')
    self.assertEqual(len(report['cases']),22); self.assertEqual(len(set(report['cases'])),22)
    print(json.dumps(report,sort_keys=True))
