@@ -141,7 +141,10 @@ class SwiftSourceContracts(unittest.TestCase):
         self.assertIn('StandaloneOperationContext(steps: [], dbBackgroundContext: dbContext)', part)
         self.assertIn('return self.performSingleOperation(operation, handler: handler, context: context,', part)
         self.assertIn('context: StandaloneOperationContext', part)
-        self.assertIn('let group = RefreshGroup(context: context)', part)
+        self.assertIn('suppliedGroup: RefreshGroup? = nil', part)
+        self.assertIn('let group = suppliedGroup ?? RefreshGroup(context: context)', part)
+        self.assertIn('guard group.context === context, group.activeTask == nil, group.results.isEmpty', part)
+        self.assertLess(part.index('guard group.context === context'), part.index('group.activeTask = Task.detached'))
         self.assertEqual(part.count('group.activeTask = Task.detached'), 1)
 
     def test_runner_completion_task_and_cancellation_keep_admitted_order(self):

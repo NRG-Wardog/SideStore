@@ -11,19 +11,36 @@ import Foundation
 import CommonCrypto
 import SideSign
 
-public enum OCSPValidationError: Error, LocalizedError {
+public enum OCSPValidationError: Error, LocalizedError, CustomNSError {
     case expired
     case revoked
     case invalidCertificate
+    case verificationUnavailable
     case missingIntermediateCertificate
     case ocspServerError(String)
     
+    public static var errorDomain: String { "V3CertificateVerification" }
+    public var errorCode: Int {
+        switch self {
+        case .expired: return 1
+        case .revoked: return 2
+        case .invalidCertificate: return 3
+        case .missingIntermediateCertificate: return 4
+        case .ocspServerError: return 5
+        case .verificationUnavailable: return 6
+        }
+    }
+    public var errorUserInfo: [String: Any] {
+        [NSLocalizedDescriptionKey: errorDescription ?? "Certificate verification is unavailable."]
+    }
     public var errorDescription: String? {
         switch self {
         case .expired:
             return "The certificate has expired."
         case .revoked:
             return "The certificate was revoked by Apple."
+        case .verificationUnavailable:
+            return "Certificate verification is unavailable. Check the connection and review this app’s verification status."
         case .invalidCertificate:
             return "Failed to parse the certificate data."
         case .missingIntermediateCertificate:
@@ -107,7 +124,9 @@ public struct OCSPValidator {
         case .error(let message):
             debugLog("[OCSPValidator] Certificate identity details omitted.")
             throw OCSPValidationError.ocspServerError(message)
-        case .valid, .unknown:
+        case .unknown:
+            throw OCSPValidationError.verificationUnavailable
+        case .valid:
             break
         }
     }

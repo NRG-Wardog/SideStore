@@ -110,9 +110,12 @@ class RefreshFailureContract(unittest.TestCase):
         self.assertIn('case .refreshRecordUpdate: return .persistence', boundary)
         classifier = declaration(self.pipeline, 'func lcRefreshFailureFacts(')
         self.assertIn('guard let operation = error as? OperationError else { return [:] }', classifier)
-        for forbidden in ['localizedDescription', 'userInfo', 'String(describing:', 'Mirror(', 'let reason', 'let appName']:
+        for forbidden in ['localizedDescription', 'userInfo', 'String(describing:', 'Mirror(', 'let appName']:
             self.assertNotIn(forbidden, classifier)
-        self.assertIn('facts.merge(lcRefreshFailureFacts(error))', self.pipeline)
+        self.assertIn('facts.merge(lcRefreshFailureFacts(error, sourceStep: sourceStep))', self.pipeline)
+        self.assertIn('certificateError.domain == "V3CertificateVerification", certificateError.code == 6', classifier)
+        self.assertIn('return ["refresh_failure_kind": "certificateVerificationUnavailable"]', classifier)
+        self.assertIn('facts["local_precondition"] = reason', classifier)
 
     def test_existing_markers_win_and_no_new_payload_is_serialized(self):
         wrapper = declaration(self.pipeline, 'func lcStructuredSigningFailure(')

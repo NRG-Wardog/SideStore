@@ -13057,6 +13057,64 @@ final class V3HeadlessPipelineHandler: PipelineExecutionHandler, PreflightChecks
     }
 }
 
+// V3_DIRECT_INSTALL_EVIDENCE_V1: backend settlement does not prove device commitment.
+enum V3DirectInstallEvidencePolicy {
+    static let uncertainMessage = "The installation was requested, but its result could not be confirmed. It will not be repeated automatically."
+    static func applying(_ response: [String: Any], kind: String,
+                         observations: [[String: Any]], operationStarted: Bool) -> [String: Any] {
+        guard operationStarted, ["install", "installURL", "installSharedIPA", "update", "refreshApp", "resign", "activate", "restore"].contains(kind) else { return response }
+        var reply = response
+        func unknown() -> [String: Any] {
+            reply["outcomeUnknown"] = true
+            reply["retryable"] = false
+            reply["renewalVerified"] = false
+            reply.removeValue(forKey: "stopConfirmed")
+            reply["message"] = uncertainMessage
+            return reply
+        }
+        guard observations.count == 1, let value = observations.first,
+              Set(value.keys).isSubset(of: ["version", "mutationDispatched", "installAcknowledged", "profileStore", "renewal", "certificate", "reason"]),
+              let version = value["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(),
+              ["c", "s", "i", "l", "q", "C", "S", "I", "L", "Q"].contains(String(cString: version.objCType)), version.intValue == 1,
+              let dispatched = V3WireContract.strictBool(value["mutationDispatched"]),
+              let acknowledged = V3WireContract.strictBool(value["installAcknowledged"]),
+              !acknowledged || dispatched,
+              let store = value["profileStore"] as? String, ["matched", "mismatch", "unavailable"].contains(store),
+              let renewal = value["renewal"] as? String, ["extended", "unchanged", "shortened", "unknown"].contains(renewal),
+              let certificate = value["certificate"] as? String, ["valid", "unknown", "invalid"].contains(certificate),
+              store == "matched" || renewal == "unknown",
+              dispatched || (!acknowledged && store == "unavailable" && renewal == "unknown") else { return unknown() }
+        // This is internally produced evidence, copied through a finite scalar boundary.
+        var safe: [String: Any] = ["version": 1, "mutationDispatched": dispatched,
+            "installAcknowledged": acknowledged, "profileStore": store, "renewal": renewal, "certificate": certificate]
+        if let reason = value["reason"] {
+            guard let token = reason as? String,
+                  ["profileAbsent", "profileMismatch", "readbackUnavailable", "baselineUnavailable", "expiryUnchanged", "expiryShortened", "certificateUnknown", "certificateExpired", "certificateRevoked"].contains(token) else { return unknown() }
+            let consistent: Bool
+            switch token {
+            case "profileAbsent", "profileMismatch": consistent = store == "mismatch"
+            case "readbackUnavailable": consistent = store == "unavailable"
+            case "baselineUnavailable": consistent = renewal == "unknown"
+            case "expiryUnchanged": consistent = renewal == "unchanged"
+            case "expiryShortened": consistent = renewal == "shortened"
+            case "certificateUnknown": consistent = certificate == "unknown"
+            case "certificateExpired", "certificateRevoked": consistent = certificate == "invalid"
+            default: consistent = false
+            }
+            guard consistent else { return unknown() }
+            safe["reason"] = token
+        }
+        reply["verification"] = safe
+        reply["mutationDispatched"] = dispatched
+        reply["installAcknowledged"] = acknowledged
+        reply["renewalVerified"] = acknowledged && store == "matched" && renewal == "extended" && certificate == "valid"
+        guard dispatched else { return response["state"] as? String == "completed" ? unknown() : reply }
+        reply["retryable"] = false
+        guard acknowledged, response["state"] as? String == "completed" else { return unknown() }
+        return reply
+    }
+}
+
 // MARK: - Headless operation sessions (install/update/refresh/activate/...)
 
 @MainActor
@@ -13183,7 +13241,10 @@ final class V3OperationCenter {
         V3SideStoreService.shared.cancellations.removeValue(forKey: id)
         cleanupTemporaryIPA(id: id)
         mutationRegistry.finish(id)
-        finish(id: id, response: terminal)
+        let observed = sessions[id]?.group?.verificationSnapshot().values.map { $0.wire } ?? []
+        let qualifiedTerminal = V3DirectInstallEvidencePolicy.applying(terminal, kind: driver.kind,
+            observations: observed, operationStarted: true)
+        finish(id: id, response: qualifiedTerminal)
         debugLog("[V3_OP] TERMINAL session=\(id) kind=\(driver.kind) state=\(terminal["state"] as? String ?? "") stage=\(terminal["stage"] as? String ?? "") code=\(terminal["code"] as? String ?? "")")
         cleanupSessions()
     }
@@ -13523,6 +13584,10 @@ final class V3OperationCenter {
             guard app.isActive, app.bundleIdentifier != StoreApp.altstoreAppID else { throw V3SideStoreServiceError.unsupported }
             return V3OpDriver(kind: kind) {
                 let group = RefreshGroup(context: baseContext)
+                var undispatched = V3RefreshVerification()
+                undispatched.mutationDispatched = false
+                undispatched.installAcknowledged = false
+                group.setVerification(undispatched, for: app.bundleIdentifier)
                 self.sessions[id]?.group = group
                 V3SideStoreService.shared.cancellations[id] = { group.cancel(); group.progress.cancel() }
                 do {
@@ -13572,24 +13637,30 @@ final class V3OperationCenter {
 
     private func single(id: String, operation: AppOperation, handler: V3HeadlessPipelineHandler,
                         context: StandaloneOperationContext) async throws {
+        // Register before invoking an API that may synchronously complete or fail admission.
+        let group = RefreshGroup(context: context)
+        var undispatched = V3RefreshVerification()
+        undispatched.mutationDispatched = false
+        undispatched.installAcknowledged = false
+        group.setVerification(undispatched, for: operation.bundleIdentifier)
+        guard var session = sessions[id], session.terminal.isEmpty,
+              !session.terminal.isCancellationRequested else { throw CancellationError() }
+        session.group = group
+        sessions[id] = session
+        V3SideStoreService.shared.cancellations[id] = { group.cancel(); group.progress.cancel() }
         try await withTaskCancellationHandler(operation: {
+            try Task.checkCancellation()
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 let gate = V3ServiceCallbackGate(continuation)
-                let group = AppManager.shared.pipelineRunner.performSingleOperation(operation, handler: handler, context: context) { result in
+                _ = AppManager.shared.pipelineRunner.performSingleOperation(operation, handler: handler,
+                    context: context, suppliedGroup: group) { result in
                     gate.settle(result.map { _ in () })
-                }
-                Task { @MainActor in
-                    guard var session = self.sessions[id], session.terminal.isEmpty else { return }
-                    session.group = group
-                    let cancellationRequested = session.terminal.isCancellationRequested
-                    self.sessions[id] = session
-                    V3SideStoreService.shared.cancellations[id] = { group.cancel(); group.progress.cancel() }
-                    if cancellationRequested { group.cancel(); group.progress.cancel() }
                 }
             }
         }, onCancel: {
             Task { @MainActor in
-                self.sessions[id]?.group?.cancel()
+                group.cancel()
+                group.progress.cancel()
                 if let cancel = V3SideStoreService.shared.cancellations[id] { cancel() }
             }
         })
@@ -15253,7 +15324,7 @@ public struct CombinedFailure: Error, LocalizedError {
                      "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"].contains(text) else { return nil }
             case "refresh_failure_kind":
                 guard ["invalidParameters", "invalidOperationContext", "notAuthenticated", "unknownResult",
-                    "missingAppBundle", "missingProvisioningProfile", "certificateExpired", "certificateRevoked",
+                    "missingAppBundle", "missingProvisioningProfile", "certificateExpired", "certificateRevoked", "certificateVerificationUnavailable",
                     "customCertificateExpired", "customCertificateRevoked", "certificateChanged", "invalidApp",
                     "invalidPairingFile", "pairingNotComplete", "noDevice", "noConnection", "noVPN", "invalidVPN",
                     "notReachable", "minimuxerNotStarted", "timedOut", "unknownOperation", "otherOperation"].contains(text) else { return nil }
@@ -15428,6 +15499,10 @@ public struct CombinedFailure: Error, LocalizedError {
         }
     }
     private var localRefreshMessage: String? {
+        if sourceStep == .certificateValidation,
+           signingContext["refresh_failure_kind"] == "certificateVerificationUnavailable" {
+            return "Certificate verification is unavailable. This does not mean the certificate was revoked. Check the connection and review this app’s verification status."
+        }
         switch localRefreshPrecondition {
         case "missingTargetAppBundle":
             return "SideStore could not prepare provisioning profiles because the target app bundle was missing from the refresh context."

@@ -57,10 +57,14 @@ final class VerifyCertificateOperation: BasePipelineOperation<InstallAppOperatio
                     throw OperationError.invalidParameters("Could not locate signing certificate for '\(appName)'.")
                 }
                 
-                let result = await validateCertificate(lastSigningCert, portalCertificateSerials: portalCertificateSerials, signingCertificateSerial: signingCertificateSerial)
+                let result = try await validateCertificate(lastSigningCert, portalCertificateSerials: portalCertificateSerials, signingCertificateSerial: signingCertificateSerial)
                 finalStatus = result
                 self.context.targetCertStatus = result
                 try processValidationResult(result, description: "Target bundle binary certificate", appName: appName, team: team)
+                guard let verifiedData = lastSigningCert.data, !verifiedData.isEmpty else {
+                    throw OCSPValidationError.verificationUnavailable
+                }
+                context.verifiedRefreshCertificate = (lastSigningCert.serialNumber, verifiedData, lastSigningCert.expiryDate)
                 
             } else {
                 // resigning branch
@@ -71,7 +75,7 @@ final class VerifyCertificateOperation: BasePipelineOperation<InstallAppOperatio
                     throw OperationError.invalidParameters("\(certType) certificate is missing.")
                 }
                 
-                let result = await validateCertificate(target.x509, portalCertificateSerials: portalCertificateSerials, signingCertificateSerial: signingCertificateSerial)
+                let result = try await validateCertificate(target.x509, portalCertificateSerials: portalCertificateSerials, signingCertificateSerial: signingCertificateSerial)
                 finalStatus = result
                 self.context.targetCertStatus = result
                 try processValidationResult(result, description: "Target signing certificate", appName: appName, team: team)
@@ -87,7 +91,9 @@ final class VerifyCertificateOperation: BasePipelineOperation<InstallAppOperatio
 
     private func validateCertificate(_ certificate: ALTX509Certificate,
                                      portalCertificateSerials: Set<String>,
-                                     signingCertificateSerial: String?) async -> CertificateStatus {
+                                     signingCertificateSerial: String?) async throws -> CertificateStatus {
+        // Expiration is independent of portal membership and must not be bypassed.
+        if certificate.expiryDate <= Date() { return .expired }
         if portalCheck(certificate, portalCertificateSerials: portalCertificateSerials) 
         {
             let isCrossSigned = (signingCertificateSerial != nil && !signingCertificateSerial!.isEmpty && certificate.serialNumber != signingCertificateSerial)
@@ -96,14 +102,14 @@ final class VerifyCertificateOperation: BasePipelineOperation<InstallAppOperatio
         }
         
         debugLog("[VerifyCertificateOperation] validateCertificate: Not in portal active list. Falling back to OCSP check...")
-        return await ocspCheck(certificate)
+        return try await ocspCheck(certificate)
     }
 
     private func portalCheck(_ certificate: ALTX509Certificate, portalCertificateSerials: Set<String>) -> Bool {
         return portalCertificateSerials.contains(certificate.serialNumber)
     }
 
-    private func ocspCheck(_ certificate: ALTX509Certificate) async -> CertificateStatus {
+    private func ocspCheck(_ certificate: ALTX509Certificate) async throws -> CertificateStatus {
         do {
             try await OCSPValidator.validate(certificate)
             debugLog("[VerifyCertificateOperation] Certificate identity details omitted.")
@@ -114,9 +120,13 @@ final class VerifyCertificateOperation: BasePipelineOperation<InstallAppOperatio
         } catch OCSPValidationError.revoked {
             debugLog("[VerifyCertificateOperation] Certificate identity details omitted.")
             return .revoked
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw error
         } catch {
-            debugLog("[VerifyCertificateOperation] ocspCheck: OCSP validation error (\(error)). Assuming cross-signed.")
-            return .valid(isCrossSigned: true)
+            debugLog("[VerifyCertificateOperation] Certificate verification unavailable; mutation refused.")
+            throw OCSPValidationError.verificationUnavailable
         }
     }
     

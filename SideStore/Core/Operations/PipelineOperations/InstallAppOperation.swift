@@ -172,11 +172,29 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
         
         self.setProgress(30)
         
+        // Read-only baseline on the same owned batch. It cannot make installation
+        // retryable and an unavailable baseline never fabricates renewed lifetime.
+        let beforeProfiles = isSelfReinstall || isSideBackup ? nil :
+            await V3RefreshVerification.readProfiles(context.readInstalledProvisioningProfiles)
+        let expectedProfiles = resignedAppBundle.allAppBundles.compactMap { $0.provisioningProfile }
+
         // Self-reinstall background suspension
         if isSelfReinstall {
             self.handleSelfReinstallation(for: installedApp)
         }
         
+        // The new read-only baseline may suspend or be cancelled. Recheck the
+        // owned request immediately before the first installation dispatch.
+        try Task.checkCancellation()
+        try context.profileMutationAdmission?()
+        let admissionDate = Date()
+        guard certificate.x509.expiryDate > admissionDate,
+              expectedProfiles.allSatisfy({ $0.expirationDate > admissionDate }) else {
+            throw OperationError.invalidParameters("The selected signing lifetime expired before installation began.")
+        }
+        let dispatched = V3RefreshVerification(installAcknowledged: false)
+        context.refreshVerification = dispatched
+        context.recordRefreshVerification?(dispatched)
         // Phase 2: App installation
         if UserDefaults.standard.preferResignedIPA {
             try await installIPA(bundleID)
@@ -184,6 +202,26 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
             try await installAppBundle(bundleID, appName: resignedAppBundle.fileURL.lastPathComponent)
         }
         
+        // Native install acknowledged. Preserve this independently of subsequent
+        // readback or bookkeeping. Self replacement may exit before observation;
+        // only the nonself path below can compare profile-store lifetime here.
+        let acknowledged = V3RefreshVerification()
+        context.refreshVerification = acknowledged
+        context.recordRefreshVerification?(acknowledged)
+
+        if !isSelfReinstall && !isSideBackup {
+            let afterProfiles = await V3RefreshVerification.readProfiles(context.readInstalledProvisioningProfiles)
+            if expectedProfiles.count == resignedAppBundle.allAppBundles.count,
+               let certificateData = certificate.x509.data, !certificateData.isEmpty {
+                let verified = V3RefreshVerification.evaluate(expected: expectedProfiles,
+                    before: beforeProfiles, after: afterProfiles,
+                    certificateSerial: certificate.x509.serialNumber,
+                    certificateExpiry: certificate.x509.expiryDate, certificateData: certificateData)
+                context.refreshVerification = verified
+                context.recordRefreshVerification?(verified)
+            }
+        }
+
         if !isDifferentSideStore && !isSelfReinstall && !isSideBackup {
             V3ValidatedReuseMainRegistry.didInstall(
                 original: context.bundleIdentifier, resigned: resignedAppBundle.bundleIdentifier,

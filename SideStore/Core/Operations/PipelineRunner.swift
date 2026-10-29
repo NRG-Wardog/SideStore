@@ -147,9 +147,14 @@ final class PipelineRunner: Sendable
     func performSingleOperation(_ operation: AppOperation,
                                 handler: PipelineExecutionHandler,
                                 context: StandaloneOperationContext,
+                                suppliedGroup: RefreshGroup? = nil,
                                 completionHandler: @escaping (Result<InstalledApp, Error>) -> Void) -> RefreshGroup
     {
-        let group = RefreshGroup(context: context)
+        let group = suppliedGroup ?? RefreshGroup(context: context)
+        guard group.context === context, group.activeTask == nil, group.results.isEmpty else {
+            completionHandler(.failure(OperationError.invalidOperationContext("The supplied operation group is not a fresh matching owner.")))
+            return group
+        }
         group.completionHandler = { (results) in
             do
             {
@@ -224,6 +229,10 @@ final class PipelineRunner: Sendable
                  handler: PipelineExecutionHandler,
                  group: RefreshGroup) async throws -> RefreshGroup
     {
+        for operation in operations where group.verification(for: operation.bundleIdentifier) == nil {
+            group.setVerification(V3RefreshVerification(installAcknowledged: false, mutationDispatched: false),
+                                  for: operation.bundleIdentifier)
+        }
         let operations = operations.filter { progress.progress(for: $0) == nil || progress.progress(for: $0)?.isCancelled == true }
         guard !operations.isEmpty else { throw OperationError.cancelled }
         
@@ -396,14 +405,24 @@ final class PipelineRunner: Sendable
                     guard ObjectIdentifier(minimuxer.core) == transportCoreIdentity else {
                         throw OperationError.invalidOperationContext("The owned readiness transport changed.")
                     }
-                    try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: checkReadinessOwnership)
+                    try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: checkReadinessOwnership, readProfiles: {
+                        try checkReadinessOwnership()
+                        let result = try await transportCore.readInstalledProvisioningProfiles()
+                        try checkReadinessOwnership()
+                        return result
+                    })
                 }
             }
             while let _ = try await taskGroup.next() {}
         }
         for operation in hostOperations {
             try checkReadinessOwnership()
-            try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: checkReadinessOwnership)
+            try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: checkReadinessOwnership, readProfiles: {
+                        try checkReadinessOwnership()
+                        let result = try await transportCore.readInstalledProvisioningProfiles()
+                        try checkReadinessOwnership()
+                        return result
+                    })
         }
         // Outer entry wrappers publish completion after their final admission checks.
         await transportCore.endTransportBatch()
@@ -414,7 +433,7 @@ final class PipelineRunner: Sendable
         }
     }
 
-    func performOperation(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1, refreshAdmission: (() throws -> Void)? = nil) async throws {
+    func performOperation(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1, refreshAdmission: (() throws -> Void)? = nil, readProfiles: (() async throws -> [Data])? = nil) async throws {
         debugLog("[AppManager] performOperation: Starting execution for app: \(operation.bundleIdentifier)")
         defer {
             // request update view context's in-mem coredata caches (coz we worked so far on bg context)
@@ -423,7 +442,9 @@ final class PipelineRunner: Sendable
             }
         }
         do {
-            let result = try await self.performPipeline(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: refreshAdmission)
+            group.setVerification(V3RefreshVerification(installAcknowledged: false, mutationDispatched: false),
+                                  for: operation.bundleIdentifier)
+            let result = try await self.performPipeline(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: refreshAdmission, readProfiles: readProfiles)
             if operationsCount <= 1 {
                 progress.set(nil, for: operation)
                 debugLog("[AppManager] performOperation: completed successfully; progress was reset.")
@@ -490,7 +511,7 @@ final class PipelineRunner: Sendable
         }
     }
     
-    private func performPipeline(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1, refreshAdmission: (() throws -> Void)? = nil) async throws -> InstalledApp
+    private func performPipeline(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1, refreshAdmission: (() throws -> Void)? = nil, readProfiles: (() async throws -> [Data])? = nil) async throws -> InstalledApp
     {
         let pipelineSteps = PipelineStepDefinition.steps(for: operation)
         let context = InstallAppOperationContext(
@@ -502,6 +523,9 @@ final class PipelineRunner: Sendable
             additionalEntitlements: defaultEntitlements,
             activeSigningCertificate: CertificateManager.shared.activeCertificate?.certificate
         )
+        context.recordRefreshVerification = { group.setVerification($0, for: operation.bundleIdentifier) }
+        context.profileMutationAdmission = refreshAdmission
+        context.readInstalledProvisioningProfiles = readProfiles
         context.isCellularRefreshGroup = group.isCellularRefreshGroup
         context.groupOperationsCount = operationsCount
         
@@ -584,7 +608,7 @@ final class PipelineRunner: Sendable
         
         let permissionsMode = UserDefaults.standard.permissionCheckingDisabled ? .none : permissionReviewMode
         let operationProgress = progress.progress(for: operation)
-        return try await PipelineExecutor.shared.executePipeline(
+        let completedApp = try await PipelineExecutor.shared.executePipeline(
             steps: pipelineSteps,
             context: context,
             operation: operation,
@@ -594,6 +618,10 @@ final class PipelineRunner: Sendable
             operationProgress: operationProgress,
             refreshAdmission: refreshAdmission
         )
+        if let verification = context.refreshVerification {
+            group.setVerification(verification, for: completedApp.bundleIdentifier)
+        }
+        return completedApp
     }
 }
 

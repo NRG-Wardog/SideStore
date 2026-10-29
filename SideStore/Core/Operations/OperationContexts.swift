@@ -272,6 +272,11 @@ class InstallAppOperationContext: PipelineOperationContext
     var isStoreUpdate: Bool = false
     var targetAppBundle: ALTApplication?
 
+    var profileMutationAdmission: (() throws -> Void)?
+    var readInstalledProvisioningProfiles: (() async throws -> [Data])?
+    var verifiedRefreshCertificate: (serial: String, data: Data, expiry: Date)?
+    var refreshVerification: V3RefreshVerification?
+    var recordRefreshVerification: ((V3RefreshVerification) -> Void)?
     var provisioningProfiles: [String: ALTProvisioningProfile]?
     var appexBundleIds: [String: String]?
     var useMainProfile = false

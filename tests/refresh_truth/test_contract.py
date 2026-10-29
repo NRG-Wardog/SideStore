@@ -1,0 +1,91 @@
+import pathlib, unittest, shutil, subprocess, tempfile, json, os
+ROOT=pathlib.Path(__file__).resolve().parents[2]
+def source(name): return (ROOT/name).read_text()
+class Contract(unittest.TestCase):
+ def test_actual_profile_selection(self):
+  s=source('SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift')
+  self.assertNotIn('profiles.values.first!',s)
+  self.assertIn('profiles[self.context.targetBundleIdentifier]',s)
+  self.assertIn('context.previouslyReusedExtensionIdentifiers.contains',s)
+  self.assertLess(s.index('self.selectProfiles('),s.index('try await installProvisioningProfiles'))
+  self.assertIn('$0.serialNumber == certificateSerial && $0.data == certificateData',s)
+ def test_ack_before_bookkeeping(self):
+  s=source('SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift')
+  self.assertLess(s.index('context.recordRefreshVerification?(acknowledged)'),s.index('self.updateInstalledApp'))
+  self.assertIn('before: before, after: after',s)
+  group=source('SideStore/Core/Operations/RefreshGroup.swift')
+  self.assertIn('lock.withLock { verificationByApp[bundleID]',group)
+  self.assertIn('prior.mutationDispatched && !value.mutationDispatched',group)
+  self.assertIn('prior.installAcknowledged && !value.installAcknowledged',group)
+ def test_notification_not_optimistic(self):
+  s=source('SideStore/Core/Operations/StandaloneOperations/BackgroundRefreshAppsOperation.swift')
+  start=s.index('group.beginInstallationHandler')
+  end=s.index('group.completionHandler',start)
+  self.assertNotIn('.success(',s[start:end])
+  self.assertNotIn('All apps have been refreshed.',s)
+  self.assertEqual(s.count('row["verification"] = verification.wire'),2)
+ def test_certificate_unknown_not_valid(self):
+  s=source('SideStore/Core/Operations/PipelineOperations/VerifyCertificateOperation.swift')
+  self.assertLess(s.index('if certificate.expiryDate <= Date()'),s.index('if portalCheck('))
+  self.assertIn('throw OCSPValidationError.verificationUnavailable',s)
+  self.assertNotIn('Assuming cross-signed',s)
+  s=source('SideStore/Core/Certificates/OCSPValidator.swift')
+  self.assertIn('case .unknown:\n            throw OCSPValidationError.verificationUnavailable',s)
+ def test_owned_query_and_failure_evidence(self):
+  s=source('SideStore/Core/Operations/PipelineRunner.swift')
+  self.assertEqual(s.count('let result = try await transportCore.readInstalledProvisioningProfiles()'),2)
+  self.assertEqual(s.count('try checkReadinessOwnership()\n                        return result'),2)
+  self.assertIn('context.recordRefreshVerification = { group.setVerification',s)
+ def test_actual_swift_runtime(self):
+  swift=shutil.which('swiftc')
+  if not swift:
+   if os.environ.get('V3_REQUIRE_SWIFT')=='1': self.fail('swiftc required')
+   self.skipTest('swiftc unavailable; native qualification required')
+  production=source('SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift')
+  helper=production[production.index('struct V3RefreshVerification:'):]
+  fixture=source('tests/refresh_truth/runtime.swift')+'\n'+helper+'\n'+source('tests/refresh_truth/cases.swift')
+  with tempfile.TemporaryDirectory(prefix='refresh-truth-') as temporary:
+   root=pathlib.Path(temporary).resolve(); src=root/'Fixture.swift'; exe=root/'fixture'
+   src.write_text(fixture)
+   subprocess.run([swift,'-parse-as-library',str(src),'-o',str(exe)],check=True,timeout=120,capture_output=True,text=True)
+   report=json.loads(subprocess.run([str(exe)],check=True,timeout=30,capture_output=True,text=True).stdout)
+   self.assertEqual(report['schema'],'refresh-truth-runtime-v1'); self.assertEqual(report['status'],'PASS')
+   self.assertEqual(len(report['cases']),22); self.assertEqual(len(set(report['cases'])),22)
+   print(json.dumps(report,sort_keys=True))
+ def test_actual_operation_runtime(self):
+  swift=shutil.which('swiftc')
+  if not swift:
+   if os.environ.get('V3_REQUIRE_SWIFT')=='1': self.fail('swiftc required')
+   self.skipTest('swiftc unavailable; native qualification required')
+  production=source('SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift')
+  operation='\n'.join(line for line in production.splitlines() if not line.startswith('import '))
+  def declaration(text, marker):
+   start=text.index(marker); end=text.index('{',start)+1; depth=1
+   while depth:
+    depth+=(text[end]=='{')-(text[end]=='}');end+=1
+   return text[start:end]
+  policy=declaration(source('AltStore/AppDelegate.swift'),'enum V3MutationPersistencePolicy {')
+  runner=source('SideStore/Core/Operations/PipelineRunner.swift')
+  persistence=declaration(runner[runner.index('// V3_POST_MUTATION_PERSISTENCE_CONTRACT_V1:'):],'try await dbContext.perform {')
+  glue='\nfunc actualRunnerPersistence(dbContext:DatabaseContext) async throws { let bundleID="synthetic";\n'+persistence+'\n}\n'
+  groupSource=source('SideStore/Core/Operations/RefreshGroup.swift')
+  group='\nfinal class EvidenceGroup { let lock=NSLock(); var verificationByApp:[String:V3RefreshVerification]=[:]\n'
+  for signature in ['func setVerification(', 'func verification(for', 'func verificationSnapshot()']:
+   group+=declaration(groupSource,signature)+'\n'
+  group+='}\n'
+  install=source('SideStore/Core/Operations/PipelineOperations/InstallAppOperation.swift')
+  install=install[install.index('        // Read-only baseline on the same owned batch.'):install.index('        if !isDifferentSideStore && !isSelfReinstall && !isSideBackup {\n            V3ValidatedReuseMainRegistry.didInstall')]
+  installGlue='\nextension InstallationHarness { func runInstall(resignedAppBundle:FixtureSignedBundle,certificate:FixtureSigningCertificate,isSelfReinstall:Bool=false,isSideBackup:Bool=false) async throws { let installedApp=context.dbBackgroundContext.app; let bundleID="synthetic";\n'+install+'\n} }\n'
+  fixture=source('tests/refresh_truth/operation_doubles.swift')+'\n'+operation+'\n'+policy+glue+group+installGlue+source('tests/refresh_truth/operation_cases.swift')
+  with tempfile.TemporaryDirectory(prefix='refresh-truth-operation-') as temporary:
+   root=pathlib.Path(temporary).resolve(); src=root/'Fixture.swift'; exe=root/'fixture'
+   src.write_text(fixture)
+   result=subprocess.run([swift,'-parse-as-library',str(src),'-o',str(exe)],timeout=120,capture_output=True,text=True)
+   self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+   result=subprocess.run([str(exe)],timeout=30,capture_output=True,text=True)
+   self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+   report=json.loads(result.stdout)
+   self.assertEqual(report['schema'],'refresh-truth-operation-v1');self.assertEqual(report['status'],'PASS')
+   self.assertEqual(len(report['cases']),18);self.assertEqual(len(set(report['cases'])),18)
+   print(json.dumps(report,sort_keys=True))
+if __name__=='__main__': unittest.main()

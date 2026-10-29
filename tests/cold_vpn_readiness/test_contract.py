@@ -63,8 +63,9 @@ class ColdVPNReadinessTests(unittest.TestCase):
         self.assertLess(step.index('await headlessHandler.recordPipelinePhase'), step.index('try refreshAdmission?()'))
         self.assertLess(step.index('try refreshAdmission?()'), step.index('switch step'))
         self.assertIn('if case .refresh = appOperation { step.refreshAdmission = refreshAdmission }', step)
-        self.assertEqual(refresh.count('try refreshAdmission?()'), 1)
-        self.assertLess(refresh.index('turnOffDataIfNeeded()'), refresh.index('try refreshAdmission?()'))
+        self.assertEqual(refresh.count('try refreshAdmission?()'), 2)
+        self.assertLess(refresh.index('try refreshAdmission?()'), refresh.index('turnOffDataIfNeeded()'))
+        self.assertLess(refresh.index('turnOffDataIfNeeded()'), refresh.rindex('try refreshAdmission?()'))
         self.assertLess(refresh.index('try refreshAdmission?()'), refresh.index('installProvisioningProfiles(p.value.data)'))
         self.assertNotIn('refreshAdmission', refresh.split('installProvisioningProfiles(p.value.data)', 1)[1])
         local = runner.split('if initialMode == .localVPN {', 1)[1].split('} else {', 1)[0]
@@ -84,7 +85,7 @@ class ColdVPNReadinessTests(unittest.TestCase):
         production = s.split('final class V3RefreshReadinessLifetime:', 1)[1].split('// V3_OWNED_REFRESH_READINESS_WAIT_END', 1)[0]
         source = '''import Foundation
 // Inert boundary types. The wait/lifetime below are unmodified production source.
-enum OperationError: Error, Equatable { case timedOut; case minimuxerNotStarted(reason: String) }
+enum OperationError: Error, Equatable { case timedOut; case minimuxerNotStarted(reason: String); case invalidParameters(String) }
 enum MinimuxerError: Error, Equatable { case waiting; case terminal; case noVPN; case noDevice; case invalidVPN; case noConnection }
 enum MinimuxerOwnedReadinessTransient: String { case wifiPending, vpnInterfacePending, peerAddressPending, peerProbePending }
 struct MinimuxerOwnedReadinessObservation {
@@ -101,11 +102,11 @@ final class V3RefreshReadinessLifetime:''' + production
         native = 'let nativeResult =' + native
         refresh = (ROOT / 'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text()
         injection = refresh.split('        do {\n            await CellularRefreshManager.shared.turnOffDataIfNeeded()', 1)[1]
-        injection = 'do {\n await CellularRefreshManager.shared.turnOffDataIfNeeded()' + injection.split('    private func updateInstalledApp(', 1)[0].rsplit('    }', 1)[0]
+        injection = 'do {\n await CellularRefreshManager.shared.turnOffDataIfNeeded()' + injection.split('    private func readProfilesWithoutMutation(', 1)[0].rsplit('    }', 1)[0]
         source += (ROOT / 'tests/cold_vpn_readiness/boundary_doubles.swift').read_text()
         source += '\nfunc extractedPhase(context: PhaseContext, downloadingApp: DownloadingApp, step: Int, appOperation: FakeOperation, refreshAdmission: (() throws -> Void)?) async throws {\n' + phase + '\n}\n'
         source += '\nfunc extractedNative(transportCore: NativeCore, checkReadinessOwnership: () throws -> Void) async throws {\n' + native + '\n}\n'
-        source += '\nextension InjectionHarness { func run(profiles: [String: Profile], refreshAdmission: (() throws -> Void)?) async throws -> InstalledApp { let appBundle = 0\n' + injection + '\n} }\n'
+        source += '\nextension InjectionHarness { func run(profiles: [String: Profile], refreshAdmission: (() throws -> Void)?) async throws -> InstalledApp { let appBundle = 0; let dbContext = context.dbBackgroundContext; let selection = Selection(profiles: Array(profiles.values))\n' + injection + '\n} }\n'
         production_source = source
         source += (ROOT / 'tests/cold_vpn_readiness/runtime_cases.swift').read_text()
         with tempfile.TemporaryDirectory(prefix='cold-vpn-') as tmp:

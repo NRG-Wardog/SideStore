@@ -26,6 +26,25 @@ final class RefreshGroup: NSObject
     var completionHandler: (([String: Result<InstalledApp, Error>]) -> Void)?
     var beginInstallationHandler: ((InstalledApp) -> Void)?
         
+    private var verificationByApp: [String: V3RefreshVerification] = [:]
+
+    func setVerification(_ value: V3RefreshVerification, for bundleID: String) {
+        lock.withLock {
+            if let prior = verificationByApp[bundleID],
+               (prior.mutationDispatched && !value.mutationDispatched) ||
+               (prior.installAcknowledged && !value.installAcknowledged) { return }
+            verificationByApp[bundleID] = value
+        }
+    }
+
+    func verification(for bundleID: String) -> V3RefreshVerification? {
+        lock.withLock { verificationByApp[bundleID] }
+    }
+
+    func verificationSnapshot() -> [String: V3RefreshVerification] {
+        lock.withLock { verificationByApp }
+    }
+
     private(set) var results = [String: Result<InstalledApp, Error>]()
     
     // Keep strong references to managed object contexts

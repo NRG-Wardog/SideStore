@@ -190,23 +190,16 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
                 if installedApp.bundleIdentifier == StoreApp.altstoreAppID {
                     self?.persistAutomaticHostHandoff()
                 }
-                guard let self = self else { return }
-                guard installedApp.bundleIdentifier == StoreApp.altstoreAppID else { return }
-                
-                if let error = group.context.error {
-                    self.scheduleFinishedRefreshingNotification(for: .failure(error))
-                } else {
-                    var results = group.results
-                    results[installedApp.bundleIdentifier] = .success(installedApp)
-                    self.scheduleFinishedRefreshingNotification(for: .success(results))
-                }
+                // Installation admission is not completion. Host replacement can
+                // terminate this process; only reconciled completion may notify success.
+
             }
             group.completionHandler = { (results) in
                 self.refreshGroupLock.lock()
                 self.activeRefreshGroup = nil
                 self.refreshGroupLock.unlock()
                 self.persistAutomaticRefreshVerification(results: results,
-                    attemptedAppIDs: apps.map { $0.bundleIdentifier })
+                    attemptedAppIDs: apps.map { $0.bundleIdentifier }, group: group)
                 self.setProgress(100)
                 continuation.resume(returning: results)
             }
@@ -245,7 +238,7 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
     }
 
     private func persistAutomaticRefreshVerification(results: [String: Result<InstalledApp, Error>],
-                                                     attemptedAppIDs: [String]) {
+                                                     attemptedAppIDs: [String], group: RefreshGroup) {
         guard let defaults = try? automaticRefreshDefaults() else {
             debugLog("[AUTO_REFRESH] VERIFICATION_UNAVAILABLE reason=shared_store_unavailable")
             return
@@ -255,17 +248,21 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
             switch result {
             case .success(let app):
                 debugLog("[AUTO_REFRESH] REFRESH_VERIFIED bundle_id=\(bundleIdentifier) refreshed_date=\(app.refreshedDate) expiration_date=\(app.expirationDate)")
-                serialized.append(["bundle_id": bundleIdentifier, "name": app.name,
+                var row: [String: Any] = ["bundle_id": bundleIdentifier, "name": app.name,
                     "success": true, "refreshed_date": app.refreshedDate,
-                    "expiration_date": app.expirationDate])
+                    "expiration_date": app.expirationDate]
+                if let verification = group.verification(for: bundleIdentifier) { row["verification"] = verification.wire }
+                serialized.append(row)
             case .failure(let error):
                 let runID = defaults.string(forKey: "liveContainerAutoRefreshExpectedRunID") ?? refreshIdentifier
                 let failure = CombinedFailure.capture(V3HeadlessPairingFailure.tagIfInvalidPairing(error),
                     operation: "refresh", stage: .refreshVerification, id: runID)
                 debugLog("[AUTO_REFRESH] REFRESH_FAILED \(failure.technicalDetails)")
-                serialized.append(["bundle_id": bundleIdentifier, "success": false,
+                var row: [String: Any] = ["bundle_id": bundleIdentifier, "success": false,
                     "error_code": failure.underlyingCode, "error_domain": failure.underlyingDomain,
-                    "error": failure.message, "failure": failure.wire])
+                    "error": failure.message, "failure": failure.wire]
+                if let verification = group.verification(for: bundleIdentifier) { row["verification"] = verification.wire }
+                serialized.append(row)
             }
         }
         // COMBINED_REFRESH_MANIFEST_V2: bind verification to the apps this engine actually attempted.
@@ -332,8 +329,8 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
                     throw error
                 }
                 
-                content.title = NSLocalizedString("Refreshed Apps", comment: "")
-                content.body = NSLocalizedString("All apps have been refreshed.", comment: "")
+                content.title = NSLocalizedString("Refresh Results", comment: "")
+                content.body = NSLocalizedString("The operation completed. Open the app to review verification and expiration.", comment: "")
             } catch let opError as OperationError {
                 switch opError {
                 case .noConnection, .noVPN, .noInstalledApps:

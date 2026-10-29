@@ -340,6 +340,9 @@ final class PipelineExecutor: @unchecked Sendable {
             }
             if case .refresh = appOperation {
                 facts.merge(lcRefreshFailureFacts(error, sourceStep: sourceStep)) { existing, _ in existing }
+            } else if let certificateError = error as? OCSPValidationError,
+                      case .verificationUnavailable = certificateError {
+                facts["refresh_failure_kind"] = "certificateVerificationUnavailable"
             }
             throw lcStructuredSigningFailure(error, stage: stage, sourceStep: sourceStep, facts: facts)
         }
@@ -412,6 +415,10 @@ enum V3RefreshFailureBoundary: String, CaseIterable {
 // unknown. Readiness additionally recognizes only exact local VPN guard text;
 // arbitrary noDevice/backend payloads must never authorize an enable request.
 func lcRefreshFailureFacts(_ error: Error, sourceStep: String? = nil) -> [String: String] {
+    let certificateError = error as NSError
+    if certificateError.domain == "V3CertificateVerification", certificateError.code == 6 {
+        return ["refresh_failure_kind": "certificateVerificationUnavailable"]
+    }
     guard let operation = error as? OperationError else { return [:] }
     let kind: String
     switch operation {

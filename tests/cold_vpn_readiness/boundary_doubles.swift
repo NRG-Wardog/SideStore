@@ -21,7 +21,7 @@ final class CellularRefreshManager {
     func turnOffDataIfNeeded() async { duringToggle() }
     func turnOnDataIfNeeded() async { restored += 1 }
 }
-struct Profile { var data: Data = Data() }
+struct Profile { var data: Data = Data(); var expirationDate = Date.distantFuture }
 enum V3RefreshFailureBoundary {
     case provisioningProfileInstallation, refreshRecordUpdate
     func preserving(_ error: Error) -> Error { error }
@@ -40,10 +40,21 @@ typealias InstalledApp = Int
 final class DatabaseContext {
     func perform(_ body: () throws -> InstalledApp) async throws -> InstalledApp { try body() }
 }
-struct InjectionContext { let dbBackgroundContext = DatabaseContext() }
+final class InjectionContext {
+ let dbBackgroundContext = DatabaseContext()
+ var refreshVerification: V3RefreshVerification?
+ var recordRefreshVerification: ((V3RefreshVerification) -> Void)?
+}
+struct Selection { let profiles: [Profile]; let certificateSerial = "fixture"; let certificateExpiry = Date.distantFuture; let certificateData = Data() }
+struct V3RefreshVerification {
+ var installAcknowledged = true
+ static func evaluate(expected: [Profile], before: [Profile]?, after: [Profile]?, certificateSerial: String, certificateExpiry: Date, certificateData: Data, now: Date) -> Self { Self() }
+}
 final class InjectionHarness {
     let context = InjectionContext()
     var persisted = 0
+    func verificationNow() -> Date { Date() }
+    func readProfilesWithoutMutation() async -> [Profile]? { nil }
     func setProgress(_ value: Int) {}
     func updateInstalledApp(for appBundle: Int, profiles: [String: Profile], in context: DatabaseContext) throws -> InstalledApp {
         persisted += 1; return persisted
