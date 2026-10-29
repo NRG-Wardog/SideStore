@@ -25,6 +25,8 @@ private let ReceivedWillMigrateDatabaseNotification: @convention(c) (CFNotificat
 enum V3DatabaseStartupFailure: String, Error, Sendable, CaseIterable {
     case databaseLayoutBlocked, databaseLayoutConflict, databaseAppGroupUnavailable
     case databasePersistenceFailed, databaseStartupFailed
+    case databaseHostBundleUnavailable, databaseHostProfileUnavailable, databaseModelUnrecognized
+    case databaseMigrationPathUnavailable, databaseMigrationFailed, databaseSaveFailed
 }
 
 // Preserve existing local DatabaseError codes/reasons for callers, but only
@@ -37,6 +39,23 @@ struct V3DatabaseStartupGuardFailure: Error, CustomNSError, LocalizedError, Send
     var errorDescription: String? { underlying.errorDescription }
     var failureReason: String? { underlying.failureReason }
 }
+
+// V3_DATABASE_OBSERVED_FAILURE_V1: a local error wrapper; only its finite cause
+// crosses the startup diagnostic boundary. Original errors remain local.
+struct V3DatabaseStartupObservedFailure: Error, Sendable {
+    let cause: V3DatabaseStartupFailure
+    let underlying: any Error
+
+    static func observing<T>(_ cause: V3DatabaseStartupFailure,
+                             operation: () throws -> T) throws -> T {
+        do { return try operation() }
+        catch {
+            if error is CancellationError { throw error }
+            throw Self(cause: cause, underlying: error)
+        }
+    }
+}
+// V3_DATABASE_OBSERVED_FAILURE_END
 
 struct V3DatabaseStartupOutcome: Sendable {
     enum Phase: String, Sendable { case waiting, selectingStore, loadingStore, preparingDatabase, ready, failed }
@@ -151,7 +170,8 @@ public class DatabaseManager: @unchecked Sendable
                     }
                 } catch {
                     self.lock.withLock {
-                        let cause = (error as? V3DatabaseStartupGuardFailure)?.cause ??
+                        let cause = (error as? V3DatabaseStartupObservedFailure)?.cause ??
+                            (error as? V3DatabaseStartupGuardFailure)?.cause ??
                             (self._startupOutcome.phase == .loadingStore ? .databasePersistenceFailed : .databaseStartupFailed)
                         self._startupOutcome.fail(cause)
                         // Only the owning task clears itself. Awaiters of an old
@@ -160,6 +180,9 @@ public class DatabaseManager: @unchecked Sendable
                     }
                     // Local launch callers still receive the original typed
                     // DatabaseError and retain their existing safe UI handling.
+                    if let observed = error as? V3DatabaseStartupObservedFailure {
+                        throw observed.underlying
+                    }
                     if let guarded = error as? V3DatabaseStartupGuardFailure {
                         throw guarded.underlying
                     }
@@ -280,12 +303,14 @@ public class DatabaseManager: @unchecked Sendable
         let context = self.persistentContainer.newBackgroundContext()
         try await context.perform {
             guard let localAppBundle = ALTApplication(fileURL: Bundle.Info.activeBundleURL) else {
-                throw ALTError.invalidApp(reason: "Unable to read the active LiveContainer application bundle.")
+                throw V3DatabaseStartupObservedFailure(cause: .databaseHostBundleUnavailable,
+                    underlying: ALTError.invalidApp(reason: "Unable to read the active LiveContainer application bundle."))
             }
             
             #if !targetEnvironment(simulator)
             guard localAppBundle.provisioningProfile != nil else {
-                throw ALTError.invalidApp(reason: "The active LiveContainer bundle has no readable provisioning profile.")
+                throw V3DatabaseStartupObservedFailure(cause: .databaseHostProfileUnavailable,
+                    underlying: ALTError.invalidApp(reason: "The active LiveContainer bundle has no readable provisioning profile."))
             }
             #endif
             
@@ -444,7 +469,9 @@ public class DatabaseManager: @unchecked Sendable
                 installedApp.expirationDate = cachedExpirationDate
             }
             
-            try context.save()
+            try V3DatabaseStartupObservedFailure.observing(.databaseSaveFailed) {
+                try context.save()
+            }
         }
         
         // V3_HEADLESS_FEATURED_SORT_SKIP_V1: this embedded process has no Featured UI consumer.

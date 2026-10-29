@@ -148,16 +148,18 @@ open class PersistentContainer: NSPersistentContainer, @unchecked Sendable {
 
     private func validateMigrationCompatibility(metadata: [String: Any], configuration: String?) throws {
         guard let sourceModel = NSManagedObjectModel.mergedModel(from: Bundle.allBundles, forStoreMetadata: metadata) else {
-            throw DatabaseError.databaseDowngradeDetected(
-                reason: NSLocalizedString("The database on disk was created with a newer version of SideStore. Downgrading the database schema is not supported. Please update SideStore or reset your database.", comment: "")
-            )
+            throw V3DatabaseStartupGuardFailure(cause: .databaseModelUnrecognized,
+                underlying: DatabaseError.databaseDowngradeDetected(
+                    reason: NSLocalizedString("The database on disk was created with a newer version of SideStore. Downgrading the database schema is not supported. Please update SideStore or reset your database.", comment: "")
+                ))
         }
         
         var mappingModel: NSMappingModel?
         guard self.progressiveMigrationManager(forSourceModel: sourceModel, destinationModel: self.managedObjectModel, configuration: configuration, mappingModel: &mappingModel) != nil, mappingModel != nil else {
-            throw DatabaseError.databaseDowngradeDetected(
-                reason: NSLocalizedString("No valid migration path exists to downgrade this database. Please update SideStore or reset your database.", comment: "")
-            )
+            throw V3DatabaseStartupGuardFailure(cause: .databaseMigrationPathUnavailable,
+                underlying: DatabaseError.databaseDowngradeDetected(
+                    reason: NSLocalizedString("No valid migration path exists to downgrade this database. Please update SideStore or reset your database.", comment: "")
+                ))
         }
     }
     
@@ -220,24 +222,28 @@ open class PersistentContainer: NSPersistentContainer, @unchecked Sendable {
         }
         
         guard let sourceModel = NSManagedObjectModel.mergedModel(from: Bundle.allBundles, forStoreMetadata: sourceMetadata) else {
-            throw DatabaseError.databaseDowngradeDetected(
-                reason: NSLocalizedString("The database on disk was created with a newer version of SideStore. Downgrading the database schema is not supported. Please update SideStore or reset your database.", comment: "")
-            )
+            throw V3DatabaseStartupGuardFailure(cause: .databaseModelUnrecognized,
+                underlying: DatabaseError.databaseDowngradeDetected(
+                    reason: NSLocalizedString("The database on disk was created with a newer version of SideStore. Downgrading the database schema is not supported. Please update SideStore or reset your database.", comment: "")
+                ))
         }
         
         var mappingModel: NSMappingModel?
         guard let migrationManager = self.progressiveMigrationManager(forSourceModel: sourceModel, destinationModel: model, configuration: configuration, mappingModel: &mappingModel), let finalMappingModel = mappingModel else {
-            throw DatabaseError.migrationFailed(
-                reason: NSLocalizedString("Unable to find a valid migration path for the database.", comment: "")
-            )
+            throw V3DatabaseStartupGuardFailure(cause: .databaseMigrationPathUnavailable,
+                underlying: DatabaseError.migrationFailed(
+                    reason: NSLocalizedString("Unable to find a valid migration path for the database.", comment: "")
+                ))
         }
         
         let temporaryFilename = UUID().uuidString + "." + url.pathExtension
         let temporaryDestinationURL = FileManager.default.temporaryDirectory.appendingPathComponent(temporaryFilename)
         
-        try migrationManager.migrateStore(from: url, sourceType: description.type, options: description.options, with: finalMappingModel, toDestinationURL: temporaryDestinationURL, destinationType: description.type, destinationOptions: description.options)
-        
-        try self.persistentStoreCoordinator.replacePersistentStore(at: url, destinationOptions: description.options, withPersistentStoreFrom: temporaryDestinationURL, sourceOptions: description.options, ofType: description.type)
+        try V3DatabaseStartupObservedFailure.observing(.databaseMigrationFailed) {
+            try migrationManager.migrateStore(from: url, sourceType: description.type, options: description.options, with: finalMappingModel, toDestinationURL: temporaryDestinationURL, destinationType: description.type, destinationOptions: description.options)
+
+            try self.persistentStoreCoordinator.replacePersistentStore(at: url, destinationOptions: description.options, withPersistentStoreFrom: temporaryDestinationURL, sourceOptions: description.options, ofType: description.type)
+        }
         
         do {
             try self.persistentStoreCoordinator.destroyPersistentStore(at: temporaryDestinationURL, ofType: description.type, options: description.options)

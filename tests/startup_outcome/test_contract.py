@@ -10,9 +10,12 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 DB = ROOT / 'AltStore/Core/Model/DatabaseManager/DatabaseManager.swift'
 APP = ROOT / 'AltStore/AppDelegate.swift'
+PERSISTENT = ROOT / 'AltStore/Core/Model/DatabaseManager/PersistentContainer.swift'
 MAINTENANCE = ROOT / 'SideStore/MaintenanceManager.swift'
 CAUSES = ('databaseLayoutBlocked', 'databaseLayoutConflict', 'databaseAppGroupUnavailable',
-          'databasePersistenceFailed', 'databaseStartupFailed')
+          'databasePersistenceFailed', 'databaseStartupFailed',
+          'databaseHostBundleUnavailable', 'databaseHostProfileUnavailable', 'databaseModelUnrecognized',
+          'databaseMigrationPathUnavailable', 'databaseMigrationFailed', 'databaseSaveFailed')
 
 class StartupContract(unittest.TestCase):
     def test_typed_guards_preserve_original_failures(self):
@@ -74,6 +77,29 @@ class StartupContract(unittest.TestCase):
         self.assertNotIn('\\(error)', text)
         self.assertIn('sanitized startup diagnostics', text)
 
+    def test_observed_details_match_exact_throw_boundaries(self):
+        text = DB.read_text()
+        for cause, guard in [('databaseHostBundleUnavailable', 'guard let localAppBundle = ALTApplication'),
+                             ('databaseHostProfileUnavailable', 'guard localAppBundle.provisioningProfile != nil')]:
+            block = text.split(guard)[1].split('}')[0]
+            self.assertIn('V3DatabaseStartupObservedFailure(cause: .' + cause, block)
+            self.assertIn('underlying: ALTError.invalidApp', block)
+        prepare = text.split('private func prepareDatabase()')[1].split('private func reconcileSelfFromSelfBinary')[0]
+        self.assertEqual(prepare.count('observing(.databaseSaveFailed)'), 1)
+        self.assertIn('try context.save()', prepare)
+        persistent = PERSISTENT.read_text()
+        self.assertEqual(persistent.count('cause: .databaseModelUnrecognized'), 2)
+        self.assertEqual(persistent.count('cause: .databaseMigrationPathUnavailable'), 2)
+        observed = persistent.split('observing(.databaseMigrationFailed)')[1].split('\n        }')[0]
+        self.assertIn('try migrationManager.migrateStore(', observed)
+        self.assertIn('try self.persistentStoreCoordinator.replacePersistentStore(', observed)
+        helper = text.split('// V3_DATABASE_OBSERVED_FAILURE_V1:')[1].split('// V3_DATABASE_OBSERVED_FAILURE_END')[0]
+        self.assertIn('if error is CancellationError { throw error }', helper)
+        self.assertNotIn('localizedDescription', helper)
+        self.assertNotIn('errorCode', helper)
+        for token, cause in enumerate(CAUSES[5:], 74):
+            self.assertIn('case .' + cause + ': return "F' + str(token) + '"', APP.read_text())
+
     def test_native_production_outcome(self):
         compiler = shutil.which('swiftc')
         if not compiler:
@@ -126,12 +152,16 @@ print("startup outcome actual production state: PASS")
         enum = source.split('enum V3DatabaseStartupFailure:')[1].split('// Preserve existing local')[0]
         model = source.split('struct V3DatabaseStartupOutcome:')[1].split('// V3_DATABASE_STARTUP_OUTCOME_END')[0]
         start = source.split('    public func start() async throws')[1].split('    private func performStart()')[0]
+        observed = source.split('// V3_DATABASE_OBSERVED_FAILURE_V1:')[1].split('// V3_DATABASE_OBSERVED_FAILURE_END')[0]
+        observed = 'struct V3DatabaseStartupObservedFailure:' + observed.split('struct V3DatabaseStartupObservedFailure:')[1]
         swift = 'import Foundation\nenum V3DatabaseStartupFailure:' + enum + '\nstruct V3DatabaseStartupOutcome:' + model
+        swift += '\n' + observed
         swift += """
 struct V3DatabaseStartupGuardFailure: Error { let cause: V3DatabaseStartupFailure; var underlying: Error { cause } }
 actor Gate {
     var released = false
     var rawFailure = false
+    var observedFailure: V3DatabaseStartupFailure?
     var arrived = false
     var failure: V3DatabaseStartupFailure?
     var entry: CheckedContinuation<Void, Never>?
@@ -143,7 +173,9 @@ actor Gate {
     }
     func open(_ cause: V3DatabaseStartupFailure?) { failure = cause; released = true; release?.resume(); release = nil }
     func openRawFailure() { rawFailure = true; open(nil) }
+    func openObservedFailure(_ cause: V3DatabaseStartupFailure) { observedFailure = cause; open(nil) }
     func result() throws {
+        if let cause = observedFailure { throw V3DatabaseStartupObservedFailure(cause: cause, underlying: NSError(domain: "PRIVATE_DOMAIN", code: 73, userInfo: [NSLocalizedDescriptionKey: "SECRET_SENTINEL"])) }
         if rawFailure { throw NSError(domain: "PRIVATE_ACCOUNT_SENTINEL", code: 9,
             userInfo: [NSLocalizedDescriptionKey: "/private/db/account@example.test SECRET_SENTINEL"]) }
         if let failure { throw V3DatabaseStartupGuardFailure(cause: failure) }
@@ -186,6 +218,26 @@ final class Probe: @unchecked Sendable {
             try await probe.start()
             check(probe.outcome.phase == .ready, "idempotent started path")
         }
+        for cause in V3DatabaseStartupFailure.allCases {
+            let observedGate = Gate(); let observedProbe = Probe(observedGate)
+            let observedOwner = Task { try await observedProbe.start() }
+            await observedGate.awaitEntry(); await observedGate.openObservedFailure(cause)
+            do { try await observedOwner.value; fatalError("expected observed failure") }
+            catch { let local = error as NSError; check(local.domain == "PRIVATE_DOMAIN" && local.code == 73, "underlying local error preserved") }
+            check(observedProbe.outcome.failure == cause, "observed cause preserved")
+            check(!observedProbe.outcome.logTail.contains("PRIVATE_DOMAIN") && !observedProbe.outcome.logTail.contains("SECRET_SENTINEL"), "underlying details not retained")
+        }
+        let sentinel = NSError(domain: "PRIVATE_DOMAIN", code: 81)
+        do {
+            let _: Void = try V3DatabaseStartupObservedFailure.observing(.databaseSaveFailed) { throw sentinel }
+            fatalError("expected wrapped failure")
+        } catch let observed as V3DatabaseStartupObservedFailure {
+            check((observed.underlying as NSError) === sentinel && observed.cause == .databaseSaveFailed, "original error identity preserved")
+        }
+        do {
+            let _: Void = try V3DatabaseStartupObservedFailure.observing(.databaseMigrationFailed) { throw CancellationError() }
+            fatalError("expected cancellation")
+        } catch is CancellationError { } catch { fatalError("cancellation incorrectly labeled migration failure") }
         let gate = Gate(); let probe = Probe(gate)
         let owner = Task { try await probe.start() }
         await gate.awaitEntry()
