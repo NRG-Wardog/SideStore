@@ -264,4 +264,11 @@ final class Probe: @unchecked Sendable {
             subprocess.run([compiler, '-parse-as-library', str(path), '-o', str(binary)], check=True, timeout=60)
             subprocess.run([str(binary)], check=True, timeout=20)
 
+def load_tests(loader, tests, pattern):
+    # Include resource-owner controls in the single source-owned suite receipt.
+    from test_model_resource_owner import ModelResourceOwnerTests
+    tests.addTests(loader.loadTestsFromTestCase(ModelResourceOwnerTests))
+    return tests
+
+
 if __name__ == '__main__': unittest.main()

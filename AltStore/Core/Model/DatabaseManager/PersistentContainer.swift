@@ -71,6 +71,10 @@ open class PersistentContainer: NSPersistentContainer, @unchecked Sendable {
     open var shouldAddStoresAsynchronously = false
     open var preferredMergePolicy: NSMergePolicy = RelationshipPreservingMergePolicy()
     
+    // Retain the same resource owner used to construct the destination model.
+    // Framework bundles are not included in Bundle.allBundles.
+    private let modelResourceBundle: Bundle?
+
     private let parentBackgroundContexts = NSHashTable<NSManagedObjectContext>.weakObjects()
     private let pendingSaveParentBackgroundContexts = NSHashTable<NSManagedObjectContext>.weakObjects()
     
@@ -90,6 +94,7 @@ open class PersistentContainer: NSPersistentContainer, @unchecked Sendable {
     }
     
     public init(name: String, bundle: Bundle) {
+        self.modelResourceBundle = bundle
         let models = [bundle]
         let managedObjectModel = NSManagedObjectModel.mergedModel(from: models)!
         super.init(name: name, managedObjectModel: managedObjectModel)
@@ -97,6 +102,7 @@ open class PersistentContainer: NSPersistentContainer, @unchecked Sendable {
     }
     
     public override init(name: String, managedObjectModel model: NSManagedObjectModel) {
+        self.modelResourceBundle = nil
         super.init(name: name, managedObjectModel: model)
         initialize()
     }
@@ -147,7 +153,7 @@ open class PersistentContainer: NSPersistentContainer, @unchecked Sendable {
     }
 
     private func validateMigrationCompatibility(metadata: [String: Any], configuration: String?) throws {
-        guard let sourceModel = NSManagedObjectModel.mergedModel(from: Bundle.allBundles, forStoreMetadata: metadata) else {
+        guard let sourceModel = self.sourceModel(forStoreMetadata: metadata) else {
             throw V3DatabaseStartupGuardFailure(cause: .databaseModelUnrecognized,
                 underlying: DatabaseError.databaseDowngradeDetected(
                     reason: NSLocalizedString("The database on disk was created with a newer version of SideStore. Downgrading the database schema is not supported. Please update SideStore or reset your database.", comment: "")
@@ -221,7 +227,7 @@ open class PersistentContainer: NSPersistentContainer, @unchecked Sendable {
             return
         }
         
-        guard let sourceModel = NSManagedObjectModel.mergedModel(from: Bundle.allBundles, forStoreMetadata: sourceMetadata) else {
+        guard let sourceModel = self.sourceModel(forStoreMetadata: sourceMetadata) else {
             throw V3DatabaseStartupGuardFailure(cause: .databaseModelUnrecognized,
                 underlying: DatabaseError.databaseDowngradeDetected(
                     reason: NSLocalizedString("The database on disk was created with a newer version of SideStore. Downgrading the database schema is not supported. Please update SideStore or reset your database.", comment: "")
@@ -254,6 +260,23 @@ open class PersistentContainer: NSPersistentContainer, @unchecked Sendable {
         try self._progressivelyMigratePersistentStore(to: model, configuration: configuration)
     }
     
+    private func sourceModel(forStoreMetadata metadata: [String: Any]) -> NSManagedObjectModel? {
+        if let bundle = self.modelResourceBundle,
+           let model = NSManagedObjectModel.mergedModel(from: [bundle], forStoreMetadata: metadata) {
+            return model
+        }
+        // Preserve the existing discovery fallback, including model-only initializers.
+        return NSManagedObjectModel.mergedModel(from: Bundle.allBundles, forStoreMetadata: metadata)
+    }
+
+    private func modelLookupBundles() -> [Bundle] {
+        let candidates = self.modelResourceBundle.map { [$0] } ?? []
+        var seen = Set<URL>()
+        return (candidates + Bundle.allBundles).filter {
+            seen.insert($0.bundleURL.resolvingSymlinksInPath()).inserted
+        }
+    }
+
     private func progressiveMigrationManager(forSourceModel sourceModel: NSManagedObjectModel, destinationModel: NSManagedObjectModel, configuration: String?, mappingModel: inout NSMappingModel?) -> NSMigrationManager? {
         if let explicit = self.explicitMappingModel(forSourceModel: sourceModel, destinationModel: destinationModel, configuration: configuration) {
             mappingModel = explicit
@@ -279,7 +302,7 @@ open class PersistentContainer: NSPersistentContainer, @unchecked Sendable {
     
     private func managedObjectModelURLs() -> [URL] {
         var modelURLs = [URL]()
-        for bundle in Bundle.allBundles {
+        for bundle in self.modelLookupBundles() {
             if let momdURLs = bundle.urls(forResourcesWithExtension: "momd", subdirectory: nil) {
                 for url in momdURLs {
                     let resourceDirectory = url.lastPathComponent
@@ -296,7 +319,7 @@ open class PersistentContainer: NSPersistentContainer, @unchecked Sendable {
     }
     
     private func explicitMappingModel(forSourceModel sourceModel: NSManagedObjectModel, destinationModel: NSManagedObjectModel, configuration: String?) -> NSMappingModel? {
-        guard let mappingModel = NSMappingModel(from: Bundle.allBundles, forSourceModel: sourceModel, destinationModel: destinationModel) else {
+        guard let mappingModel = NSMappingModel(from: self.modelLookupBundles(), forSourceModel: sourceModel, destinationModel: destinationModel) else {
             return nil
         }
         
