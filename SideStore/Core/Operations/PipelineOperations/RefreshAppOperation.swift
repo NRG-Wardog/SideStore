@@ -193,11 +193,23 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
                 throw OperationError.invalidParameters("An extension provisioning profile is missing.")
             }
         }
-        guard Set(profiles.keys) == allowedKeys,
-              Dictionary(grouping: Array(profiles.values), by: \.uuid).values.allSatisfy({ group in
-                  group.allSatisfy { $0.data == group[0].data && $0.bundleIdentifier == group[0].bundleIdentifier &&
-                      $0.teamIdentifier == group[0].teamIdentifier }
-              }), Set(profiles.values.map(\.uuid)) == Set(selected.map(\.uuid)) else {
+        // Keep each inference step small for the supported Swift compiler. The
+        // UUID groups must still contain identical data, identity and team.
+        let profileGroups = Dictionary(grouping: Array(profiles.values), by: { $0.uuid })
+        var duplicateUUIDsAreConsistent = true
+        for group in profileGroups.values {
+            guard let first = group.first else { continue }
+            for profile in group {
+                if profile.data != first.data || profile.bundleIdentifier != first.bundleIdentifier ||
+                    profile.teamIdentifier != first.teamIdentifier {
+                    duplicateUUIDsAreConsistent = false
+                }
+            }
+        }
+        let suppliedUUIDs = Set(profiles.values.map { $0.uuid })
+        let selectedUUIDs = Set(selected.map { $0.uuid })
+        guard Set(profiles.keys) == allowedKeys, duplicateUUIDsAreConsistent,
+              suppliedUUIDs == selectedUUIDs else {
             throw OperationError.invalidParameters("Unexpected provisioning profiles were supplied for this refresh.")
         }
         return ProfileSelection(profiles: selected, certificateSerial: certificate.serial,

@@ -7,7 +7,7 @@ The first native fixture extracts `V3RefreshVerification` from production and ex
 22 deterministic cases using synthetic profile/certificate values. It does not decode
 real CMS profiles or claim device acceptance. The second extracts the entire production
 `RefreshAppOperation`, plus the actual Runner persistence block and persistence policy,
-against inert CoreData/native-network boundaries. Its 31 cases exercise main/extension
+against inert CoreData/native-network boundaries. Its 33 cases exercise main/extension
 selection, one invocation per profile, incomplete/lost acknowledgments, cancellation,
 ownership expiry, unavailable observations, update/save failure, invalid identities and
 expiry during a suspended baseline read. Four cases execute the actual nonself

@@ -85,6 +85,16 @@
    do {_=try await RefreshAppOperation(context:c).execute(parentProgress:nil);fatalError("expectedfailure")}catch{}
    check("duplicate-uuid-different-bytes-before-mutation",Injection.shared.count==0)
   }
+  for changedIdentity in [false,true] {
+   let c=setup(true);var common=fresh;common.bundleIdentifier="*"
+   var extensionProfile=common
+   if changedIdentity { extensionProfile.bundleIdentifier="app.*" }
+   c.provisioningProfiles=["app":common,"app.ext":extensionProfile]
+   var succeeded=false
+   do { _=try await RefreshAppOperation(context:c).execute(parentProgress:nil);succeeded=true } catch {}
+   check(changedIdentity ? "duplicate-uuid-identity-drift-rejected" : "duplicate-uuid-identical-accepted",
+         succeeded == !changedIdentity && Injection.shared.count == (changedIdentity ? 0:2))
+  }
   do {
    let c=setup();c.verifiedRefreshCertificate=nil
    do {_=try await RefreshAppOperation(context:c).execute(parentProgress:nil);fatalError("expectedfailure")}catch{}
