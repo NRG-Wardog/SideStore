@@ -185,7 +185,7 @@ final class FixturePortalBackend: @unchecked Sendable {
     var auth = Auth()
 }
 enum V3SideStoreServiceError: Error { case authRequired }
-enum OperationError: Error { case notAuthenticated, unknownResult, cancelled }
+enum OperationError: Error { case notAuthenticated, unknownResult, cancelled; case invalidOperationContext(String) }
 final class AnisetteConfigManager: @unchecked Sendable {
     static let shared = AnisetteConfigManager()
     func resolvedXcodeVersion() async -> String { "synthetic-version" }
@@ -227,7 +227,14 @@ final class BackgroundRefreshAppsOperation: @unchecked Sendable {
     func debugLog(_ message: String) {}
     func persistAutomaticHostHandoff() {}
     func scheduleFinishedRefreshingNotification(for result: Result<[String: Result<InstalledApp, Error>], Error>) {}
-    func persistAutomaticRefreshVerification(results: [String: Result<InstalledApp, Error>], attemptedAppIDs: [String]) {}
+    var persistedVerificationGroup: RefreshGroup?
+    var persistedResultIDs: Set<String> = []
+    var persistedAttemptedIDs: [String] = []
+    func persistAutomaticRefreshVerification(results: [String: Result<InstalledApp, Error>], attemptedAppIDs: [String], group: RefreshGroup) {
+        persistedVerificationGroup = group
+        persistedResultIDs = Set(results.keys)
+        persistedAttemptedIDs = attemptedAppIDs
+    }
     func setProgress(_ value: Int) {}
 }
 enum FixturePipelineBoundary {

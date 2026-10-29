@@ -52,7 +52,7 @@ class Contract(unittest.TestCase):
   host=pathlib.Path(os.environ.get('V3_HOST_SOURCE_ROOT', str(ROOT.parent/'LiveContainer')))
   peer=(host/'SideStoreSupport/SideStore.swift').read_text()
   producer=source('AltStore/AppDelegate.swift')
-  for marker in ['public struct V3RefreshProfileEvidence {', 'public enum CombinedVerification {']:
+  for marker in ['public struct V3RefreshProfileEvidence {', 'public enum CombinedVerification {', 'public struct V3ProvisioningCauseDiagnostic {']:
    self.assertEqual(declaration(producer,marker),declaration(peer,marker))
   sanitizer=declaration(producer,'public enum CombinedVerification {')
   self.assertIn('hasCompleteTerminalResults(manifest, runID: runID)',sanitizer)

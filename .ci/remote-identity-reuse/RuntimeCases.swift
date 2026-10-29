@@ -361,6 +361,9 @@ func runRuntimeCases() async throws -> [String] {
         let operation = BackgroundRefreshAppsOperation()
         let results = try await operation.runFixture([.fixture])
         try fixtureCheck(results.count == 1 && operation.activeRefreshGroup == nil, "callback resumed and released group")
+        try fixtureCheck(operation.persistedVerificationGroup != nil &&
+            operation.persistedResultIDs == Set(results.keys) && operation.persistedAttemptedIDs == ["fixture.app"],
+            "actual callback preserves the group and exact target results for verification persistence")
         try fixtureThrowsRemote("background migration failure", expected: .manualSignInRequired) {
             _ = try results["fixture.app"]!.get()
         }
