@@ -53,8 +53,10 @@ struct V3RefreshVerification {
 final class InjectionHarness {
     let context = InjectionContext()
     var persisted = 0
+    var reads = 0
+    var duringRead: () -> Void = {}
     func verificationNow() -> Date { Date() }
-    func readProfilesWithoutMutation() async -> [Profile]? { nil }
+    func readProfilesWithoutMutation() async -> [Profile]? { reads += 1; duringRead(); return nil }
     func setProgress(_ value: Int) {}
     func updateInstalledApp(for appBundle: Int, profiles: [String: Profile], in context: DatabaseContext) throws -> InstalledApp {
         persisted += 1; return persisted

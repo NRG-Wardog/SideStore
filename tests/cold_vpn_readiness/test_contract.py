@@ -10,6 +10,16 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / 'SideStore/Core/Operations/PipelineRunner.swift'
 
+def actual_injection_fragment(refresh):
+    # Preserve the actual pre-mutation baseline await and its ownership fence.
+    # The continuation consumes this value during post-install verification.
+    baseline = refresh[refresh.index('        let before = await self.readProfilesWithoutMutation()'):
+                       refresh.index('        self.setProgress(10)')]
+    injection = refresh.split('        do {\n            await CellularRefreshManager.shared.turnOffDataIfNeeded()', 1)[1]
+    injection = 'do {\n await CellularRefreshManager.shared.turnOffDataIfNeeded()' + injection.split('    private func readProfilesWithoutMutation(', 1)[0].rsplit('    }', 1)[0]
+    return baseline + injection
+
+
 class ColdVPNReadinessTests(unittest.TestCase):
     def test_owned_probe_precedes_every_mutation_boundary(self):
         s = RUNNER.read_text()
@@ -64,6 +74,12 @@ class ColdVPNReadinessTests(unittest.TestCase):
         self.assertLess(step.index('try refreshAdmission?()'), step.index('switch step'))
         self.assertIn('if case .refresh = appOperation { step.refreshAdmission = refreshAdmission }', step)
         self.assertEqual(refresh.count('try refreshAdmission?()'), 2)
+        fragment = actual_injection_fragment(refresh)
+        self.assertEqual(fragment.count('let before = await self.readProfilesWithoutMutation()'), 1)
+        self.assertLess(fragment.index('let before ='), fragment.index('try refreshAdmission?()'))
+        self.assertLess(fragment.index('try refreshAdmission?()'), fragment.index('turnOffDataIfNeeded()'))
+        self.assertIn('before: before, after: after', fragment)
+        self.assertNotIn('let before = nil', fragment)
         self.assertLess(refresh.index('try refreshAdmission?()'), refresh.index('turnOffDataIfNeeded()'))
         self.assertLess(refresh.index('turnOffDataIfNeeded()'), refresh.rindex('try refreshAdmission?()'))
         self.assertLess(refresh.index('try refreshAdmission?()'), refresh.index('installProvisioningProfiles(p.value.data)'))
@@ -101,8 +117,7 @@ final class V3RefreshReadinessLifetime:''' + production
         native = s.split('                    let nativeResult =', 1)[1].split('                } else {', 1)[0]
         native = 'let nativeResult =' + native
         refresh = (ROOT / 'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text()
-        injection = refresh.split('        do {\n            await CellularRefreshManager.shared.turnOffDataIfNeeded()', 1)[1]
-        injection = 'do {\n await CellularRefreshManager.shared.turnOffDataIfNeeded()' + injection.split('    private func readProfilesWithoutMutation(', 1)[0].rsplit('    }', 1)[0]
+        injection = actual_injection_fragment(refresh)
         source += (ROOT / 'tests/cold_vpn_readiness/boundary_doubles.swift').read_text()
         source += '\nfunc extractedPhase(context: PhaseContext, downloadingApp: DownloadingApp, step: Int, appOperation: FakeOperation, refreshAdmission: (() throws -> Void)?) async throws {\n' + phase + '\n}\n'
         source += '\nfunc extractedNative(transportCore: NativeCore, checkReadinessOwnership: () throws -> Void) async throws {\n' + native + '\n}\n'

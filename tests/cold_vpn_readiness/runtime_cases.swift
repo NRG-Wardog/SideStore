@@ -114,6 +114,16 @@
         try await extractedPhase(context: .init(handler: handler), downloadingApp: .init(), step: 0,
                                  appOperation: .install, refreshAdmission: { fatalError("nonrefresh changed") })
 
+        let baselineLifetime = V3RefreshReadinessLifetime(), baselineBlocked = InjectionHarness()
+        baselineBlocked.duringRead = { baselineLifetime.expire() }
+        do {
+            _ = try await baselineBlocked.run(profiles: ["a": .init()], refreshAdmission: { try baselineLifetime.check() })
+            fatalError("expired baseline read injected profile")
+        } catch OperationError.timedOut {}
+        check(baselineBlocked.reads == 1 && InjectionEvidence.shared.count == 0 && baselineBlocked.persisted == 0 &&
+              CellularRefreshManager.shared.restored == 0,
+              "baseline read expiry blocks before cellular toggle and mutation")
+
         let before = V3RefreshReadinessLifetime(), injection = InjectionEvidence.shared
         let blocked = InjectionHarness()
         CellularRefreshManager.shared.duringToggle = { before.expire() }
