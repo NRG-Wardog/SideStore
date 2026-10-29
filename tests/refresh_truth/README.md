@@ -7,14 +7,17 @@ The first native fixture extracts `V3RefreshVerification` from production and ex
 22 deterministic cases using synthetic profile/certificate values. It does not decode
 real CMS profiles or claim device acceptance. The second extracts the entire production
 `RefreshAppOperation`, plus the actual Runner persistence block and persistence policy,
-against inert CoreData/native-network boundaries. Its 33 cases exercise main/extension
+against inert CoreData/native-network boundaries. Its 34 cases exercise main/extension
 selection, one invocation per profile, incomplete/lost acknowledgments, cancellation,
 ownership expiry, unavailable observations, update/save failure, invalid identities and
 expiry during a suspended baseline read. Four cases execute the actual nonself
-InstallAppOperation admission/dispatch/readback fragment, with native installation stubbed. Thirteen cases exercise existing host-only legacy main-profile reuse using the actual
+InstallAppOperation admission/dispatch/readback fragment, with native installation stubbed. Fourteen cases exercise existing host-only legacy main-profile reuse using the actual
 installed-owner inspection code, with inert bundle/signature boundaries: matching and
 distinct AppID prefixes, wildcard authorization, wrong team/certificate, missing
-entitlements, unrelated or duplicate extensions, outside-owner paths and non-host targets.
+entitlements, unrelated or duplicate extensions, outside-owner paths, symlink escape and non-host targets. The installed-bundle fixture
+uses real operation-owned temporary directories with canonical URLs. Fixed boolean
+path/lookup diagnostics include the prior nonexistent-path counterfactual; failed
+assertions accumulate but still fail the entire executable.
 No real credentials, accounts or profiles are used.
 
 Postconditions distinguish mutation dispatched from all required installations acknowledged.

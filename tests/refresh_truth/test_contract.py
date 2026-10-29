@@ -108,9 +108,22 @@ class Contract(unittest.TestCase):
    result=subprocess.run([swift,'-parse-as-library',str(src),'-o',str(exe)],timeout=120,capture_output=True,text=True)
    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
    result=subprocess.run([str(exe)],timeout=30,capture_output=True,text=True)
+   self.assertLessEqual(len(result.stderr.encode()),32768,'Synthetic fixture diagnostics exceeded bound')
    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+   for line in result.stderr.splitlines():
+    observation=json.loads(line)
+    self.assertIsInstance(observation,dict)
+    self.assertTrue(set(observation).issubset({'fixture','ownerLookup','signedIDMatches','teamMatches',
+      'parentURLMatches','parentPathMatches','certificateLookup','mutationCount'}))
+    self.assertTrue(observation.get('fixture','').startswith('legacy-'))
+    for key,value in observation.items():
+     if key=='fixture': self.assertRegex(value,r'^legacy-[a-z-]{1,64}$')
+     elif key=='mutationCount': self.assertTrue(type(value) is int and 0 <= value <= 2)
+     else: self.assertIs(type(value),bool)
+    print('SYNTHETIC_OPERATION_DIAGNOSTIC '+json.dumps(observation,sort_keys=True))
    report=json.loads(result.stdout)
    self.assertEqual(report['schema'],'refresh-truth-operation-v1');self.assertEqual(report['status'],'PASS')
-   self.assertEqual(len(report['cases']),33);self.assertEqual(len(set(report['cases'])),33)
+   self.assertEqual(report['failed_cases'],[])
+   self.assertEqual(len(report['cases']),34);self.assertEqual(len(set(report['cases'])),34)
    print(json.dumps(report,sort_keys=True))
 if __name__=='__main__': unittest.main()

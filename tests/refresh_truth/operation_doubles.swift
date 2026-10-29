@@ -8,7 +8,7 @@ struct ALTProvisioningProfile {
 struct ALTEntitlement: Hashable { let rawValue: String; static let applicationIdentifier = ALTEntitlement(rawValue: "application-identifier") }
 final class ALTApplication {
  var name = "Synthetic"; var bundleIdentifier = "app"
- var fileURL = URL(fileURLWithPath: "/synthetic/Host.app")
+ var fileURL = Bundle.Info.activeBundleURL
  var appExtensions: [ALTApplication] = []; var entitlements: [ALTEntitlement:Any] = [:]
  var provisioningProfile: ALTProvisioningProfile?
  init() {}
@@ -16,7 +16,7 @@ final class ALTApplication {
 }
 var fixtureApplications: [URL:ALTApplication] = [:]
 var fixtureCertificates: [URL:Cert] = [:]
-extension Bundle { enum Info { static let activeBundleURL = URL(fileURLWithPath: "/synthetic/Host.app"); static let activeBundleIdentifier = "app" } }
+extension Bundle { enum Info { static var activeBundleURL = URL(fileURLWithPath: "/synthetic/Host.app"); static let activeBundleIdentifier = "app" } }
 enum StoreApp { static let altstoreAppID = "host.original" }
 final class CertificateManager { static let shared=CertificateManager(); func getSigningCertificate(at url:URL)->Cert? { fixtureCertificates[url] } }
 enum OperationError: Error { case invalidParameters(String) }

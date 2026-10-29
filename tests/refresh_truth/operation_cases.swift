@@ -1,6 +1,26 @@
 @main struct OperationCases {
  static func main() async throws {
-  let now=Date(); let cert=Data([7]); var passed:[String]=[]
+  let now=Date(); let cert=Data([7]); var passed:[String]=[]; var failed:[String]=[]
+  func diagnostic(_ value:[String:Any]) {
+   let data=try! JSONSerialization.data(withJSONObject:value,options:[.sortedKeys])
+   FileHandle.standardError.write(data + Data([10]))
+  }
+  let absentOwner=URL(fileURLWithPath:"/synthetic/Host.app").resolvingSymlinksInPath().standardizedFileURL
+  let absentChild=absentOwner.appendingPathComponent("PlugIns/Test.appex").resolvingSymlinksInPath().standardizedFileURL
+  diagnostic(["fixture":"legacy-absent-path-counterfactual",
+              "parentURLMatches":absentChild.deletingLastPathComponent()==absentOwner.appendingPathComponent("PlugIns"),
+              "parentPathMatches":absentChild.deletingLastPathComponent().path==absentOwner.appendingPathComponent("PlugIns").path])
+  let root=FileManager.default.temporaryDirectory.appendingPathComponent("refresh-truth-owned-"+UUID().uuidString,isDirectory:true)
+  try FileManager.default.createDirectory(at:root,withIntermediateDirectories:false)
+  defer { try? FileManager.default.removeItem(at:root) }
+  let hostURL=root.appendingPathComponent("Host.app",isDirectory:true)
+  try FileManager.default.createDirectory(at:hostURL.appendingPathComponent("PlugIns/Test.appex",isDirectory:true),withIntermediateDirectories:true)
+  Bundle.Info.activeBundleURL=hostURL.resolvingSymlinksInPath().standardizedFileURL
+  let outside=root.appendingPathComponent("Other.app/PlugIns/Test.appex",isDirectory:true)
+  try FileManager.default.createDirectory(at:outside,withIntermediateDirectories:true)
+  let outsideURL=outside.resolvingSymlinksInPath().standardizedFileURL
+  let escaped=Bundle.Info.activeBundleURL.appendingPathComponent("PlugIns/Escaped.appex",isDirectory:true)
+  try FileManager.default.createSymbolicLink(at:escaped,withDestinationURL:outsideURL)
   func profile(_ id:Int,_ offset:Double,_ bundle:String="app") -> ALTProvisioningProfile {
    ALTProvisioningProfile(uuid:UUID(uuidString:String(format:"00000000-0000-0000-0000-%012d",id))!,data:Data([UInt8(id)]),bundleIdentifier:bundle,teamIdentifier:"T",expirationDate:now.addingTimeInterval(offset),certificates:[Cert(serialNumber:"S",data:cert)])
   }
@@ -15,8 +35,10 @@
    c.readInstalledProvisioningProfiles={ reads += 1; return reads==1 ? (extensions ? [old.data,oldExt.data]:[old.data]) : (extensions ? [fresh.data,freshExt.data]:[fresh.data]) }
    return c
   }
-  func check(_ id:String,_ condition: @autoclosure () -> Bool) { precondition(condition(),id);passed.append(id) }
-  for variant in ["valid", "distinct-prefix", "wildcard-prefix", "wrong-embedded-team", "wrong-embedded-certificate", "wrong-team", "wrong-certificate", "missing-entitlement", "unrelated-extension", "wrong-prefix", "outside-plugins", "not-host", "duplicate-extension"] {
+  func check(_ id:String,_ condition: @autoclosure () -> Bool) {
+   if condition() { passed.append(id) } else { failed.append(id);diagnostic(["fixtureFailure":id]) }
+  }
+  for variant in ["valid", "distinct-prefix", "wildcard-prefix", "wrong-embedded-team", "wrong-embedded-certificate", "wrong-team", "wrong-certificate", "missing-entitlement", "unrelated-extension", "wrong-prefix", "outside-plugins", "symlink-escape", "not-host", "duplicate-extension"] {
    let c=setup(); c.useMainProfile=true
    c.dbBackgroundContext.app.bundleIdentifier=StoreApp.altstoreAppID
    let ext=InstalledExtension();ext.bundleIdentifier=StoreApp.altstoreAppID+".ext"
@@ -26,7 +48,7 @@
    var expected=fresh;expected.entitlements=[appID:variant == "wildcard-prefix" ? prefix+".*" : prefix+".app"]
    c.provisioningProfiles=["app":expected]
    let host=ALTApplication();host.entitlements=[appID:prefix+".app",teamID:"T"]
-   let child=ALTApplication();child.bundleIdentifier="app.ext";child.fileURL=host.fileURL.appendingPathComponent("PlugIns/Test.appex")
+   let child=ALTApplication();child.bundleIdentifier="app.ext";child.fileURL=host.fileURL.appendingPathComponent("PlugIns/Test.appex",isDirectory:true).resolvingSymlinksInPath().standardizedFileURL
    child.entitlements=[appID:prefix+".app",teamID:"T"];child.provisioningProfile=old
    host.appExtensions=[child]
    if variant == "wrong-embedded-team" { child.provisioningProfile?.teamIdentifier="OTHER" }
@@ -35,13 +57,25 @@
    if variant == "missing-entitlement" { child.entitlements.removeValue(forKey:appID) }
    if variant == "unrelated-extension" { child.bundleIdentifier="other.ext" }
    if variant == "wrong-prefix" { child.entitlements[appID]="WRONG.app" }
-   if variant == "outside-plugins" { child.fileURL=URL(fileURLWithPath:"/synthetic/Other.app/PlugIns/Test.appex") }
+   if variant == "outside-plugins" { child.fileURL=outsideURL }
+   if variant == "symlink-escape" { child.fileURL=escaped }
    if variant == "not-host" { c.dbBackgroundContext.app.bundleIdentifier="other.original";ext.bundleIdentifier="other.original.ext" }
    if variant == "duplicate-extension" { host.appExtensions=[child,child] }
    fixtureApplications=[host.fileURL:host]
-   fixtureCertificates=[child.fileURL:Cert(serialNumber:"S",data:variant == "wrong-certificate" ? Data([99]):cert)]
+   fixtureCertificates=[child.fileURL.resolvingSymlinksInPath().standardizedFileURL:Cert(serialNumber:"S",data:variant == "wrong-certificate" ? Data([99]):cert)]
    var succeeded=false
-   do { _=try await RefreshAppOperation(context:c).execute(parentProgress:nil);succeeded=true } catch {}
+   do { _=try await RefreshAppOperation(context:c).execute(parentProgress:nil);succeeded=true } catch {
+    let canonicalOwner=Bundle.Info.activeBundleURL.resolvingSymlinksInPath().standardizedFileURL
+    let canonicalChild=child.fileURL.resolvingSymlinksInPath().standardizedFileURL
+    diagnostic(["fixture":"legacy-"+variant,
+                "ownerLookup":fixtureApplications[canonicalOwner] != nil,
+                "signedIDMatches":child.entitlements[appID] as? String == host.entitlements[appID] as? String,
+                "teamMatches":child.entitlements[teamID] as? String == expected.teamIdentifier,
+                "parentURLMatches":canonicalChild.deletingLastPathComponent()==canonicalOwner.appendingPathComponent("PlugIns"),
+                "parentPathMatches":canonicalChild.deletingLastPathComponent().path==canonicalOwner.appendingPathComponent("PlugIns").path,
+                "certificateLookup":fixtureCertificates[canonicalChild] != nil,
+                "mutationCount":Injection.shared.count])
+   }
    let allowed=variant == "valid" || variant == "distinct-prefix" || variant == "wildcard-prefix"
    check("legacy-host-"+variant, succeeded == allowed && Injection.shared.count == (allowed ? 1:0))
    fixtureApplications=[:];fixtureCertificates=[:]
@@ -155,6 +189,8 @@
    do {try await InstallationHarness(c).runInstall(resignedAppBundle:signed,certificate:signing);fatalError("expectedfailure")}catch{}
    check("actual-install-baseline-cancel-before-dispatch",Injection.shared.count==0 && c.refreshVerification == nil)
   }
-  print(String(data:try JSONSerialization.data(withJSONObject:["schema":"refresh-truth-operation-v1","status":"PASS","cases":passed],options:[.sortedKeys]),encoding:.utf8)!)
+  let result=try JSONSerialization.data(withJSONObject:["schema":"refresh-truth-operation-v1","status":failed.isEmpty ? "PASS":"FAIL","cases":passed,"failed_cases":failed],options:[.sortedKeys])
+  FileHandle.standardOutput.write(result + Data([10]))
+  precondition(failed.isEmpty,"Synthetic operation fixture failures recorded above")
  }
 }
