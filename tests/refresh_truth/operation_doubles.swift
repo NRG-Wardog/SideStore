@@ -3,8 +3,22 @@ struct Cert { var serialNumber: String; var data: Data? }
 struct ALTProvisioningProfile {
  var uuid: UUID; var data: Data; var bundleIdentifier: String; var teamIdentifier: String
  var expirationDate: Date; var certificates: [Cert]
+ var entitlements: [ALTEntitlement:Any] = [:]
 }
-struct ALTApplication { var name = "Synthetic" }
+struct ALTEntitlement: Hashable { let rawValue: String; static let applicationIdentifier = ALTEntitlement(rawValue: "application-identifier") }
+final class ALTApplication {
+ var name = "Synthetic"; var bundleIdentifier = "app"
+ var fileURL = URL(fileURLWithPath: "/synthetic/Host.app")
+ var appExtensions: [ALTApplication] = []; var entitlements: [ALTEntitlement:Any] = [:]
+ var provisioningProfile: ALTProvisioningProfile?
+ init() {}
+ convenience init?(fileURL: URL) { guard let value = fixtureApplications[fileURL] else { return nil }; self.init(); bundleIdentifier=value.bundleIdentifier; self.fileURL=value.fileURL; appExtensions=value.appExtensions; entitlements=value.entitlements; provisioningProfile=value.provisioningProfile }
+}
+var fixtureApplications: [URL:ALTApplication] = [:]
+var fixtureCertificates: [URL:Cert] = [:]
+extension Bundle { enum Info { static let activeBundleURL = URL(fileURLWithPath: "/synthetic/Host.app"); static let activeBundleIdentifier = "app" } }
+enum StoreApp { static let altstoreAppID = "host.original" }
+final class CertificateManager { static let shared=CertificateManager(); func getSigningCertificate(at url:URL)->Cert? { fixtureCertificates[url] } }
 enum OperationError: Error { case invalidParameters(String) }
 enum ProbeError: Error { case stopped, installFailed, databaseFailed }
 final class InstalledExtension {

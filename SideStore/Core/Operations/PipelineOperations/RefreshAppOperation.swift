@@ -121,6 +121,40 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         return context.targetBundleIdentifier + ext.bundleIdentifier.dropFirst(originalParent.count)
     }
 
+    // Legacy self installs may sign each extension with the host application-id
+    // while keeping a distinct CFBundleIdentifier. Prove that exact relationship
+    // from the currently installed owner, never from cached/staged metadata.
+    private func installedHostAuthorizesLegacyReuse(_ ext: InstalledExtension, main app: InstalledApp,
+                                                   profile: ALTProvisioningProfile,
+                                                   certificate: (serial: String, data: Data, expiry: Date)) -> Bool {
+        let ownerURL = Bundle.Info.activeBundleURL.resolvingSymlinksInPath().standardizedFileURL
+        guard app.bundleIdentifier == StoreApp.altstoreAppID,
+              app.resignedBundleIdentifier == Bundle.Info.activeBundleIdentifier,
+              let owner = ALTApplication(fileURL: ownerURL),
+              owner.bundleIdentifier == app.resignedBundleIdentifier,
+              let signedMainID = owner.entitlements[ALTEntitlement.applicationIdentifier] as? String,
+              signedMainID.hasSuffix("." + app.resignedBundleIdentifier),
+              signedMainID.count > app.resignedBundleIdentifier.count + 1,
+              let allowedMainID = profile.entitlements[ALTEntitlement.applicationIdentifier] as? String,
+              signedMainID == allowedMainID || (allowedMainID.hasSuffix(".*") && signedMainID.hasPrefix(String(allowedMainID.dropLast()))),
+              owner.entitlements[ALTEntitlement(rawValue: "com.apple.developer.team-identifier")] as? String == profile.teamIdentifier else { return false }
+        let extensions = owner.appExtensions.filter { $0.bundleIdentifier == ext.resignedBundleIdentifier }
+        guard extensions.count == 1, let installed = extensions.first else { return false }
+        let pluginURL = installed.fileURL.resolvingSymlinksInPath().standardizedFileURL
+        guard pluginURL.pathExtension == "appex",
+              pluginURL.deletingLastPathComponent() == ownerURL.appendingPathComponent("PlugIns"),
+              installed.entitlements[ALTEntitlement.applicationIdentifier] as? String == signedMainID,
+              installed.entitlements[ALTEntitlement(rawValue: "com.apple.developer.team-identifier")] as? String == profile.teamIdentifier,
+              let embedded = installed.provisioningProfile,
+              embedded.teamIdentifier == profile.teamIdentifier,
+              embedded.bundleIdentifier == app.resignedBundleIdentifier,
+              embedded.certificates.contains(where: { $0.serialNumber == certificate.serial && $0.data == certificate.data }),
+              let signedCertificate = CertificateManager.shared.getSigningCertificate(at: pluginURL),
+              signedCertificate.serialNumber == certificate.serial,
+              signedCertificate.data == certificate.data else { return false }
+        return true
+    }
+
     private func selectProfiles(_ profiles: [String: ALTProvisioningProfile], in db: NSManagedObjectContext) throws -> ProfileSelection {
         guard let original = context.installedApp,
               let app = db.object(with: original.objectID) as? InstalledApp,
@@ -149,6 +183,7 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
                 // Preserve explicit existing main-profile reuse; do not infer it
                 // from a missing extension profile or an arbitrary dictionary value.
                 guard authorizes(main, signedID: ext.resignedBundleIdentifier) ||
+                    installedHostAuthorizesLegacyReuse(ext, main: app, profile: main, certificate: certificate) ||
                     (context.validatedReuseMain && context.previouslyReusedExtensionIdentifiers.contains(ext.resignedBundleIdentifier) &&
                      ext.resignedBundleIdentifier.hasPrefix(app.resignedBundleIdentifier + ".")) else {
                     throw OperationError.invalidParameters("The reused extension identity is outside its parent.")

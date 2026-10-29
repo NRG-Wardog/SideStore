@@ -86,6 +86,6 @@ class Contract(unittest.TestCase):
    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
    report=json.loads(result.stdout)
    self.assertEqual(report['schema'],'refresh-truth-operation-v1');self.assertEqual(report['status'],'PASS')
-   self.assertEqual(len(report['cases']),18);self.assertEqual(len(set(report['cases'])),18)
+   self.assertEqual(len(report['cases']),31);self.assertEqual(len(set(report['cases'])),31)
    print(json.dumps(report,sort_keys=True))
 if __name__=='__main__': unittest.main()

@@ -16,6 +16,36 @@
    return c
   }
   func check(_ id:String,_ condition: @autoclosure () -> Bool) { precondition(condition(),id);passed.append(id) }
+  for variant in ["valid", "distinct-prefix", "wildcard-prefix", "wrong-embedded-team", "wrong-embedded-certificate", "wrong-team", "wrong-certificate", "missing-entitlement", "unrelated-extension", "wrong-prefix", "outside-plugins", "not-host", "duplicate-extension"] {
+   let c=setup(); c.useMainProfile=true
+   c.dbBackgroundContext.app.bundleIdentifier=StoreApp.altstoreAppID
+   let ext=InstalledExtension();ext.bundleIdentifier=StoreApp.altstoreAppID+".ext"
+   c.dbBackgroundContext.app.appExtensions=[ext]
+   let prefix=variant == "distinct-prefix" ? "APP-PREFIX" : "T"
+   let appID=ALTEntitlement.applicationIdentifier, teamID=ALTEntitlement(rawValue:"com.apple.developer.team-identifier")
+   var expected=fresh;expected.entitlements=[appID:variant == "wildcard-prefix" ? prefix+".*" : prefix+".app"]
+   c.provisioningProfiles=["app":expected]
+   let host=ALTApplication();host.entitlements=[appID:prefix+".app",teamID:"T"]
+   let child=ALTApplication();child.bundleIdentifier="app.ext";child.fileURL=host.fileURL.appendingPathComponent("PlugIns/Test.appex")
+   child.entitlements=[appID:prefix+".app",teamID:"T"];child.provisioningProfile=old
+   host.appExtensions=[child]
+   if variant == "wrong-embedded-team" { child.provisioningProfile?.teamIdentifier="OTHER" }
+   if variant == "wrong-embedded-certificate" { child.provisioningProfile?.certificates=[Cert(serialNumber:"S",data:Data([99]))] }
+   if variant == "wrong-team" { child.entitlements[teamID]="OTHER" }
+   if variant == "missing-entitlement" { child.entitlements.removeValue(forKey:appID) }
+   if variant == "unrelated-extension" { child.bundleIdentifier="other.ext" }
+   if variant == "wrong-prefix" { child.entitlements[appID]="WRONG.app" }
+   if variant == "outside-plugins" { child.fileURL=URL(fileURLWithPath:"/synthetic/Other.app/PlugIns/Test.appex") }
+   if variant == "not-host" { c.dbBackgroundContext.app.bundleIdentifier="other.original";ext.bundleIdentifier="other.original.ext" }
+   if variant == "duplicate-extension" { host.appExtensions=[child,child] }
+   fixtureApplications=[host.fileURL:host]
+   fixtureCertificates=[child.fileURL:Cert(serialNumber:"S",data:variant == "wrong-certificate" ? Data([99]):cert)]
+   var succeeded=false
+   do { _=try await RefreshAppOperation(context:c).execute(parentProgress:nil);succeeded=true } catch {}
+   let allowed=variant == "valid" || variant == "distinct-prefix" || variant == "wildcard-prefix"
+   check("legacy-host-"+variant, succeeded == allowed && Injection.shared.count == (allowed ? 1:0))
+   fixtureApplications=[:];fixtureCertificates=[:]
+  }
   do {
    let c=setup(true); var recorded:V3RefreshVerification?; c.recordRefreshVerification={recorded=$0}
    _=try await RefreshAppOperation(context:c).execute(parentProgress:nil)
