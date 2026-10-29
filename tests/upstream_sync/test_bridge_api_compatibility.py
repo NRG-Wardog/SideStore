@@ -175,7 +175,10 @@ class SwiftSourceContracts(unittest.TestCase):
     def test_host_calls_keep_shared_context_not_only_database(self):
         single = self.app.split('private func single(id:', 1)[1].split('private func isDeleteCancellationError', 1)[0]
         delete = self.app.split('private func deleteAndReconcile(id:', 1)[1].split('let deadline =', 1)[0]
-        self.assertIn('handler: handler, context: context)', single)
+        self.assertIn('context: context, suppliedGroup: group)', single)
+        self.assertIn('let group = RefreshGroup(context: context)', single)
+        self.assertLess(single.index('session.group = group'), single.index('performSingleOperation(operation'))
+        self.assertLess(single.index('sessions[id] = session'), single.index('performSingleOperation(operation'))
         self.assertIn('handler: handler, context: context', delete)
         self.assertNotIn('dbContext:', single + delete)
         self.assertIn('group.cancel(); group.progress.cancel()', single)

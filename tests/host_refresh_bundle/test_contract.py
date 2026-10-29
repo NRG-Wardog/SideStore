@@ -4,6 +4,25 @@ import argparse
 import json
 
 
+def owned_pipeline_lifetime(runner: str) -> bool:
+    """Actual operation scope, not an unrelated defer elsewhere in the file."""
+    try:
+        start = runner.index('    private func performPipeline(')
+        body_start = runner.index('{', start)
+        end, depth = body_start + 1, 1
+        while depth:
+            depth += (runner[end] == '{') - (runner[end] == '}')
+            end += 1
+        body = runner[body_start:end]
+        cleanup = body.index('defer { preparedHostRefreshBundle?.removeOwnedCopy() }')
+        awaited = body.index('let completedApp = try await PipelineExecutor.shared.executePipeline(')
+        evidence = body.index('group.setVerification(verification, for: completedApp.bundleIdentifier)')
+        returned = body.index('return completedApp')
+        return cleanup < awaited < evidence < returned
+    except (ValueError, IndexError):
+        return False
+
+
 def validate(repo: Path) -> int:
     runner = (repo / 'SideStore/Core/Operations/PipelineRunner.swift').read_text()
     helper = runner.split('// V3_HOST_REFRESH_BUNDLE_PREPARATION_BEGIN\n', 1)[1].split('// V3_HOST_REFRESH_BUNDLE_PREPARATION_END', 1)[0]
@@ -21,7 +40,13 @@ def validate(repo: Path) -> int:
     for field in ['installedApp = app', 'appBundleFingerprint = app.appBundleFingerprint', 'useMainProfile = app.useMainProfile', 'customBundleIdentifier = app.customBundleIdentifier']:
         check('context.' + field in integration, 'Preserved context field ' + field)
     check('defer { preparedHostRefreshBundle?.removeOwnedCopy() }' in runner, 'Operation scope cleanup')
-    check(runner.index('defer { preparedHostRefreshBundle?.removeOwnedCopy() }') < runner.index('return try await PipelineExecutor.shared.executePipeline('), 'Cleanup surrounds awaited pipeline')
+    check(owned_pipeline_lifetime(runner), 'Cleanup surrounds awaited pipeline and evidence-preserving return')
+    cleanup = 'defer { preparedHostRefreshBundle?.removeOwnedCopy() }'
+    check(not owned_pipeline_lifetime(runner.replace(cleanup, '', 1)), 'Negative missing owned cleanup rejected')
+    moved = runner.replace(cleanup, '', 1).replace('return completedApp', cleanup + '\n        return completedApp', 1)
+    check(not owned_pipeline_lifetime(moved), 'Negative late cleanup registration rejected')
+    early = runner.replace('let completedApp = try await PipelineExecutor.shared.executePipeline(', 'return completedApp\n        let completedApp = try await PipelineExecutor.shared.executePipeline(', 1)
+    check(not owned_pipeline_lifetime(early), 'Negative return before pipeline rejected')
     check('try Task.checkCancellation()\n                            try V3RemoteRequestLeases.admitted?.check()' in integration, 'Cancellation plus current admission retained')
     check('if error is CancellationError { throw error }' in integration, 'Cancellation not remapped')
     check('stage: "command", sourceStep: nil' in integration, 'Preparation failures use neutral stage, not profile fetch or selected IPA')

@@ -36,6 +36,21 @@ class Contract(unittest.TestCase):
   self.assertEqual(s.count('let result = try await transportCore.readInstalledProvisioningProfiles()'),2)
   self.assertEqual(s.count('try checkReadinessOwnership()\n                        return result'),2)
   self.assertIn('context.recordRefreshVerification = { group.setVerification',s)
+ def test_shared_profile_evidence_sanitizer(self):
+  def declaration(text, marker):
+   start=text.index(marker); end=text.index('{',start)+1; depth=1
+   while depth:
+    depth+=(text[end]=='{')-(text[end]=='}');end+=1
+   return text[start:end]
+  host=pathlib.Path(os.environ.get('V3_HOST_SOURCE_ROOT', str(ROOT.parent/'LiveContainer')))
+  peer=(host/'SideStoreSupport/SideStore.swift').read_text()
+  producer=source('AltStore/AppDelegate.swift')
+  for marker in ['public struct V3RefreshProfileEvidence {', 'public enum CombinedVerification {']:
+   self.assertEqual(declaration(producer,marker),declaration(peer,marker))
+  sanitizer=declaration(producer,'public enum CombinedVerification {')
+  self.assertIn('hasCompleteTerminalResults(manifest, runID: runID)',sanitizer)
+  self.assertIn('if let evidence = V3RefreshProfileEvidence(entry["verification"])',sanitizer)
+  self.assertNotIn('host_profile_verification',sanitizer)
  def test_actual_swift_runtime(self):
   swift=shutil.which('swiftc')
   if not swift:

@@ -14673,6 +14673,59 @@ public enum CombinedRefreshTargetPolicy {
 }
 
 // LC_REFRESH_METADATA_SANITIZED_V1: never forward arbitrary saved result dictionaries.
+public struct V3RefreshProfileEvidence {
+    public let mutationDispatched: Bool
+    public let installAcknowledged: Bool
+    public let profileStore: String
+    public let renewal: String
+    public let certificate: String
+    public let reason: String?
+
+    public init?(_ value: Any?) {
+        guard let raw = value as? [String: Any],
+              Set(raw.keys).isSubset(of: ["version", "mutationDispatched", "installAcknowledged", "profileStore", "renewal", "certificate", "reason"]),
+              let version = raw["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(),
+              ["c", "s", "i", "l", "q", "C", "S", "I", "L", "Q"].contains(String(cString: version.objCType)), version.intValue == 1,
+              let dispatched = raw["mutationDispatched"] as? NSNumber, CFGetTypeID(dispatched) == CFBooleanGetTypeID(),
+              let acknowledged = raw["installAcknowledged"] as? NSNumber, CFGetTypeID(acknowledged) == CFBooleanGetTypeID(),
+              let store = raw["profileStore"] as? String, ["matched", "mismatch", "unavailable"].contains(store),
+              let renewal = raw["renewal"] as? String, ["extended", "unchanged", "shortened", "unknown"].contains(renewal),
+              let certificate = raw["certificate"] as? String, ["valid", "unknown", "invalid"].contains(certificate) else { return nil }
+        let reason = raw["reason"] as? String
+        if raw["reason"] != nil {
+            guard let reason, ["profileAbsent", "profileMismatch", "readbackUnavailable", "baselineUnavailable", "expiryUnchanged", "expiryShortened", "certificateUnknown", "certificateExpired", "certificateRevoked"].contains(reason) else { return nil }
+        }
+        // Contradictory observations cannot be promoted by a permissive parser.
+        guard !acknowledged.boolValue || dispatched.boolValue,
+              acknowledged.boolValue || (store == "unavailable" && renewal == "unknown"),
+              store == "matched" || renewal == "unknown" else { return nil }
+        if let reason {
+            switch reason {
+            case "profileAbsent", "profileMismatch": guard store == "mismatch" else { return nil }
+            case "readbackUnavailable": guard store == "unavailable" else { return nil }
+            case "baselineUnavailable": guard renewal == "unknown" else { return nil }
+            case "expiryUnchanged": guard renewal == "unchanged" else { return nil }
+            case "expiryShortened": guard renewal == "shortened" else { return nil }
+            case "certificateUnknown": guard certificate == "unknown" else { return nil }
+            case "certificateExpired", "certificateRevoked": guard certificate == "invalid" else { return nil }
+            default: return nil
+            }
+        }
+        self.mutationDispatched = dispatched.boolValue
+        self.installAcknowledged = acknowledged.boolValue
+        self.profileStore = store; self.renewal = renewal; self.certificate = certificate; self.reason = reason
+    }
+    public var isRenewed: Bool {
+        installAcknowledged && profileStore == "matched" && renewal == "extended" && certificate == "valid"
+    }
+    public var wire: [String: Any] {
+        var value: [String: Any] = ["version": 1, "mutationDispatched": mutationDispatched, "installAcknowledged": installAcknowledged,
+            "profileStore": profileStore, "renewal": renewal, "certificate": certificate]
+        if let reason { value["reason"] = reason }
+        return value
+    }
+}
+
 public enum CombinedVerification {
     static let uncertainMutationKey = "liveContainerAutoRefreshUncertainMutationRunID"
     static func clearUncertainty(_ defaults: UserDefaults, runID: String) {
@@ -14718,6 +14771,7 @@ public enum CombinedVerification {
     }
     static func sanitized(_ payload: [String: Any], runID: String) -> [String: Any] {
         guard let manifest = payload["liveContainerAutoRefreshVerification"] as? [String: Any],
+              hasCompleteTerminalResults(manifest, runID: runID),
               manifest["run_id"] as? String == runID,
               let expected = manifest["expected_ids"] as? [String], expected.count <= 1024,
               expected.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 }),
@@ -14773,6 +14827,7 @@ public enum CombinedVerification {
                   let success = strictBoolean(entry["success"]) else { return [:] }
             var item: [String: Any] = ["bundle_id": identifier, "success": success]
             for key in ["refreshed_date", "expiration_date"] { if let value = entry[key] as? Date { item[key] = value } }
+            if let evidence = V3RefreshProfileEvidence(entry["verification"]) { item["verification"] = evidence.wire }
             if !success {
                 let native = NSError(domain: entry["error_domain"] as? String ?? "redacted", code: entry["error_code"] as? Int ?? 0,
                     userInfo: [NSLocalizedDescriptionKey: entry["error"] as? String ?? ""])
@@ -15324,9 +15379,9 @@ public struct CombinedFailure: Error, LocalizedError {
                      "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"].contains(text) else { return nil }
             case "refresh_failure_kind":
                 guard ["invalidParameters", "invalidOperationContext", "notAuthenticated", "unknownResult",
-                    "missingAppBundle", "missingProvisioningProfile", "certificateExpired", "certificateRevoked", "certificateVerificationUnavailable",
+                    "missingAppBundle", "missingProvisioningProfile", "certificateExpired", "certificateRevoked",
                     "customCertificateExpired", "customCertificateRevoked", "certificateChanged", "invalidApp",
-                    "invalidPairingFile", "pairingNotComplete", "noDevice", "noConnection", "noVPN", "invalidVPN",
+                    "invalidPairingFile", "pairingNotComplete", "noDevice", "noConnection", "noVPN", "invalidVPN", "certificateVerificationUnavailable",
                     "notReachable", "minimuxerNotStarted", "timedOut", "unknownOperation", "otherOperation"].contains(text) else { return nil }
             case "server_code":
                 guard text == "unknown" || (text.utf8.count <= 20 && Int(text).map({ String($0) }) == text) else { return nil }
@@ -15499,8 +15554,7 @@ public struct CombinedFailure: Error, LocalizedError {
         }
     }
     private var localRefreshMessage: String? {
-        if sourceStep == .certificateValidation,
-           signingContext["refresh_failure_kind"] == "certificateVerificationUnavailable" {
+        if sourceStep == .certificateValidation, signingContext["refresh_failure_kind"] == "certificateVerificationUnavailable" {
             return "Certificate verification is unavailable. This does not mean the certificate was revoked. Check the connection and review this app’s verification status."
         }
         switch localRefreshPrecondition {
