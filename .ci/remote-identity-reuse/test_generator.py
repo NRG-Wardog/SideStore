@@ -28,6 +28,20 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(module.SOURCE_PATHS["diagnostic_policy"],
                          "SideStore/SideStore/Core/Anisette/V3DiagnosticProviderSequence.swift")
 
+    def test_background_run_binding_boundary_closure(self):
+        root = HERE.parents[2]
+        sources = {name: module.read(root, path) for name, path in module.SOURCE_PATHS.items()}
+        generated = module.runtime_projection(sources, []).decode()
+        actual = module.extract(sources['background'].decode(), 'private func refresh(_ apps:')
+        self.assertIn(actual, generated)
+        self.assertIn('refresh(apps, runID: "11111111-2222-3333-4444-555555555555")', generated)
+        doubles = (HERE / 'RuntimeDoubles.swift').read_text()
+        self.assertIn('func bindTransportObservation(to runID: String) { boundTransportRunID = runID }', doubles)
+        self.assertIn('group: RefreshGroup, runID: String)', doubles)
+        self.assertIn('persistedRunID = runID', doubles)
+        cases = (HERE / 'RuntimeCases.swift').read_text()
+        self.assertIn('operation.persistedVerificationGroup?.boundTransportRunID == operation.persistedRunID', cases)
+
     def test_braces_inside_comments_and_strings(self):
         source = 'func actual() { let x = "}"; /* nested { /* } */ */ if true { print(x) } }\nfunc next() {}'
         self.assertEqual(module.extract(source, "func actual()"), source.split("\n")[0])

@@ -16101,6 +16101,8 @@ public struct CombinedFailure: Error, LocalizedError {
     }
     public var safeMessage: String { messageWithoutDiagnosticCode + "\n" + diagnosticLabel }
     private var messageWithoutDiagnosticCode: String {
+        // A validated finite selection guard is a safe local observation, not a raw error.
+        if refreshSelectionPrecondition != nil, let local = localRefreshMessage { return local }
         if operation == "refresh", safeCause == nil {
             return "Refresh failed during \(stage.rawValue), but no safe underlying cause was available."
         }

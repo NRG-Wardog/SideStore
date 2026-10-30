@@ -208,6 +208,9 @@ struct InstalledApp: Sendable {
     static var fixture: Self { Self(anisette: AnisetteData(identity: Data(), otp: 0, clientInfo: "synthetic")) }
 }
 final class RefreshGroup: @unchecked Sendable {
+    // Observation-only external boundary; no readiness is synthesized.
+    private(set) var boundTransportRunID: String?
+    func bindTransportObservation(to runID: String) { boundTransportRunID = runID }
     var completionHandler: (([String: Result<InstalledApp, Error>]) -> Void)?
     var beginInstallationHandler: ((InstalledApp) -> Void)?
     var activeTask: Task<Void, Never>?
@@ -230,7 +233,9 @@ final class BackgroundRefreshAppsOperation: @unchecked Sendable {
     var persistedVerificationGroup: RefreshGroup?
     var persistedResultIDs: Set<String> = []
     var persistedAttemptedIDs: [String] = []
-    func persistAutomaticRefreshVerification(results: [String: Result<InstalledApp, Error>], attemptedAppIDs: [String], group: RefreshGroup) {
+    var persistedRunID: String?
+    func persistAutomaticRefreshVerification(results: [String: Result<InstalledApp, Error>], attemptedAppIDs: [String], group: RefreshGroup, runID: String) {
+        persistedRunID = runID
         persistedVerificationGroup = group
         persistedResultIDs = Set(results.keys)
         persistedAttemptedIDs = attemptedAppIDs

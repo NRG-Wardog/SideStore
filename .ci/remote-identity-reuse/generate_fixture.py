@@ -177,7 +177,7 @@ def runtime_projection(sources, spans):
         "@discardableResult\n" + outer + "\n}")
     parts.append("extension BackgroundRefreshAppsOperation {\n" +
         take("background", "private func refresh(_ apps:") +
-        "\nfunc runFixture(_ apps: [InstalledApp]) async throws -> [String: Result<InstalledApp, Error>] { try await refresh(apps) }\n}")
+        "\nfunc runFixture(_ apps: [InstalledApp]) async throws -> [String: Result<InstalledApp, Error>] { try await refresh(apps, runID: \"11111111-2222-3333-4444-555555555555\") }\n}")
     projected = "\n\n".join(parts)
     validate_diagnostic_policy_closure(projected, sources["diagnostic_policy"].decode())
     return projected.encode() + b"\n"
