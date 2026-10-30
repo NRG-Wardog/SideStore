@@ -40,7 +40,7 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
              self.context.bundleIdentifier == StoreApp.altstoreAppID) {
             throw OperationError.invalidParameters("Experimental ReuseMain is not available for host self-install or self-refresh. Keep the existing signing strategy for the host.")
         }
-        self.context.validateExtensionSigningCapabilities = self.context.validatedReuseMain
+        self.context.validateExtensionSigningCapabilities = self.context.validatedReuseMain || self.context.legacyReplacementBinding != nil
         self.context.originalExtensionBundleIdentifiers = [:]
         self.context.previouslyReusedExtensionIdentifiers = []
 

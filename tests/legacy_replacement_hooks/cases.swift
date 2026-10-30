@@ -76,6 +76,19 @@
    do {let staged=try await FixtureOperations(c).stage();_ = try await FixtureOperations(c).keepAll(staged);succeeded=true;precondition(AppBundleFingerprint.compute(for:staged.fileURL)==stagedBinding.sourceTreeDigest)}catch{}
    precondition(succeeded==(variant=="exact-copy"),variant);cases.append("owned-stage-"+variant)
   }
+  for (name,replacement,experimental,missingCapability,expectedStrategy,shouldPass) in [
+   ("strategy-ordinary-unchanged",false,false,true,ExtensionSigningStrategy.perExtension,true),
+   ("strategy-replacement-preserves",true,false,false,.perExtensionPreservingCapabilities,true),
+   ("strategy-replacement-unsupported-rejected",true,false,true,.perExtensionPreservingCapabilities,false),
+   ("strategy-experimental-unchanged",false,true,false,.reuseMainWhenCompatible,true)
+  ] {
+   let c=context();if !replacement {c.legacyReplacementBinding=nil};c.validatedReuseMain=experimental;c.useMainProfile=experimental
+   let op=StrategyOperation(c);op.fetchFlag();let signer=StrategySigner()
+   signer.required=["com.apple.security.application-groups":["group.synthetic"]]
+   signer.signed=missingCapability ? [:] : signer.required
+   var passed=false;do{try await op.sign(signer);passed=true}catch{}
+   precondition(signer.observed==expectedStrategy && passed==shouldPass,name);cases.append(name)
+  }
   let json:[String:Any]=["schema":"legacy-replacement-hooks-v1","status":"PASS","cases":cases]
   print(String(data:try JSONSerialization.data(withJSONObject:json,options:.sortedKeys),encoding:.utf8)!)
  }

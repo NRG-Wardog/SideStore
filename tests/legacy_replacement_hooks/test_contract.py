@@ -43,6 +43,7 @@ class Hooks(unittest.TestCase):
   self.assertNotIn('Task.checkCancellation',save)
  def test_exact_profile_and_certificate(self):
   s=read('PipelineOperations/FetchProvisioningProfilesOperation.swift')
+  self.assertIn('self.context.validateExtensionSigningCapabilities = self.context.validatedReuseMain || self.context.legacyReplacementBinding != nil',s)
   self.assertIn('binding.extensionIdentities[targetAppBundle.bundleIdentifier]',s)
   self.assertIn('profile.bundleIdentifier == bundleID',s)
   self.assertIn('missing.count <= max(0, Team.maximumFreeAppIDs - appIDs.count)',s)
@@ -68,6 +69,15 @@ class Hooks(unittest.TestCase):
   app=(ROOT/'AltStore/AppDelegate.swift').read_text()
   persistence='struct CombinedFailure {\n'+decl(app,'    public enum Stage:')+'\n'+decl(app,'    public enum SafeCause:')+'\n}\n'+decl(app,'struct V3PostMutationPersistenceError:')+'\n'+decl(app,'enum V3MutationPersistencePolicy {')
   actual+='\nfunc actualPostAcknowledgementSave(context:FixtureContext,backgroundContext:FixtureDB) async throws {\n'+save+'\n}\n'+persistence
+  fetch=read('PipelineOperations/FetchProvisioningProfilesOperation.swift')
+  flag=next(line.strip() for line in fetch.splitlines() if line.strip().startswith('self.context.validateExtensionSigningCapabilities ='))
+  resign=decl(read('PipelineOperations/ResignAppOperation.swift'),'    private func resignAppBundle(')
+  branches=resign[resign.index('        if context.useMainProfile'):resign.index('        return fileURL')]
+  policy=(ROOT/'Dependencies/SideSign/Sources/CodeSigning/ExtensionSigningPolicy.swift').read_text()
+  signer=(ROOT/'Dependencies/SideSign/Sources/CodeSigning/CodeSignerAPI.swift').read_text()
+  guard=decl(signer,'            if extensionStrategy != .perExtension,')
+  actual+='\nfinal class StrategyOperation { let context:FixtureContext;init(_ c:FixtureContext){context=c};func fetchFlag(){'+flag+'};func sign(_ signer:StrategySigner) async throws {let fileURL=URL(fileURLWithPath:"/synthetic");let profiles:[ALTProvisioningProfile]=[]\n'+branches+'\n}}\n'
+  actual+='\nfunc actualSignerCapabilityGuard(extensionStrategy:ExtensionSigningStrategy,app:StrategyApp,matchedProfile:StrategyProfile,filteredEntitlements:[String:any Sendable]) throws {\n'+guard+'\n}\n'+policy
   fingerprint=(ROOT/'SideStore/Utils/common/AppBundleFingerprint.swift').read_text()
   fixture=(HERE/'doubles.swift').read_text()+binding+'\nextension FixtureContext {\n'+methods+'\n}\n'+fingerprint+actual+(HERE/'cases.swift').read_text()
   with tempfile.TemporaryDirectory() as d:
@@ -76,6 +86,6 @@ class Hooks(unittest.TestCase):
    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
    result=subprocess.run([str(exe)],capture_output=True,text=True,timeout=30)
    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-   report=json.loads(result.stdout);self.assertEqual(report['status'],'PASS');self.assertEqual(len(report['cases']),31)
+   report=json.loads(result.stdout);self.assertEqual(report['status'],'PASS');self.assertEqual(len(report['cases']),35)
    print(json.dumps(report,sort_keys=True))
 if __name__=='__main__':unittest.main()
