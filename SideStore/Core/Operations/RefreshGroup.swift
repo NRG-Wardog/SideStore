@@ -10,6 +10,31 @@ import Foundation
 import CoreData
 import SideSign
 
+// V3_OWNED_TRANSPORT_OBSERVATION_V1: historical, run-bound native readiness.
+// This is not installation acknowledgement or a claim of current connectivity.
+struct V3OwnedTransportObservation {
+    private var runID: String?
+    private var ready = false
+
+    mutating func bind(to value: String) {
+        guard runID == nil, UUID(uuidString: value) != nil else { return }
+        runID = value
+    }
+
+    mutating func recordReady(nativeReady: Bool, configurationUnchanged: Bool,
+                              checkOwnership: () throws -> Void) rethrows {
+        try checkOwnership()
+        guard runID != nil, nativeReady, configurationUnchanged else { return }
+        ready = true
+    }
+
+    func wire(for value: String) -> [String: Any]? {
+        guard ready, runID == value else { return nil }
+        return ["version": 1, "readiness": "ready", "scope": "ownedBatch"]
+    }
+}
+// V3_OWNED_TRANSPORT_OBSERVATION_END
+
 final class RefreshGroup: NSObject
 {
     let context: StandaloneOperationContext
@@ -26,6 +51,24 @@ final class RefreshGroup: NSObject
     var completionHandler: (([String: Result<InstalledApp, Error>]) -> Void)?
     var beginInstallationHandler: ((InstalledApp) -> Void)?
         
+    private var transportObservation = V3OwnedTransportObservation()
+
+    func bindTransportObservation(to runID: String) {
+        lock.withLock { transportObservation.bind(to: runID) }
+    }
+
+    func recordTransportReady(nativeReady: Bool, configurationUnchanged: Bool,
+                              checkOwnership: () throws -> Void) rethrows {
+        try lock.withLock {
+            try transportObservation.recordReady(nativeReady: nativeReady,
+                configurationUnchanged: configurationUnchanged, checkOwnership: checkOwnership)
+        }
+    }
+
+    func transportObservationWire(for runID: String) -> [String: Any]? {
+        lock.withLock { transportObservation.wire(for: runID) }
+    }
+
     private var verificationByApp: [String: V3RefreshVerification] = [:]
 
     func setVerification(_ value: V3RefreshVerification, for bundleID: String) {

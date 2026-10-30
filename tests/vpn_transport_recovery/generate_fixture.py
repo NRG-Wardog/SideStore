@@ -25,6 +25,7 @@ INPUTS = {
     'mapper': 'SideStore/SideStore/Core/DeviceApi/MinimuxerWrapper.swift',
     'operation_error': 'SideStore/SideStore/Core/Operations/Errors/OperationError.swift',
     'classifier': 'SideStore/SideStore/Core/Operations/PipelineExecutor.swift',
+    'selection': 'SideStore/SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift',
 }
 
 
@@ -161,6 +162,7 @@ def generate_source(root, include_operation_classifier=True, include_baseline=Tr
     swift += wifi_readiness_fixture(s['producer'], s['observer'], s['connection_manager'])
     if include_operation_classifier:
         swift += no_imports(s['operation_error']) + '\n'
+        swift += declaration(s['selection'], 'struct V3RefreshSelectionFailure:') + '\n'
         swift += declaration(s['classifier'], 'func lcRefreshFailureFacts(') + '\n'
     if include_baseline:
         receipt = json.loads((HERE / 'baseline-receipt.json').read_text())

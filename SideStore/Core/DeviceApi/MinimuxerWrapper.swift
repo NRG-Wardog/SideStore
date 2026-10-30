@@ -37,6 +37,11 @@ final class V3PairingTransportReceipt: @unchecked Sendable {
         self.digest = digest; self.mode = mode
     }
 
+    func observationGeneration() -> UUID {
+        lock.lock(); defer { lock.unlock() }
+        return generation
+    }
+
     func ticket(contents: String, mode: PairingProtocol) -> UUID? {
         let digest = Data(SHA256.hash(data: Data(contents.utf8)))
         lock.lock(); defer { lock.unlock() }

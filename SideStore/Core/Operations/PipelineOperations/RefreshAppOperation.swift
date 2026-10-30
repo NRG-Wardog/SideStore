@@ -10,6 +10,25 @@ import Foundation
 import CoreData
 import SideSign
 
+// Fixed local observations only. No profile, certificate, bundle ID or provider text.
+struct V3RefreshSelectionFailure: Error, Sendable {
+    enum Reason: String, CaseIterable, Sendable {
+        case missingRefreshProfiles, missingTargetAppBundle, missingInstalledRecord
+        case missingMainProfile, missingVerifiedCertificate, extensionOutsideParent
+        case mainProfileIdentityMismatch, mainProfileExpired, mainProfileCertificateMismatch
+        case extensionProfileIdentityMismatch, extensionProfileExpired, extensionProfileCertificateMismatch
+        case extensionTeamMismatch, legacyProofUnavailable, legacyHostProofUnavailable
+        case missingExtensionProfile, unexpectedProfileKeys, inconsistentProfileUUID, unexpectedProfileUUID
+    }
+    enum Scope: String, Sendable { case host, nonHost, unknown }
+    let reason: Reason
+    let scope: Scope
+    var facts: [String: String] {
+        ["refresh_failure_kind": "invalidParameters", "local_precondition": reason.rawValue,
+         "refresh_target_scope": scope.rawValue]
+    }
+}
+
 final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContext, InstalledApp>, @unchecked Sendable {
     
     // Set before execution; only refresh pipelines supply this owned admission.
@@ -26,11 +45,11 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         
         guard let profiles = self.context.provisioningProfiles else {
-            throw OperationError.invalidParameters("RefreshAppOperation.execute: self.context.provisioningProfiles is nil")
+            throw selectionFailure(.missingRefreshProfiles)
         }
         
         guard let appBundle = self.context.targetAppBundle else {
-            throw OperationError.invalidParameters("RefreshAppOperation: context.targetAppBundle is nil")
+            throw selectionFailure(.missingTargetAppBundle)
         }
         let dbContext = self.context.dbBackgroundContext
         let selection = try await dbContext.perform { try self.selectProfiles(profiles, in: dbContext) }
@@ -113,10 +132,20 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         let certificateData: Data
     }
 
+    private func selectionFailure(_ reason: V3RefreshSelectionFailure.Reason) -> V3RefreshSelectionFailure {
+        let scope: V3RefreshSelectionFailure.Scope
+        // The immutable operation identity avoids reading a managed object off
+        // its queue when an early context guard fails.
+        let originalID = context.bundleIdentifier
+        scope = originalID.isEmpty ? .unknown : (originalID == StoreApp.altstoreAppID ? .host : .nonHost)
+        debugLog("[V3_REFRESH_SELECTION] guard=\(reason.rawValue) scope=\(scope.rawValue)")
+        return V3RefreshSelectionFailure(reason: reason, scope: scope)
+    }
+
     private func extensionProfileKey(_ ext: InstalledExtension, main: InstalledApp) throws -> String {
         let originalParent = main.bundleIdentifier
         guard ext.bundleIdentifier.hasPrefix(originalParent + ".") else {
-            throw OperationError.invalidParameters("An extension identity is outside its parent.")
+            throw selectionFailure(.extensionOutsideParent)
         }
         return context.targetBundleIdentifier + ext.bundleIdentifier.dropFirst(originalParent.count)
     }
@@ -157,17 +186,35 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
 
     private func selectProfiles(_ profiles: [String: ALTProvisioningProfile], in db: NSManagedObjectContext) throws -> ProfileSelection {
         guard let original = context.installedApp,
-              let app = db.object(with: original.objectID) as? InstalledApp,
-              let main = profiles[context.targetBundleIdentifier],
-              let certificate = context.verifiedRefreshCertificate, !certificate.data.isEmpty else {
-            throw OperationError.invalidParameters("The installed signing identity or main profile is unavailable.")
+              let app = db.object(with: original.objectID) as? InstalledApp else {
+            throw selectionFailure(.missingInstalledRecord)
+        }
+        guard let main = profiles[context.targetBundleIdentifier] else {
+            throw selectionFailure(.missingMainProfile)
+        }
+        guard let certificate = context.verifiedRefreshCertificate, !certificate.data.isEmpty else {
+            throw selectionFailure(.missingVerifiedCertificate)
+        }
+        func authorizationFailure(_ profile: ALTProvisioningProfile, signedID: String, extensionProfile: Bool) -> V3RefreshSelectionFailure.Reason? {
+            let pattern = profile.bundleIdentifier
+            guard !signedID.isEmpty && (pattern == signedID ||
+                (pattern.hasSuffix(".*") && signedID.hasPrefix(String(pattern.dropLast()))) || pattern == "*") else {
+                return extensionProfile ? .extensionProfileIdentityMismatch : .mainProfileIdentityMismatch
+            }
+            guard profile.expirationDate > verificationNow() else {
+                return extensionProfile ? .extensionProfileExpired : .mainProfileExpired
+            }
+            guard !certificate.serial.isEmpty,
+                  profile.certificates.contains(where: { $0.serialNumber == certificate.serial && $0.data == certificate.data }) else {
+                return extensionProfile ? .extensionProfileCertificateMismatch : .mainProfileCertificateMismatch
+            }
+            return nil
         }
         func authorizes(_ profile: ALTProvisioningProfile, signedID: String) -> Bool {
-            V3RefreshVerification.authorizes(profile, signedID: signedID,
-                certificateSerial: certificate.serial, certificateData: certificate.data, now: verificationNow())
+            authorizationFailure(profile, signedID: signedID, extensionProfile: true) == nil
         }
-        guard authorizes(main, signedID: app.resignedBundleIdentifier) else {
-            throw OperationError.invalidParameters("The main profile does not authorize the installed signing identity.")
+        if let reason = authorizationFailure(main, signedID: app.resignedBundleIdentifier, extensionProfile: false) {
+            throw selectionFailure(reason)
         }
         var selected = [main]
         var allowedKeys: Set<String> = [context.targetBundleIdentifier]
@@ -175,8 +222,11 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
             let key = try extensionProfileKey(ext, main: app)
             if let profile = profiles[key] {
                 allowedKeys.insert(key)
-                guard authorizes(profile, signedID: ext.resignedBundleIdentifier), profile.teamIdentifier == main.teamIdentifier else {
-                    throw OperationError.invalidParameters("An extension profile does not authorize its installed signing identity.")
+                if let reason = authorizationFailure(profile, signedID: ext.resignedBundleIdentifier, extensionProfile: true) {
+                    throw selectionFailure(reason)
+                }
+                guard profile.teamIdentifier == main.teamIdentifier else {
+                    throw selectionFailure(.extensionTeamMismatch)
                 }
                 selected.append(profile)
             } else if context.useMainProfile {
@@ -186,11 +236,11 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
                     installedHostAuthorizesLegacyReuse(ext, main: app, profile: main, certificate: certificate) ||
                     (context.validatedReuseMain && context.previouslyReusedExtensionIdentifiers.contains(ext.resignedBundleIdentifier) &&
                      ext.resignedBundleIdentifier.hasPrefix(app.resignedBundleIdentifier + ".")) else {
-                    throw OperationError.invalidParameters("The reused extension identity is outside its parent.")
+                    throw selectionFailure(app.bundleIdentifier == StoreApp.altstoreAppID ? .legacyHostProofUnavailable : .legacyProofUnavailable)
                 }
                 selected.append(main)
             } else {
-                throw OperationError.invalidParameters("An extension provisioning profile is missing.")
+                throw selectionFailure(.missingExtensionProfile)
             }
         }
         // Keep each inference step small for the supported Swift compiler. The
@@ -208,10 +258,9 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         }
         let suppliedUUIDs = Set(profiles.values.map { $0.uuid })
         let selectedUUIDs = Set(selected.map { $0.uuid })
-        guard Set(profiles.keys) == allowedKeys, duplicateUUIDsAreConsistent,
-              suppliedUUIDs == selectedUUIDs else {
-            throw OperationError.invalidParameters("Unexpected provisioning profiles were supplied for this refresh.")
-        }
+        guard Set(profiles.keys) == allowedKeys else { throw selectionFailure(.unexpectedProfileKeys) }
+        guard duplicateUUIDsAreConsistent else { throw selectionFailure(.inconsistentProfileUUID) }
+        guard suppliedUUIDs == selectedUUIDs else { throw selectionFailure(.unexpectedProfileUUID) }
         return ProfileSelection(profiles: selected, certificateSerial: certificate.serial,
                                 certificateExpiry: certificate.expiry, certificateData: certificate.data)
     }

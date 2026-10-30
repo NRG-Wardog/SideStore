@@ -12,6 +12,33 @@ import SideSign
 import Minimuxer
 
 
+// Memory-only comparison. Never serialized: peer addresses remain private.
+// No public backend configuration generation exists; this compares observations
+// before/after the native await, not uninterrupted configuration equivalence.
+private struct V3TransportObservationConfiguration: Equatable {
+    let core: ObjectIdentifier
+    let gateway: ObjectIdentifier
+    let startupGeneration: UUID
+    let localVPN: Bool
+    let peerOverride: String
+    let remoteServer: String
+    let remotePort: UInt16
+    let coreDeviceEnabled: Bool
+    let cellularEnabled: Bool
+
+    static func capture() -> Self {
+        let facade = minimuxer
+        let gateway = facade.gateway
+        let config = ConnectionConfig.shared
+        return Self(core: ObjectIdentifier(facade.core), gateway: ObjectIdentifier(gateway),
+                    startupGeneration: V3PairingTransportReceipt.shared.observationGeneration(),
+                    localVPN: config.useLocalVPN, peerOverride: config.overrideTunnelPeerIp,
+                    remoteServer: config.remoteServerIp, remotePort: gateway.getPort(for: .rppairing),
+                    coreDeviceEnabled: gateway.coreDeviceTransportEnabled,
+                    cellularEnabled: CellularRefreshManager.shared.isEnabled)
+    }
+}
+
 // V3_OWNED_REFRESH_READINESS_WAIT_V1: observations only, before app mutation.
 // The budget bounds starting/repeating probes, not preemption of an in-flight
 // network probe. Native device initialization runs once, outside this grace budget.
@@ -292,6 +319,7 @@ final class PipelineRunner: Sendable
         do {
             try checkReadinessOwnership()
             if !CellularRefreshManager.shared.isEnabled {
+                let transportObservationConfiguration = V3TransportObservationConfiguration.capture()
                 let initialMode = await transportCore.getConnectionMode()
                 try checkReadinessOwnership()
                 if initialMode == .localVPN {
@@ -314,15 +342,24 @@ final class PipelineRunner: Sendable
                         withNetworkCheck: true, withDDIMountCheck: false)
                     try checkReadinessOwnership()
                     switch nativeResult {
-                    case .success(true): break
+                    case .success(true):
+                        try group.recordTransportReady(nativeReady: true,
+                            configurationUnchanged: transportObservationConfiguration == .capture(),
+                            checkOwnership: checkReadinessOwnership)
                     case .success(false): throw OperationError.minimuxerNotStarted(reason: "Device readiness was not confirmed.")
                     case .failure(let error): throw error
                     }
                 } else {
                     // Remote and unconfigured routes retain their original
                     // one-shot behavior, without a new local-VPN grace deadline.
-                    if case .failure(let error) = await transportCore.isReady(
-                        withNetworkCheck: true, withDDIMountCheck: false) { throw error }
+                    let nativeResult = await transportCore.isReady(
+                        withNetworkCheck: true, withDDIMountCheck: false)
+                    if case .failure(let error) = nativeResult { throw error }
+                    if case .success(true) = nativeResult {
+                        try group.recordTransportReady(nativeReady: true,
+                            configurationUnchanged: transportObservationConfiguration == .capture(),
+                            checkOwnership: checkReadinessOwnership)
+                    }
                 }
             }
             try checkReadinessOwnership()

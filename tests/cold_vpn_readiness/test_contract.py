@@ -120,7 +120,7 @@ final class V3RefreshReadinessLifetime:''' + production
         injection = actual_injection_fragment(refresh)
         source += (ROOT / 'tests/cold_vpn_readiness/boundary_doubles.swift').read_text()
         source += '\nfunc extractedPhase(context: PhaseContext, downloadingApp: DownloadingApp, step: Int, appOperation: FakeOperation, refreshAdmission: (() throws -> Void)?) async throws {\n' + phase + '\n}\n'
-        source += '\nfunc extractedNative(transportCore: NativeCore, checkReadinessOwnership: () throws -> Void) async throws {\n' + native + '\n}\n'
+        source += '\nfunc extractedNative(transportCore: NativeCore, checkReadinessOwnership: () throws -> Void) async throws {\nlet group = NativeObservationGroup(); let transportObservationConfiguration = V3TransportObservationConfiguration.capture()\n' + native + '\n}\n'
         source += '\nextension InjectionHarness { func run(profiles: [String: Profile], refreshAdmission: (() throws -> Void)?) async throws -> InstalledApp { let appBundle = 0; let dbContext = context.dbBackgroundContext; let selection = Selection(profiles: Array(profiles.values))\n' + injection + '\n} }\n'
         production_source = source
         source += (ROOT / 'tests/cold_vpn_readiness/runtime_cases.swift').read_text()
@@ -141,5 +141,14 @@ final class V3RefreshReadinessLifetime:''' + production
             (p/'main.swift').write_text(source)
             subprocess.run([compiler, '-parse-as-library', str(p/'main.swift'), '-o', str(p/'fixture')], check=True)
             subprocess.run([str(p/'fixture')], check=True, timeout=45)
+
+def load_tests(loader, tests, pattern):
+    import importlib.util
+    path = ROOT / 'tests/cold_vpn_readiness/test_transport_observation.py'
+    spec = importlib.util.spec_from_file_location('transport_observation_tests', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    tests.addTests(loader.loadTestsFromModule(module))
+    return tests
 
 if __name__ == '__main__': unittest.main(verbosity=2)

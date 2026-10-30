@@ -24,6 +24,21 @@ struct RefreshFailureBoundaryHarness {
         precondition(V3RefreshFailureBoundary.pipelineStep(.fetchProvisioningProfiles) == nil)
         precondition(V3RefreshFailureBoundary.pipelineStep(.installApp) == nil)
 
+        for reason in V3RefreshSelectionFailure.Reason.allCases {
+            let local = V3RefreshSelectionFailure(reason: reason, scope: .nonHost)
+            let facts = lcRefreshFailureFacts(local, sourceStep: "refreshApplication")
+            precondition(facts["local_precondition"] == reason.rawValue)
+            precondition(facts["refresh_target_scope"] == "nonHost")
+            precondition(lcRefreshFailureFacts(local, sourceStep: "provisioningProfileFetch").isEmpty)
+            let marked = lcStructuredSigningFailure(local, stage: "command", sourceStep: "refreshApplication", facts: facts)
+            let target = InstalledApp(bundleIdentifier: "com.fixture.selection", name: "Fixture App")
+            let mapped = getMappedError(for: .refresh(target), error: marked)
+            let failure = try roundtrip(mapped)
+            precondition(failure.sourceStep == .refreshApplication)
+            precondition(failure.signingContext["local_precondition"] == reason.rawValue)
+            precondition(failure.signingContext["refresh_target_scope"] == "nonHost")
+        }
+
         let privateNative = NSError(domain: secret, code: 42,
             userInfo: [NSLocalizedDescriptionKey: secret, "untrusted_payload": secret])
         for boundary in V3RefreshFailureBoundary.allCases {

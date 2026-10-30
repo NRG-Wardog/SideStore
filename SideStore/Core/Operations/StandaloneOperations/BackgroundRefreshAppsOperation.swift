@@ -167,7 +167,7 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
                 self.verboseLog("[BackgroundRefreshAppsOperation] Skipping refreshing running apps: \(self.runningApplications)")
             }
 
-            let results = try await self.refresh(filteredApps)
+            let results = try await self.refresh(filteredApps, runID: expectedRunID ?? refreshIdentifier)
             self.scheduleFinishedRefreshingNotification(for: .success(results), delay: 0)
             return results
         } catch {
@@ -176,11 +176,12 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
         }
     }
 
-    private func refresh(_ apps: [InstalledApp]) async throws -> [String: Result<InstalledApp, Error>] {
+    private func refresh(_ apps: [InstalledApp], runID: String) async throws -> [String: Result<InstalledApp, Error>] {
         return try await withCheckedThrowingContinuation { continuation in
             debugLog("[AUTO_REFRESH] SIGNING_STARTED app_count=\(apps.count)")
             // Install callbacks before queueing: an admission failure can complete immediately.
             let group = RefreshGroup(dbContext: self.context.dbBackgroundContext)
+            group.bindTransportObservation(to: runID)
             self.refreshGroupLock.lock()
             self.activeRefreshGroup = group
             self.refreshGroupLock.unlock()
@@ -199,7 +200,7 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
                 self.activeRefreshGroup = nil
                 self.refreshGroupLock.unlock()
                 self.persistAutomaticRefreshVerification(results: results,
-                    attemptedAppIDs: apps.map { $0.bundleIdentifier }, group: group)
+                    attemptedAppIDs: apps.map { $0.bundleIdentifier }, group: group, runID: runID)
                 self.setProgress(100)
                 continuation.resume(returning: results)
             }
@@ -238,9 +239,14 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
     }
 
     private func persistAutomaticRefreshVerification(results: [String: Result<InstalledApp, Error>],
-                                                     attemptedAppIDs: [String], group: RefreshGroup) {
+                                                     attemptedAppIDs: [String], group: RefreshGroup, runID: String) {
         guard let defaults = try? automaticRefreshDefaults() else {
             debugLog("[AUTO_REFRESH] VERIFICATION_UNAVAILABLE reason=shared_store_unavailable")
+            return
+        }
+        // Never attach an old group's evidence/results to a newer host run.
+        guard (defaults.string(forKey: "liveContainerAutoRefreshExpectedRunID") ?? refreshIdentifier) == runID else {
+            debugLog("[AUTO_REFRESH] VERIFICATION_UNAVAILABLE reason=run_changed")
             return
         }
         var serialized: [[String: Any]] = []
@@ -254,7 +260,6 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
                 if let verification = group.verification(for: bundleIdentifier) { row["verification"] = verification.wire }
                 serialized.append(row)
             case .failure(let error):
-                let runID = defaults.string(forKey: "liveContainerAutoRefreshExpectedRunID") ?? refreshIdentifier
                 let failure = CombinedFailure.capture(V3HeadlessPairingFailure.tagIfInvalidPairing(error),
                     operation: "refresh", stage: .refreshVerification, id: runID)
                 debugLog("[AUTO_REFRESH] REFRESH_FAILED \(failure.technicalDetails)")
@@ -271,13 +276,16 @@ final class BackgroundRefreshAppsOperation: BaseStandaloneOperation<OperationCon
         let expectedIDs = attemptedAppIDs.filter { requestedSet.contains($0) }
         let expectedSet = Set(expectedIDs)
         let skippedIDs = requestedIDs.filter { !expectedSet.contains($0) }
-        defaults.set(["version": 2, "date": Date(),
+        var manifest: [String: Any] = ["version": 2, "date": Date(),
             "schema": "LiveContainerRefreshManifestV2",
             "expected_ids": expectedIDs, "requested_ids": requestedIDs, "skipped_ids": skippedIDs,
-            "run_id": defaults.string(forKey: "liveContainerAutoRefreshExpectedRunID") ?? refreshIdentifier,
+            "run_id": runID,
             "results": serialized,
-            "host_handoff": defaults.bool(forKey: "liveContainerAutoRefreshHostHandoff")],
-            forKey: "liveContainerAutoRefreshVerification")
+            "host_handoff": defaults.bool(forKey: "liveContainerAutoRefreshHostHandoff")]
+        if let observation = group.transportObservationWire(for: runID) {
+            manifest["transport_observation"] = observation
+        }
+        defaults.set(manifest, forKey: "liveContainerAutoRefreshVerification")
         debugLog("[AUTO_REFRESH] VERIFICATION_MANIFEST_V1 run_id=\(refreshIdentifier) result_count=\(serialized.count)")
     }
 

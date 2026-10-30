@@ -62,3 +62,15 @@ final class InjectionHarness {
         persisted += 1; return persisted
     }
 }
+
+// Recording doubles for the existing readiness-boundary fixture. The dedicated
+// transport-observation suite executes the real recording/configuration methods.
+struct V3TransportObservationConfiguration: Equatable {
+    static func capture() -> Self { Self() }
+}
+final class NativeObservationGroup {
+    func recordTransportReady(nativeReady: Bool, configurationUnchanged: Bool,
+                              checkOwnership: () throws -> Void) rethrows {
+        try checkOwnership()
+    }
+}

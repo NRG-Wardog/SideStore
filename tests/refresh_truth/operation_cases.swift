@@ -40,7 +40,7 @@
   }
   for variant in ["valid", "distinct-prefix", "wildcard-prefix", "wrong-embedded-team", "wrong-embedded-certificate", "wrong-team", "wrong-certificate", "missing-entitlement", "unrelated-extension", "wrong-prefix", "outside-plugins", "symlink-escape", "not-host", "duplicate-extension"] {
    let c=setup(); c.useMainProfile=true
-   c.dbBackgroundContext.app.bundleIdentifier=StoreApp.altstoreAppID
+   c.dbBackgroundContext.app.bundleIdentifier=StoreApp.altstoreAppID;c.bundleIdentifier=StoreApp.altstoreAppID
    let ext=InstalledExtension();ext.bundleIdentifier=StoreApp.altstoreAppID+".ext"
    c.dbBackgroundContext.app.appExtensions=[ext]
    let prefix=variant == "distinct-prefix" ? "APP-PREFIX" : "T"
@@ -59,12 +59,13 @@
    if variant == "wrong-prefix" { child.entitlements[appID]="WRONG.app" }
    if variant == "outside-plugins" { child.fileURL=outsideURL }
    if variant == "symlink-escape" { child.fileURL=escaped }
-   if variant == "not-host" { c.dbBackgroundContext.app.bundleIdentifier="other.original";ext.bundleIdentifier="other.original.ext" }
+   if variant == "not-host" { c.dbBackgroundContext.app.bundleIdentifier="other.original";c.bundleIdentifier="other.original";ext.bundleIdentifier="other.original.ext" }
    if variant == "duplicate-extension" { host.appExtensions=[child,child] }
    fixtureApplications=[host.fileURL:host]
    fixtureCertificates=[child.fileURL.resolvingSymlinksInPath().standardizedFileURL:Cert(serialNumber:"S",data:variant == "wrong-certificate" ? Data([99]):cert)]
-   var succeeded=false
+   var succeeded=false;var selectionFailure:V3RefreshSelectionFailure?
    do { _=try await RefreshAppOperation(context:c).execute(parentProgress:nil);succeeded=true } catch {
+    selectionFailure=error as? V3RefreshSelectionFailure
     let canonicalOwner=Bundle.Info.activeBundleURL.resolvingSymlinksInPath().standardizedFileURL
     let canonicalChild=child.fileURL.resolvingSymlinksInPath().standardizedFileURL
     diagnostic(["fixture":"legacy-"+variant,
@@ -77,8 +78,62 @@
                 "mutationCount":Injection.shared.count])
    }
    let allowed=variant == "valid" || variant == "distinct-prefix" || variant == "wildcard-prefix"
-   check("legacy-host-"+variant, succeeded == allowed && Injection.shared.count == (allowed ? 1:0))
+   let diagnosticMatches=allowed || (selectionFailure?.reason == (variant == "not-host" ? .legacyProofUnavailable:.legacyHostProofUnavailable) && selectionFailure?.scope == (variant == "not-host" ? .nonHost:.host))
+   check("legacy-host-"+variant, succeeded == allowed && Injection.shared.count == (allowed ? 1:0) && diagnosticMatches)
    fixtureApplications=[:];fixtureCertificates=[:]
+  }
+  let authorizationCases: [(String,String,String,TimeInterval,Data,String)] = [
+   ("exact","app","S",2000,cert,"app"), ("wildcard","*","S",2000,cert,"app"),
+   ("prefix","app.*","S",2000,cert,"app"), ("wrong-prefix","other.*","S",2000,cert,"app"),
+   ("empty-identity","","S",2000,cert,"app"), ("malformed-wildcard","app*","S",2000,cert,"app"),
+   ("empty-serial","app","",2000,cert,"app"), ("expired","app","S",-1,cert,"app"),
+   ("expiry-boundary","app","S",0,cert,"app"), ("wrong-certificate","app","S",2000,Data([99]),"app")
+   ,("prefix-match","app.*","S",2000,cert,"app.child")
+   ,("empty-signed-id","*","S",2000,cert,"")
+   ,("trailing-dot","app.*","S",2000,cert,"app.")
+  ]
+  for (name,pattern,serial,offset,bytes,signedID) in authorizationCases {
+   let c=setup();var expected=fresh;expected.bundleIdentifier=pattern;expected.expirationDate=now.addingTimeInterval(offset)
+   c.dbBackgroundContext.app.resignedBundleIdentifier=signedID
+   c.provisioningProfiles=["app":expected];c.verifiedRefreshCertificate=(serial,bytes,now.addingTimeInterval(3000))
+   let expectedAdmission=V3RefreshVerification.authorizes(expected,signedID:signedID,certificateSerial:serial,certificateData:bytes,now:now)
+   let op=RefreshAppOperation(context:c);op.verificationNow={now};var succeeded=false
+   do {_=try await op.execute(parentProgress:nil);succeeded=true}catch{}
+   check("selection-authorizer-parity-"+name,succeeded==expectedAdmission && Injection.shared.count==(expectedAdmission ? 1:0))
+  }
+  // Actual production selection errors are finite and pre-dispatch. Legacy
+  // non-host metadata is intentionally not upgraded to installed binary proof.
+  let selectionCases: [(String,V3RefreshSelectionFailure.Reason,(InstallAppOperationContext)->Void)] = [
+   ("profiles",.missingRefreshProfiles,{ $0.provisioningProfiles=nil }),
+   ("bundle",.missingTargetAppBundle,{ $0.targetAppBundle=nil }),
+   ("main",.missingMainProfile,{ $0.provisioningProfiles=[:] }),
+   ("certificate",.missingVerifiedCertificate,{ $0.verifiedRefreshCertificate=nil }),
+   ("main-identity",.mainProfileIdentityMismatch,{ $0.provisioningProfiles?["app"]?.bundleIdentifier="other" }),
+   ("main-expiry",.mainProfileExpired,{ $0.provisioningProfiles?["app"]?.expirationDate=now.addingTimeInterval(-1) }),
+   ("main-certificate",.mainProfileCertificateMismatch,{ $0.provisioningProfiles?["app"]?.certificates=[] }),
+   ("extension-parent",.extensionOutsideParent,{ $0.dbBackgroundContext.app.appExtensions=[InstalledExtension()];$0.dbBackgroundContext.app.appExtensions[0].bundleIdentifier="other.ext" }),
+   ("legacy-nonhost",.legacyProofUnavailable,{ $0.useMainProfile=true;$0.dbBackgroundContext.app.appExtensions=[InstalledExtension()] }),
+   ("extension-missing",.missingExtensionProfile,{ $0.dbBackgroundContext.app.appExtensions=[InstalledExtension()] }),
+   ("keys",.unexpectedProfileKeys,{ $0.provisioningProfiles?["extra"]=fresh })
+  ]
+  for (name,expected,change) in selectionCases {
+   let c=setup();change(c);var observed:V3RefreshSelectionFailure?
+   do { _=try await RefreshAppOperation(context:c).execute(parentProgress:nil) }
+   catch let failure as V3RefreshSelectionFailure { observed=failure }
+   catch {}
+   check("selection-diagnostic-"+name,observed?.reason == expected && observed?.scope == .nonHost && Injection.shared.count==0 && c.refreshVerification?.mutationDispatched != true)
+  }
+  let extensionSelectionCases: [(String,V3RefreshSelectionFailure.Reason,(inout ALTProvisioningProfile)->Void)] = [
+    ("identity",.extensionProfileIdentityMismatch,{(p:inout ALTProvisioningProfile) in p.bundleIdentifier="other"}),
+    ("expiry",.extensionProfileExpired,{(p:inout ALTProvisioningProfile) in p.expirationDate=now.addingTimeInterval(-1)}),
+    ("certificate",.extensionProfileCertificateMismatch,{(p:inout ALTProvisioningProfile) in p.certificates=[]}),
+    ("team",.extensionTeamMismatch,{(p:inout ALTProvisioningProfile) in p.teamIdentifier="OTHER"})
+  ]
+  for (name,expected,change) in extensionSelectionCases {
+   let c=setup(true);var modified=freshExt;change(&modified);c.provisioningProfiles?["app.ext"]=modified
+   var observed:V3RefreshSelectionFailure?
+   do {_=try await RefreshAppOperation(context:c).execute(parentProgress:nil)}catch let failure as V3RefreshSelectionFailure {observed=failure}catch{}
+   check("selection-diagnostic-extension-"+name, observed?.reason==expected && Injection.shared.count==0)
   }
   do {
    let c=setup(true); var recorded:V3RefreshVerification?; c.recordRefreshVerification={recorded=$0}

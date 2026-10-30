@@ -14726,6 +14726,25 @@ public struct V3RefreshProfileEvidence {
     }
 }
 
+public enum V3RefreshTransportObservation {
+    public static func validated(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any], Set(raw.keys) == ["version", "readiness", "scope"],
+              let version = raw["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(),
+              ["c", "s", "i", "l", "q", "C", "S", "I", "L", "Q"].contains(String(cString: version.objCType)), version.intValue == 1,
+              raw["readiness"] as? String == "ready", raw["scope"] as? String == "ownedBatch" else { return nil }
+        return ["version": 1, "readiness": "ready", "scope": "ownedBatch"]
+    }
+    public static func recorded(in record: [String: Any], runID: String) -> Bool {
+        guard UUID(uuidString: runID)?.uuidString == runID, record["run_id"] as? String == runID,
+              ["completed", "failed"].contains(record["state"] as? String ?? ""),
+              let summary = record["manifest_summary"] as? [String: Any], summary["run_id"] as? String == runID,
+              let version = summary["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(),
+              ["c", "s", "i", "l", "q", "C", "S", "I", "L", "Q"].contains(String(cString: version.objCType)), version.intValue == 2,
+              summary["schema"] as? String == "LiveContainerRefreshManifestSummaryV2" else { return false }
+        return validated(summary["transport_observation"]) != nil
+    }
+}
+
 public enum CombinedVerification {
     static let uncertainMutationKey = "liveContainerAutoRefreshUncertainMutationRunID"
     static func clearUncertainty(_ defaults: UserDefaults, runID: String) {
@@ -14822,6 +14841,7 @@ public enum CombinedVerification {
         if let skipped = manifest["skipped_ids"] as? [String] { result["skipped_ids"] = skipped }
         if let date = manifest["date"] as? Date { result["date"] = date }
         if let manifestHostHandoff { result["host_handoff"] = manifestHostHandoff }
+        if let observation = V3RefreshTransportObservation.validated(manifest["transport_observation"]) { result["transport_observation"] = observation }
         result["results"] = entries.map { entry -> [String: Any] in
             guard let identifier = entry["bundle_id"] as? String, expected.contains(identifier),
                   let success = strictBoolean(entry["success"]) else { return [:] }
@@ -15261,9 +15281,14 @@ public struct CombinedFailure: Error, LocalizedError {
         self.safeCause = safeCause ?? inferredSourceAddBusy
         self.sourceStep = sourceStep
         var context = Self.validatedSigningContext(signingContext) ?? [:]
-        if normalized != "refresh" || stage != .signing || code != .failed || sourceStep != .provisioningProfileFetch {
+        let selectionScope = normalized == "refresh" && stage == .command && code == .failed && sourceStep == .refreshApplication
+        let preparationScope = normalized == "refresh" && stage == .signing && code == .failed && sourceStep == .provisioningProfileFetch
+        let local = context["local_precondition"] ?? ""
+        if !(selectionScope && Self.refreshSelectionPreconditions.contains(local)) &&
+            !(preparationScope && ["missingTargetAppBundle", "unknownTeamType", "unresolvedAppGroupPlaceholder", "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"].contains(local)) {
             context.removeValue(forKey: "local_precondition")
         }
+        if !selectionScope || context["local_precondition"] == nil { context.removeValue(forKey: "refresh_target_scope") }
         if normalized != "refresh" || stage != .command || code != .failed || sourceStep != .refreshReadiness {
             context.removeValue(forKey: "refresh_readiness_reason")
         }
@@ -15293,18 +15318,27 @@ public struct CombinedFailure: Error, LocalizedError {
         if fields["local_precondition"] != nil && !(fields["local_precondition"] is String) {
             fields.removeValue(forKey: "local_precondition")
         }
+        if fields["refresh_target_scope"] != nil && !(fields["refresh_target_scope"] is String) {
+            fields.removeValue(forKey: "refresh_target_scope")
+        }
         guard let strings = V3AuthenticationDiagnostics.sanitizingWireContext(fields) else { return nil }
         return validatedSigningContext(strings)
     }
+    public static let refreshSelectionPreconditions: Set<String> = ["missingTargetAppBundle", "missingRefreshProfiles", "missingInstalledRecord", "missingMainProfile", "missingVerifiedCertificate", "mainProfileIdentityMismatch", "mainProfileExpired", "mainProfileCertificateMismatch", "extensionOutsideParent", "extensionProfileIdentityMismatch", "extensionProfileExpired", "extensionProfileCertificateMismatch", "extensionTeamMismatch", "legacyProofUnavailable", "legacyHostProofUnavailable", "missingExtensionProfile", "unexpectedProfileKeys", "inconsistentProfileUUID", "unexpectedProfileUUID"]
+    private static let refreshLocalPreconditions: Set<String> = refreshSelectionPreconditions.union(["unknownTeamType", "unresolvedAppGroupPlaceholder", "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"])
     public static func validatedSigningContext(_ value: [String: String]) -> [String: String]? {
         var fields = V3AuthenticationDiagnostics.sanitizingContext(V3TemporaryADIConsumption.sanitizingContext(value))
         // This optional observation must never replace or invalidate the primary
         // failure. Admit only the finite local guard vocabulary, with its kind.
         if let local = fields["local_precondition"],
            fields["refresh_failure_kind"] != "invalidParameters" ||
-           !["missingTargetAppBundle", "unknownTeamType", "unresolvedAppGroupPlaceholder",
-             "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"].contains(local) || fields.count > 20 {
+           !Self.refreshLocalPreconditions.contains(local) || fields.count > 20 {
             fields.removeValue(forKey: "local_precondition")
+        }
+        if let scope = fields["refresh_target_scope"],
+           !["host", "nonHost", "unknown"].contains(scope) ||
+           !Self.refreshSelectionPreconditions.contains(fields["local_precondition"] ?? "") {
+            fields.removeValue(forKey: "refresh_target_scope")
         }
         if let reason = fields["refresh_readiness_reason"] {
             let eligible = (reason == "vpnUnavailable" && fields["refresh_failure_kind"] == "noVPN") ||
@@ -15373,10 +15407,12 @@ public struct CombinedFailure: Error, LocalizedError {
                 guard (text == "vpnUnavailable" && fields["refresh_failure_kind"] == "noVPN") ||
                     (text == "peerProbeFailed" && fields["refresh_failure_kind"] == "invalidVPN") ||
                     (text == "peerAddressUnavailable" && fields["refresh_failure_kind"] == "noDevice") else { return nil }
+            case "refresh_target_scope":
+                guard ["host", "nonHost", "unknown"].contains(text),
+                      Self.refreshSelectionPreconditions.contains(fields["local_precondition"] ?? "") else { return nil }
             case "local_precondition":
                 guard fields["refresh_failure_kind"] == "invalidParameters",
-                    ["missingTargetAppBundle", "unknownTeamType", "unresolvedAppGroupPlaceholder",
-                     "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"].contains(text) else { return nil }
+                    Self.refreshLocalPreconditions.contains(text) else { return nil }
             case "refresh_failure_kind":
                 guard ["invalidParameters", "invalidOperationContext", "notAuthenticated", "unknownResult",
                     "missingAppBundle", "missingProvisioningProfile", "certificateExpired", "certificateRevoked",
@@ -15553,7 +15589,37 @@ public struct CombinedFailure: Error, LocalizedError {
         default: return nil
         }
     }
+    private var refreshSelectionPrecondition: String? {
+        guard operation == "refresh", stage == .command, code == .failed,
+              sourceStep == .refreshApplication,
+              signingContext["refresh_failure_kind"] == "invalidParameters",
+              let token = signingContext["local_precondition"],
+              Self.refreshSelectionPreconditions.contains(token) else { return nil }
+        return token
+    }
     private var localRefreshMessage: String? {
+        switch refreshSelectionPrecondition {
+        case "missingTargetAppBundle": return "The target app bundle required for this refresh is missing."
+        case "missingRefreshProfiles": return "The refresh has no provisioning profiles to install."
+        case "missingInstalledRecord": return "The installed app record required for this refresh is missing."
+        case "missingMainProfile": return "The main app provisioning profile could not be selected."
+        case "missingVerifiedCertificate": return "The verified signing certificate required to select profiles is missing."
+        case "mainProfileIdentityMismatch": return "The selected main profile does not authorize the app identity."
+        case "mainProfileExpired": return "The selected main profile has already expired."
+        case "mainProfileCertificateMismatch": return "The selected main profile does not contain the verified signing certificate."
+        case "extensionOutsideParent": return "An app extension is outside the parent app identity."
+        case "extensionProfileIdentityMismatch": return "A selected extension profile does not authorize that extension."
+        case "extensionProfileExpired": return "A selected extension profile has already expired."
+        case "extensionProfileCertificateMismatch": return "A selected extension profile does not contain the verified signing certificate."
+        case "extensionTeamMismatch": return "An extension profile belongs to a different team than the main profile."
+        case "legacyProofUnavailable": return "The older installed app identity could not be safely matched to the new profiles."
+        case "legacyHostProofUnavailable": return "The older host app identity could not be safely verified for this refresh."
+        case "missingExtensionProfile": return "A required app extension has no selected provisioning profile."
+        case "unexpectedProfileKeys": return "The profile selection contains unexpected app identities."
+        case "inconsistentProfileUUID": return "The same profile UUID refers to conflicting profile contents."
+        case "unexpectedProfileUUID": return "The profile selection contains an unexpected profile UUID."
+        default: break
+        }
         if sourceStep == .certificateValidation, signingContext["refresh_failure_kind"] == "certificateVerificationUnavailable" {
             return "Certificate verification is unavailable. This does not mean the certificate was revoked. Check the connection and review this app’s verification status."
         }
@@ -15581,6 +15647,9 @@ public struct CombinedFailure: Error, LocalizedError {
         return nil
     }
     private var localRefreshRecovery: String? {
+        if refreshSelectionPrecondition != nil {
+            return "This target stopped before profile installation. Copy Diagnostics to check its profile selection. Do not reset account or VPN settings based on this error alone."
+        }
         switch localRefreshPrecondition {
         case "unresolvedAppGroupPlaceholder":
             return "Check the app's signing entitlements and build configuration. Copy Diagnostics before retrying with a corrected build."
