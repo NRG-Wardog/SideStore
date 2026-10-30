@@ -28,7 +28,13 @@ def main():
     runner = root / 'SideStore/Core/Operations/PipelineRunner.swift'
     fingerprint = args.fingerprint_source or root / 'SideStore/Utils/common/AppBundleFingerprint.swift'
     contexts = root / 'SideStore/Core/Operations/OperationContexts.swift'
-    inputs = [runner, fingerprint, contexts]
+    service = root / 'AltStore/AppDelegate.swift'
+    inputs = [runner, fingerprint, contexts, service]
+    binding_text = service.read_text()
+    binding_start = binding_text.index('struct V3LegacyReplacementBinding:')
+    binding_end = binding_text.index('\n}', binding_start) + 2
+    binding = binding_text[binding_start:binding_end]
+    assert binding.count('{') == binding.count('}'), 'Binding extraction must remain complete'
     context_text = contexts.read_text()
     registry_start = context_text.index('enum V3ValidatedReuseMainRegistry {')
     registry_end = context_text.index('\n}', registry_start) + 2
@@ -42,7 +48,7 @@ def main():
     integration = text[start:end]
     # The selector, real helper invocation, catches and ownership defer are
     # extracted verbatim. Only the surrounding iOS runner/pipeline is doubled.
-    integration = 'func runIntegration(operation: AppOperation, context: FixtureContext, body: (FixtureContext) throws -> Void) throws {\n' + integration + '\n    try body(context)\n}\n'
+    integration = 'func runIntegration(operation: AppOperation, context: FixtureContext, body: (FixtureContext) throws -> Void) async throws {\n    let handler = FixtureHandler()\n' + integration + '\n    try body(context)\n}\n'
     cases = (here / 'Cases.swift').read_text()
     names = []
     for name in re.findall(r'\brecord\("([^"\n]+)"', cases):
@@ -51,7 +57,15 @@ def main():
         else:
             names.append(name)
     assert len(names) == len(set(names)), 'Duplicate fixture names'
-    source = '\n'.join([(here / 'BoundaryDoubles.swift').read_text(), fingerprint.read_text(), registry, helper, integration, cases])
+    source = '\n'.join([(here / 'BoundaryDoubles.swift').read_text(), fingerprint.read_text(), binding, registry, helper, integration, cases])
+    for member in ['let handler = FixtureHandler()',
+                   'let legacyReplacementBinding: V3LegacyReplacementBinding? = nil',
+                   'func validateLegacyReplacementAdmission() async throws',
+                   'func getSignableCertificate(for serial: String)',
+                   'var overrideSigningCertificate: FixtureSigningCertificate?',
+                   'var overrideProvisioningProfile: FixtureProfile?',
+                   'case refresh(InstalledApp), other(InstalledApp), resign(InstalledApp)']:
+        assert member in source, 'Missing inert boundary: ' + member
     out.mkdir(parents=True, exist_ok=True)
     generated = out / 'host-refresh-bundle.swift'
     generated.write_text(source)

@@ -28,13 +28,13 @@ func prepare(_ source: URL, _ temp: URL,
 func noOwnedCopies(_ temp: URL) -> Bool {
     ((try? fm.contentsOfDirectory(atPath: temp.path)) ?? []).allSatisfy { !$0.hasPrefix("v3-host-refresh-") }
 }
-func expectFailure(_ body: () throws -> Void) throws {
+func expectFailure(_ body: () async throws -> Void) async throws {
     var failed = false
-    do { try body() } catch { failed = true }
+    do { try await body() } catch { failed = true }
     try require(failed, "Expected fail-closed preparation")
 }
 
-func runFixture() throws -> [String] {
+func runFixture() async throws -> [String] {
     let root = fm.temporaryDirectory.appendingPathComponent("host-refresh-fixture-" + UUID().uuidString)
     try fm.createDirectory(at: root, withIntermediateDirectories: false)
     defer { try? fm.removeItem(at: root) }
@@ -45,15 +45,15 @@ func runFixture() throws -> [String] {
     let before = AppBundleFingerprint.compute(for: source)
     try require(before != nil, "Synthetic source fingerprint")
     var cases: [String] = []
-    func record(_ name: String, _ work: () throws -> Void) throws { try work(); cases.append(name) }
+    func record(_ name: String, _ work: () async throws -> Void) async throws { try await work(); cases.append(name) }
 
-    try record("baseline_missing_cache_has_nil_target") {
+    try await record("baseline_missing_cache_has_nil_target") {
         // This is the exact pre-fix target load performed by PipelineRunner.
         let missingCache = root.appendingPathComponent("missing-cache/App.app")
         let beforeTarget = ALTApplication(fileURL: missingCache)
         try require(beforeTarget == nil, "Baseline must reproduce missingTargetAppBundle input")
     }
-    try record("canonical_host_recovers_without_mutating_source") {
+    try await record("canonical_host_recovers_without_mutating_source") {
         let prepared = try prepare(source, temp)
         defer { prepared.removeOwnedCopy() }
         try require(prepared.appBundle.bundleIdentifier == original, "Canonical main ID")
@@ -68,45 +68,45 @@ func runFixture() throws -> [String] {
         let plist = try PropertyListSerialization.propertyList(from: plistData, format: nil) as! [String: Any]
         try require((plist["FixtureUnchanged"] as? [String: Int]) == ["nested": 7], "Unrelated plist metadata unchanged")
     }
-    try record("success_cleanup_preserves_unowned_files") {
+    try await record("success_cleanup_preserves_unowned_files") {
         let sentinel = temp.appendingPathComponent("unowned")
         try Data("keep".utf8).write(to: sentinel)
         try require(noOwnedCopies(temp) && fm.fileExists(atPath: sentinel.path), "Only owned scratch is removed")
     }
-    try record("original_identity_mismatch_rejected") { try expectFailure { _ = try prepare(source, temp, originalID: "com.other.app") } }
-    try record("resigned_identity_mismatch_rejected") { try expectFailure { _ = try prepare(source, temp, resignedID: "com.other.app") } }
-    try record("active_identity_mismatch_rejected") { try expectFailure { _ = try prepare(source, temp, activeID: "com.other.app") } }
-    try record("missing_active_bundle_rejected") { try expectFailure { _ = try prepare(root.appendingPathComponent("absent"), temp) } }
-    try record("missing_profile_rejected") {
+    try await record("original_identity_mismatch_rejected") { try await expectFailure { _ = try prepare(source, temp, originalID: "com.other.app") } }
+    try await record("resigned_identity_mismatch_rejected") { try await expectFailure { _ = try prepare(source, temp, resignedID: "com.other.app") } }
+    try await record("active_identity_mismatch_rejected") { try await expectFailure { _ = try prepare(source, temp, activeID: "com.other.app") } }
+    try await record("missing_active_bundle_rejected") { try await expectFailure { _ = try prepare(root.appendingPathComponent("absent"), temp) } }
+    try await record("missing_profile_rejected") {
         let profile = source.appendingPathComponent("embedded.mobileprovision")
         let data = try Data(contentsOf: profile)
         try fm.removeItem(at: profile)
         defer { try? data.write(to: profile) }
-        try expectFailure { _ = try prepare(source, temp) }
+        try await expectFailure { _ = try prepare(source, temp) }
     }
-    try record("missing_extension_record_rejected") { try expectFailure { _ = try prepare(source, temp, extensions: []) } }
-    try record("extra_extension_record_rejected") {
+    try await record("missing_extension_record_rejected") { try await expectFailure { _ = try prepare(source, temp, extensions: []) } }
+    try await record("extra_extension_record_rejected") {
         let extra = V3HostRefreshBundlePreparation.ExtensionIdentity(original: original + ".extra", resigned: resigned + ".extra")
-        try expectFailure { _ = try prepare(source, temp, extensions: [identity, extra]) }
+        try await expectFailure { _ = try prepare(source, temp, extensions: [identity, extra]) }
     }
-    try record("duplicate_extension_record_rejected") { try expectFailure { _ = try prepare(source, temp, extensions: [identity, identity]) } }
-    try record("extension_suffix_mismatch_rejected") {
+    try await record("duplicate_extension_record_rejected") { try await expectFailure { _ = try prepare(source, temp, extensions: [identity, identity]) } }
+    try await record("extension_suffix_mismatch_rejected") {
         let bad = V3HostRefreshBundlePreparation.ExtensionIdentity(original: original + ".other", resigned: resigned + ".widget")
-        try expectFailure { _ = try prepare(source, temp, extensions: [bad]) }
+        try await expectFailure { _ = try prepare(source, temp, extensions: [bad]) }
     }
-    try record("unsupported_symlink_still_rejected") {
+    try await record("unsupported_symlink_still_rejected") {
         let link = source.appendingPathComponent("unsupported-link")
         try fm.createSymbolicLink(at: link, withDestinationURL: source.appendingPathComponent("fixture"))
         defer { try? fm.removeItem(at: link) }
-        try expectFailure { _ = try prepare(source, temp) }
+        try await expectFailure { _ = try prepare(source, temp) }
         try require(noOwnedCopies(temp), "Unsupported source never copied")
     }
-    try record("source_changed_during_copy_rejected_and_cleaned") {
+    try await record("source_changed_during_copy_rejected_and_cleaned") {
         let binary = source.appendingPathComponent("fixture")
         let data = try Data(contentsOf: binary)
         defer { try? data.write(to: binary) }
         var checkpoint = 0
-        try expectFailure {
+        try await expectFailure {
             _ = try prepare(source, temp, check: {
                 checkpoint += 1
                 if checkpoint == 3 { try Data("changed".utf8).write(to: binary) }
@@ -114,9 +114,9 @@ func runFixture() throws -> [String] {
         }
         try require(noOwnedCopies(temp), "Changed-source scratch cleaned")
     }
-    try record("corrupted_copy_rejected_and_cleaned") {
+    try await record("corrupted_copy_rejected_and_cleaned") {
         var checkpoint = 0
-        try expectFailure {
+        try await expectFailure {
             _ = try prepare(source, temp, check: {
                 checkpoint += 1
                 if checkpoint == 3 {
@@ -128,7 +128,7 @@ func runFixture() throws -> [String] {
         try require(noOwnedCopies(temp), "Corrupt-copy scratch cleaned")
     }
     for checkpointToCancel in 1...5 {
-        try record("cancellation_checkpoint_\(checkpointToCancel)_preserved_and_cleaned") {
+        try await record("cancellation_checkpoint_\(checkpointToCancel)_preserved_and_cleaned") {
             var checkpoint = 0
             var cancelled = false
             do {
@@ -140,7 +140,7 @@ func runFixture() throws -> [String] {
             try require(cancelled && noOwnedCopies(temp), "Cancellation must escape unchanged and clean owned scratch")
         }
     }
-    try record("revoked_admission_preserved_and_cleaned") {
+    try await record("revoked_admission_preserved_and_cleaned") {
         var checkpoint = 0
         var revoked = false
         do {
@@ -151,7 +151,7 @@ func runFixture() throws -> [String] {
         } catch let failure as FixtureFailure { revoked = failure.message == "revoked" }
         try require(revoked && noOwnedCopies(temp), "Admission failure must escape unchanged")
     }
-    try record("repeated_refresh_has_independent_owned_copies") {
+    try await record("repeated_refresh_has_independent_owned_copies") {
         let first = try prepare(source, temp)
         defer { first.removeOwnedCopy() }
         let second = try prepare(source, temp)
@@ -161,7 +161,7 @@ func runFixture() throws -> [String] {
         first.removeOwnedCopy()
         try require(fm.fileExists(atPath: second.appBundle.fileURL.path), "One owner cannot delete another")
     }
-    try record("concurrent_refresh_owners_do_not_collide") {
+    try await record("concurrent_refresh_owners_do_not_collide") {
         final class Outcomes: @unchecked Sendable {
             let lock = NSLock()
             var copies: [V3HostRefreshBundlePreparation.Prepared] = []
@@ -189,10 +189,10 @@ func runFixture() throws -> [String] {
     let installed = InstalledApp(fileURL: root.appendingPathComponent("absent-cache/App.app"),
         bundleIdentifier: original, resignedBundleIdentifier: resigned,
         appExtensions: [.init(bundleIdentifier: identity.original, resignedBundleIdentifier: identity.resigned)])
-    try record("integration_refresh_missing_cache_prepares_and_cleans") {
+    try await record("integration_refresh_missing_cache_prepares_and_cleans") {
         let context = FixtureContext()
         var preparedPath: URL?
-        try runIntegration(operation: .refresh(installed), context: context) { context in
+        try await runIntegration(operation: .refresh(installed), context: context) { context in
             preparedPath = context.targetAppBundle?.fileURL
             try require(context.targetAppBundle?.bundleIdentifier == original, "Actual integration fills target")
             try require(context.customBundleIdentifier == installed.customBundleIdentifier && context.appBundleFingerprint == installed.appBundleFingerprint && context.useMainProfile == installed.useMainProfile, "Context identity and signing preferences retained")
@@ -200,41 +200,41 @@ func runFixture() throws -> [String] {
         }
         try require(preparedPath != nil && !fm.fileExists(atPath: preparedPath!.path), "Actual integration defer cleans success")
     }
-    try record("integration_nonrefresh_does_not_recover") {
-        try runIntegration(operation: .other(installed), context: FixtureContext()) { context in
+    try await record("integration_nonrefresh_does_not_recover") {
+        try await runIntegration(operation: .other(installed), context: FixtureContext()) { context in
             try require(context.targetAppBundle == nil, "Non-refresh path unchanged")
         }
     }
-    try record("integration_nonself_does_not_recover") {
+    try await record("integration_nonself_does_not_recover") {
         let other = InstalledApp(fileURL: installed.fileURL, bundleIdentifier: "com.fixture.other",
             resignedBundleIdentifier: resigned, appExtensions: installed.appExtensions)
-        try runIntegration(operation: .refresh(other), context: FixtureContext()) { context in
+        try await runIntegration(operation: .refresh(other), context: FixtureContext()) { context in
             try require(context.targetAppBundle == nil, "Non-self path unchanged")
         }
     }
-    try record("integration_valid_cache_is_preserved") {
+    try await record("integration_valid_cache_is_preserved") {
         let cached = InstalledApp(fileURL: source, bundleIdentifier: original,
             resignedBundleIdentifier: "ignored-on-existing-cache", appExtensions: [])
-        try runIntegration(operation: .refresh(cached), context: FixtureContext()) { context in
+        try await runIntegration(operation: .refresh(cached), context: FixtureContext()) { context in
             try require(context.targetAppBundle?.fileURL == source, "Existing target untouched")
         }
         try require(fm.fileExists(atPath: source.path), "No cleanup owns existing cache")
     }
-    try record("integration_pipeline_failure_cleans_copy") {
+    try await record("integration_pipeline_failure_cleans_copy") {
         var preparedPath: URL?
-        try expectFailure {
-            try runIntegration(operation: .refresh(installed), context: FixtureContext()) { context in
+        try await expectFailure {
+            try await runIntegration(operation: .refresh(installed), context: FixtureContext()) { context in
                 preparedPath = context.targetAppBundle?.fileURL
                 throw FixtureFailure(message: "pipeline-failed")
             }
         }
         try require(preparedPath != nil && !fm.fileExists(atPath: preparedPath!.path), "Actual defer cleans pipeline failure")
     }
-    try record("integration_pipeline_cancellation_cleans_copy") {
+    try await record("integration_pipeline_cancellation_cleans_copy") {
         var preparedPath: URL?
         var cancelled = false
         do {
-            try runIntegration(operation: .refresh(installed), context: FixtureContext()) { context in
+            try await runIntegration(operation: .refresh(installed), context: FixtureContext()) { context in
                 preparedPath = context.targetAppBundle?.fileURL
                 throw CancellationError()
             }
@@ -251,49 +251,49 @@ func runFixture() throws -> [String] {
     let ordinaryBundle = ALTApplication(fileURL: ordinaryURL)!
     defer { V3ValidatedReuseMainRegistry.didInstall(original: ordinaryID,
         resigned: ordinary.resignedBundleIdentifier, profileUUID: nil, generation: nil) }
-    try record("integration_legacy_bool_does_not_enroll_validated_strategy") {
-        try runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
+    try await record("integration_legacy_bool_does_not_enroll_validated_strategy") {
+        try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
             try require(context.useMainProfile && !context.validatedReuseMain, "Legacy bool remains legacy")
         }
     }
     try ordinaryBundle.updateInfoPlist(with: [V3ValidatedReuseMainRegistry.generationKey: generation])
-    try record("integration_unregistered_payload_nonce_does_not_opt_in") {
-        try runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
+    try await record("integration_unregistered_payload_nonce_does_not_opt_in") {
+        try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
             try require(!context.validatedReuseMain, "Imported nonce alone cannot opt in")
         }
     }
     V3ValidatedReuseMainRegistry.didInstall(original: ordinaryID,
         resigned: ordinary.resignedBundleIdentifier, profileUUID: ordinaryBundle.provisioningProfile?.uuid,
         generation: generation)
-    try record("integration_registered_payload_restores_validated_strategy") {
-        try runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
+    try await record("integration_registered_payload_restores_validated_strategy") {
+        try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
             try require(context.validatedReuseMain, "Confirmed matching generation restores opt-in")
         }
     }
-    try record("integration_opt_out_bool_overrides_matching_registry") {
+    try await record("integration_opt_out_bool_overrides_matching_registry") {
         ordinary.useMainProfile = false
         defer { ordinary.useMainProfile = true }
-        try runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
+        try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
             try require(!context.validatedReuseMain, "Opt-out never restores validated strategy")
         }
     }
     try ordinaryBundle.updateInfoPlist(with: [V3ValidatedReuseMainRegistry.generationKey: UUID().uuidString])
-    try record("integration_known_association_nonce_mismatch_fails_before_pipeline") {
+    try await record("integration_known_association_nonce_mismatch_fails_before_pipeline") {
         var entered = false
         var rejected = false
         do {
-            try runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { _ in entered = true }
+            try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { _ in entered = true }
         } catch OperationError.invalidParameters(_) { rejected = true }
         try require(rejected && !entered, "Known association cannot silently fall back to legacy")
     }
-    try record("all_terminal_paths_preserve_source_and_cleanup") {
+    try await record("all_terminal_paths_preserve_source_and_cleanup") {
         try require(noOwnedCopies(temp), "No request-owned scratch survives")
         try require(AppBundleFingerprint.compute(for: source) == before, "Source unchanged after all cases")
     }
     return cases
 }
 do {
-    let cases = try runFixture()
+    let cases = try await runFixture()
     let report: [String: Any] = ["schema": "v3-host-refresh-bundle-runtime-v1", "pass": true,
         "cases": cases, "case_count": cases.count, "network_executed": false,
         "provider_executed": false, "device_executed": false]

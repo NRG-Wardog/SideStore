@@ -55,8 +55,9 @@ final class InstalledApp {
     }
 }
 enum AppOperation {
-    case refresh(InstalledApp), other(InstalledApp)
-    var app: Any { switch self { case .refresh(let app), .other(let app): return app } }
+    case refresh(InstalledApp), other(InstalledApp), resign(InstalledApp)
+    var app: Any { switch self { case .refresh(let app), .other(let app), .resign(let app): return app } }
+    var bundleIdentifier: String { (app as! InstalledApp).bundleIdentifier }
 }
 enum StoreApp { static let altstoreAppID = "com.fixture.host" }
 extension Bundle {
@@ -65,7 +66,22 @@ extension Bundle {
         nonisolated(unsafe) static var activeBundleURL = URL(fileURLWithPath: "/fixture-not-configured")
     }
 }
+struct FixtureSigningCertificate { let serialNumber: String; let x509: FixtureX509 }
+struct FixtureX509 { let data: Data? }
+final class CertificateManager {
+    static let shared = CertificateManager()
+    func getSignableCertificate(for serial: String) -> FixtureSigningCertificate? { fatalError("Unexpected replacement certificate in host refresh fixture") }
+}
+struct FixtureHandler { let legacyReplacementBinding: V3LegacyReplacementBinding? = nil }
 final class FixtureContext {
+    var legacyReplacementBinding: V3LegacyReplacementBinding?
+    var overrideSigningCertificate: FixtureSigningCertificate?
+    var overrideProvisioningProfile: FixtureProfile?
+    var validatedReuseMainGeneration: String?
+    var validateExtensionSigningCapabilities = false
+    var appexBundleIds: [String: String]?
+    func validateLegacyReplacementAdmission() async throws { fatalError("Unexpected replacement admission in host refresh fixture") }
+
     var installedApp: InstalledApp?
     var appBundleFingerprint: String?
     var useMainProfile = false

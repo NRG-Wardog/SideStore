@@ -48,6 +48,12 @@ final class DatabaseContext {
 struct PendingProfileBatch { var bundleID: String; var profiles:[Data]; var app:InstalledApp?; var certStatus:String? }
 final class SharedContext { func addPendingProfileBatch(_ batch:PendingProfileBatch) {} }
 final class InstallAppOperationContext {
+ // Ordinary install fixture only. Replacement-specific gates run in their own
+ // actual-source fixture; these defaults must never fabricate replacement proof.
+ let legacyReplacementBinding: V3LegacyReplacementBinding? = nil
+ func validateLegacyReplacementAdmission() async throws { precondition(legacyReplacementBinding == nil) }
+ func validateLegacyReplacementBundle(_ app: FixtureSignedBundle, signed: Bool) throws { precondition(legacyReplacementBinding == nil) }
+
  var provisioningProfiles: [String:ALTProvisioningProfile]?
  var targetAppBundle: ALTApplication? = ALTApplication()
  var dbBackgroundContext: NSManagedObjectContext = DatabaseContext()
