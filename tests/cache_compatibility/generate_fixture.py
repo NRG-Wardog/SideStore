@@ -90,6 +90,23 @@ REVIEWED_REFRESH_TRUTH_DELTA_SHA256 = '60400c47b35b9ebfd6e3ac8ab5c7d73ef3244c99f
 
 REVIEWED_TRANSPORT_OBSERVATION_DELTA_SHA256 = '14b1bb801ca53db5d1c9237aef1bf308fc6650ae1d5086582f22ccb52c392676'
 
+REVIEWED_LEGACY_REPLACEMENT_DELTA_SHA256 = 'db49f4a5136dd8fd2d0dfbbdbb9fb56401fd1ea9ee338e6376fbe57d7caebc59'
+
+def project_reviewed_legacy_replacement(text):
+    """Reverse only the exact reviewed opt-in replacement admission insertion."""
+    raw = (HERE / 'reviewed-legacy-replacement-host-delta.json').read_bytes()
+    assert digest(raw) == REVIEWED_LEGACY_REPLACEMENT_DELTA_SHA256, 'Reviewed legacy-replacement delta changed'
+    receipt = json.loads(raw)
+    if 'handler.legacyReplacementBinding' not in text:
+        return text, False
+    assert digest(text.encode()) == receipt['after_sha256'], 'Unreviewed legacy-replacement host changes'
+    for hunk in receipt['hunks']:
+        assert text.count(hunk['after']) == 1, 'Changed, absent or duplicate legacy-replacement hunk'
+        text = text.replace(hunk['after'], hunk['before'], 1)
+    assert digest(text.encode()) == receipt['before_sha256'], 'Changes outside reviewed legacy-replacement hunks'
+    return text, True
+
+
 def project_reviewed_transport_observation(text):
     """Reverse the exact reviewed observation plumbing, never accept other changes."""
     raw = (HERE / 'reviewed-transport-observation-host-delta.json').read_bytes()
@@ -135,6 +152,7 @@ def project_reviewed_cold_vpn(text):
 
 
 def verify_host_preservation(text):
+    text, legacy = project_reviewed_legacy_replacement(text)
     text, observation = project_reviewed_transport_observation(text)
     text, truth = project_reviewed_refresh_truth(text)
     text, cold_vpn = project_reviewed_cold_vpn(text)
@@ -148,12 +166,30 @@ def verify_host_preservation(text):
                 ('host_pipeline_except_reviewed_refresh_truth_cold_vpn_and_reuse_main_byte_identical' if truth else
                  'host_pipeline_except_reviewed_cold_vpn_and_reuse_main_byte_identical'): True,
                 'reviewed_cold_vpn_delta_sha256': REVIEWED_COLD_VPN_DELTA_SHA256,
+                **({'reviewed_legacy_replacement_delta_sha256': REVIEWED_LEGACY_REPLACEMENT_DELTA_SHA256} if legacy else {}),
                 **({'reviewed_transport_observation_delta_sha256': REVIEWED_TRANSPORT_OBSERVATION_DELTA_SHA256} if observation else {}),
                 **({'reviewed_refresh_truth_delta_sha256': REVIEWED_REFRESH_TRUTH_DELTA_SHA256} if truth else {}),
                 'reviewed_reuse_main_insertion_sha256': REVIEWED_REUSE_MAIN_SHA256}
     return {'host_pipeline_byte_identical': False,
             'host_pipeline_except_reviewed_reuse_main_byte_identical': True,
             'reviewed_reuse_main_insertion_sha256': REVIEWED_REUSE_MAIN_SHA256}
+
+
+def verify_reviewed_cache_callers(root):
+    raw = (HERE / 'reviewed-legacy-replacement-host-delta.json').read_bytes()
+    assert digest(raw) == REVIEWED_LEGACY_REPLACEMENT_DELTA_SHA256, 'Reviewed legacy-replacement delta changed'
+    caller = json.loads(raw)['cache_key_caller']
+    actual_calls = sorted(path.relative_to(root).as_posix() for path in (root / 'SideStore').rglob('*.swift')
+                          if 'AppBundleFingerprint.computeOriginalCacheKey(' in path.read_text())
+    if actual_calls == [PRODUCTION['cache']]:
+        return {}
+    assert actual_calls == sorted([PRODUCTION['cache'], caller['path']]), 'Cache helper escaped reviewed callers'
+    stage = (root / caller['path']).read_bytes()
+    assert digest(stage) == caller['sha256'], 'Reviewed staging cache-key caller changed'
+    text = stage.decode()
+    assert text.count('AppBundleFingerprint.computeOriginalCacheKey(') == 1
+    assert text.index('AppBundleFingerprint.compute(for: source.fileURL)') < text.index('AppBundleFingerprint.computeOriginalCacheKey(')
+    return {'SideStore/' + caller['path']: caller['sha256']}
 
 
 def main():
@@ -196,11 +232,7 @@ def main():
     assert digest(untouched_cache.encode()) == "ce90052574e4198c71cae64ee0d93ac76adcf3e3cab561eed3960d8cb21a1f53", "Execute/pruning changed"
     assert "AppBundleFingerprint.computeOriginalCacheKey" not in source["host"]
     assert source["host"].count("AppBundleFingerprint.compute(for:") == 5
-    actual_calls = []
-    for path in (args.candidate_root / "SideStore").rglob("*.swift"):
-        if "AppBundleFingerprint.computeOriginalCacheKey(" in path.read_text():
-            actual_calls.append(path.relative_to(args.candidate_root).as_posix())
-    assert actual_calls == [PRODUCTION["cache"]], "Cache-only helper escaped its intended caller"
+    caller_inputs = verify_reviewed_cache_callers(args.candidate_root)
 
     copy_method = extract(source["copy"], "    func copyItem(at sourceURL: URL, to destinationURL: URL, shouldReplace: Bool) throws")
     payload_directory = extract(source["installed"], "    class func payloadDirectoryURL(forSignature signature: String) -> URL")
@@ -250,8 +282,8 @@ class InstalledApp {
         "status": "STATIC_PASS_GENERATED_NOT_COMPILED_NOT_RUN",
         "swift_compiled": False, "swift_executed": False,
         "native_provider_executed": False, "network_executed": False,
-        "inputs_sha256": {"SideStore/" + path: digest(source[key].encode()) for key, path in PRODUCTION.items()},
-        "fixture_inputs_sha256": {name: digest((HERE / name).read_bytes()) for name in ["generate_fixture.py", "reviewed-cold-vpn-host-delta.json", "reviewed-refresh-truth-host-delta.json", "reviewed-transport-observation-host-delta.json", "Cases.swift", *ORIGINAL_PINS]},
+        "inputs_sha256": {**{"SideStore/" + path: digest(source[key].encode()) for key, path in PRODUCTION.items()}, **caller_inputs},
+        "fixture_inputs_sha256": {name: digest((HERE / name).read_bytes()) for name in ["generate_fixture.py", "reviewed-cold-vpn-host-delta.json", "reviewed-refresh-truth-host-delta.json", "reviewed-transport-observation-host-delta.json", "reviewed-legacy-replacement-host-delta.json", "Cases.swift", *ORIGINAL_PINS]},
         "generated_sha256": digest(generated.encode()),
         "expected_case_names": cases, "expected_case_count": len(cases),
         "strict_compute_byte_identical": True, **host_proof,

@@ -624,6 +624,27 @@ final class PipelineRunner: Sendable
             }
         }
         
+        if let binding = handler.legacyReplacementBinding {
+            guard case .resign = operation,
+                  operation.bundleIdentifier == binding.originalBundleID,
+                  operation.bundleIdentifier != StoreApp.altstoreAppID,
+                  let certificate = CertificateManager.shared.getSignableCertificate(for: binding.certificateSerial),
+                  certificate.serialNumber == binding.certificateSerial,
+                  certificate.x509.data == binding.certificateDER else {
+                throw OperationError.invalidParameters("The confirmed replacement certificate is unavailable.")
+            }
+            context.legacyReplacementBinding = binding
+            context.overrideSigningCertificate = certificate
+            context.customBundleIdentifier = binding.customBundleID
+            context.useMainProfile = false
+            context.validatedReuseMain = false
+            context.validatedReuseMainGeneration = nil
+            context.validateExtensionSigningCapabilities = false
+            context.overrideProvisioningProfile = nil
+            context.appexBundleIds = nil
+            try await context.validateLegacyReplacementAdmission()
+        }
+
         context.beginInstallationHandler = { (installedApp) in
             group.beginInstallationHandler?(installedApp)
         }

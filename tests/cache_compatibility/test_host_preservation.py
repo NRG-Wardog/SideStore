@@ -13,9 +13,58 @@ spec.loader.exec_module(generator)
 
 class HostPreservationTests(unittest.TestCase):
     def setUp(self):
-        self.current = (HERE.parents[1] / generator.PRODUCTION['host']).read_text()
+        self.latest = (HERE.parents[1] / generator.PRODUCTION['host']).read_text()
+        self.current, applied = generator.project_reviewed_legacy_replacement(self.latest)
+        self.assertTrue(applied)
         self.host, applied = generator.project_reviewed_transport_observation(self.current)
         self.assertTrue(applied)
+
+    def test_legacy_exact_delta_preserves_all_prior_layers(self):
+        raw = (HERE / 'reviewed-legacy-replacement-host-delta.json').read_bytes()
+        receipt = json.loads(raw)
+        rebuilt = self.current
+        for hunk in receipt['hunks']:
+            self.assertEqual(rebuilt.count(hunk['before']), 1)
+            rebuilt = rebuilt.replace(hunk['before'], hunk['after'], 1)
+        self.assertEqual(rebuilt, self.latest)
+        proof = generator.verify_host_preservation(self.latest)
+        self.assertEqual(proof.pop('reviewed_legacy_replacement_delta_sha256'), generator.digest(raw))
+        self.assertEqual(proof, generator.verify_host_preservation(self.current))
+
+    def test_legacy_changed_missing_duplicate_or_unrelated_input_rejected(self):
+        receipt = json.loads((HERE / 'reviewed-legacy-replacement-host-delta.json').read_bytes())
+        for changed in (self.latest.replace('context.useMainProfile = false', 'context.useMainProfile = true'),
+                        self.latest.replace('certificate.x509.data == binding.certificateDER', 'true'),
+                        self.latest.replace('handler.legacyReplacementBinding', 'handler.unknownBinding'),
+                        self.latest.replace(receipt['hunks'][0]['after'], '', 1),
+                        self.latest + receipt['hunks'][0]['after'], self.latest + '\n// unrelated change\n'):
+            with self.assertRaises(AssertionError): generator.verify_host_preservation(changed)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            raw = (HERE / 'reviewed-legacy-replacement-host-delta.json').read_bytes()
+            (root / 'reviewed-legacy-replacement-host-delta.json').write_bytes(raw + b' ')
+            with patch.object(generator, 'HERE', root):
+                with self.assertRaisesRegex(AssertionError, 'Reviewed legacy-replacement delta changed'):
+                    generator.verify_host_preservation(self.latest)
+
+    def test_legacy_cache_key_caller_is_exact_and_never_standalone_identity_proof(self):
+        receipt = json.loads((HERE / 'reviewed-legacy-replacement-host-delta.json').read_text())
+        root = HERE.parents[1]
+        caller = receipt['cache_key_caller']
+        self.assertEqual(generator.verify_reviewed_cache_callers(root), {'SideStore/' + caller['path']: caller['sha256']})
+        with tempfile.TemporaryDirectory() as temporary:
+            tmp = Path(temporary).resolve()
+            for relative in (generator.PRODUCTION['cache'], caller['path']):
+                destination = tmp / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((root / relative).read_bytes())
+            self.assertTrue(generator.verify_reviewed_cache_callers(tmp))
+            stage = tmp / caller['path']; original = stage.read_text()
+            stage.write_text(original.replace('AppBundleFingerprint.compute(for: source.fileURL)', 'nil'))
+            with self.assertRaises(AssertionError): generator.verify_reviewed_cache_callers(tmp)
+            stage.write_text(original)
+            (tmp / 'SideStore/Unreviewed.swift').write_text('AppBundleFingerprint.computeOriginalCacheKey(for: unknown)')
+            with self.assertRaises(AssertionError): generator.verify_reviewed_cache_callers(tmp)
 
     def test_observation_projection_reconstructs_exact_frozen_truth_source(self):
         raw = (HERE / 'reviewed-transport-observation-host-delta.json').read_bytes()
@@ -46,6 +95,7 @@ class HostPreservationTests(unittest.TestCase):
             root = Path(temporary).resolve()
             raw = (HERE / 'reviewed-transport-observation-host-delta.json').read_bytes()
             (root / 'reviewed-transport-observation-host-delta.json').write_bytes(raw + b' ')
+            (root / 'reviewed-legacy-replacement-host-delta.json').write_bytes((HERE / 'reviewed-legacy-replacement-host-delta.json').read_bytes())
             with patch.object(generator, 'HERE', root):
                 with self.assertRaisesRegex(AssertionError, 'Reviewed transport-observation delta changed'):
                     generator.verify_host_preservation(self.current)
@@ -79,6 +129,7 @@ class HostPreservationTests(unittest.TestCase):
             (root / 'reviewed-cold-vpn-host-delta.json').write_bytes(raw + b' ')
             (root / 'reviewed-refresh-truth-host-delta.json').write_bytes((HERE / 'reviewed-refresh-truth-host-delta.json').read_bytes())
             (root / 'reviewed-transport-observation-host-delta.json').write_bytes((HERE / 'reviewed-transport-observation-host-delta.json').read_bytes())
+            (root / 'reviewed-legacy-replacement-host-delta.json').write_bytes((HERE / 'reviewed-legacy-replacement-host-delta.json').read_bytes())
             with patch.object(generator, 'HERE', root):
                 with self.assertRaisesRegex(AssertionError, 'Reviewed cold-VPN delta changed'):
                     generator.verify_host_preservation(self.host)
@@ -103,6 +154,7 @@ class HostPreservationTests(unittest.TestCase):
             root = Path(temporary).resolve()
             (root / 'reviewed-refresh-truth-host-delta.json').write_bytes(raw + b' ')
             (root / 'reviewed-transport-observation-host-delta.json').write_bytes((HERE / 'reviewed-transport-observation-host-delta.json').read_bytes())
+            (root / 'reviewed-legacy-replacement-host-delta.json').write_bytes((HERE / 'reviewed-legacy-replacement-host-delta.json').read_bytes())
             with patch.object(generator, 'HERE', root):
                 with self.assertRaisesRegex(AssertionError, 'Reviewed refresh-truth delta changed'):
                     generator.verify_host_preservation(self.host)

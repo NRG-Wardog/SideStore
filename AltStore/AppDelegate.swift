@@ -488,7 +488,7 @@ enum V3WireContract {
         return (id, operation)
     }
 
-    static let operations: Set<String> = ["snapshot", "catalog", "appIcon", "cancel", "refreshSources",
+    static let operations: Set<String> = ["legacyReplacementPrepare", "snapshot", "catalog", "appIcon", "cancel", "refreshSources",
         "refreshAdmissionBegin", "refreshAdmissionEnd",
         "signOut", "syncAppIDs", "clearCache", "jit", "backupResult",
         "authBegin", "authPoll", "authRespond", "authCancel", "authRetryProvisioning", "authReconcileStorage",
@@ -502,7 +502,7 @@ enum V3WireContract {
         "anisetteList", "anisetteReset", "anisetteSync",
         "sidesignGet", "sidesignSet", "sidesignReset", "sidesignImport", "sidesignExport",
         "logTail", "healthSnapshot", "accountExport", "accountImport"]
-    static let readOperations: Set<String> = ["snapshot", "catalog", "appIcon",
+    static let readOperations: Set<String> = ["legacyReplacementPrepare", "snapshot", "catalog", "appIcon",
         "authPoll", "opPoll", "opCancel", "ipaCleanup", "ipaActiveTokens", "authCancel", "certList", "certExportActive", "certPortalList",
         "devTeams", "devDevices", "devAppIDs", "devGroups", "devProfiles",
         "sourcePreview", "settingsGet",
@@ -536,7 +536,7 @@ enum V3WireContract {
             "opRecoveryReconcile", "directRecoveryInspect", "directRecoveryReconcile", "cancel"].contains(operation),
            !canonicalSecretToken(target) { return nil }
         if operation == "ipaCleanup", !canonicalLowercaseFileToken(target) { return nil }
-        if ["appIcon", "jit"].contains(operation),
+        if ["appIcon", "jit", "legacyReplacementPrepare"].contains(operation),
            !acceptsCoreDataTarget(target, entity: "InstalledApp") { return nil }
         if ["sourcePreview", "sourceAddConfirmed"].contains(operation), !isHTTPURL(target) { return nil }
         if operation == "backupResult", !canonicalSecretToken(target) { return nil }
@@ -564,6 +564,7 @@ enum V3WireContract {
     }
 
     private static let requiredPayloadOperations: Set<String> = [
+        "legacyReplacementPrepare",
         "authBegin", "authRetryProvisioning", "authRespond", "opAnswer", "opStart", "opRecoveryPrepare",
         "cancel", "accountExport", "accountImport", "settingsSet", "sidesignSet", "refreshAdmissionEnd",
         "recoveryDiscardUnreadable", "directRecoveryReconcile", "backupResult"
@@ -608,6 +609,9 @@ enum V3WireContract {
                 canonicalSecretToken(payload["nonce"]) &&
                 ["backup", "restore"].contains(payload["action"] as? String ?? "") &&
                 ["success", "failure"].contains(payload["result"] as? String ?? "")
+        case "legacyReplacementPrepare":
+            return Set(payload.keys) == Set(["runID", "requestID"]) &&
+                canonicalSecretToken(payload["runID"]) && canonicalSecretToken(payload["requestID"])
         case "snapshot":
             return Set(payload.keys) == Set(["readinessOnly"]) &&
                 strictBool(payload["readinessOnly"]) == true
@@ -647,7 +651,10 @@ enum V3WireContract {
             return Set(payload.keys) == Set([credentialAnswerKey]) &&
                 credentialAnswerIsBounded(payload[credentialAnswerKey])
         case "opStart":
-            guard Set(payload.keys) == Set(["kind", "target", "session"]),
+            let replacement = payload["kind"] as? String == "legacyReplacement"
+            let keys: Set<String> = replacement ? ["kind", "target", "session", "riskAcknowledgmentVersion", "userConfirmed"] : ["kind", "target", "session"]
+            guard Set(payload.keys) == keys,
+                  !replacement || (strictInt(payload["riskAcknowledgmentVersion"]) == 1 && strictBool(payload["userConfirmed"]) == true),
                   let kind = payload["kind"] as? String, !kind.isEmpty, kind.utf8.count <= 128,
                   let operationTarget = payload["target"] as? String, operationTarget.utf8.count <= 4096,
                   let session = payload["session"] as? String, canonicalSecretToken(session) else { return false }
@@ -715,6 +722,7 @@ enum V3WireContract {
 
     private static func acceptsOperationTarget(kind: String, target: String) -> Bool {
         switch kind {
+        case "legacyReplacement": return canonicalSecretToken(target)
         case "installSharedIPA":
             return canonicalLowercaseFileToken(target)
         case "installURL":
@@ -2707,7 +2715,7 @@ struct V3OperationRecoveryRecord: Equatable {
 
     static let allowedKinds: Set<String> = [
         "install", "installURL", "installSharedIPA", "update", "refreshApp",
-        "activate", "deactivate", "remove", "delete", "backup", "restore", "refreshAll"
+        "activate", "deactivate", "remove", "delete", "backup", "restore", "refreshAll", "legacyReplacement"
     ]
 
     init?(sessionID: String, kind: String, phase: Phase, stagedIPAToken: String? = nil) {
@@ -10318,12 +10326,16 @@ final class V3SideStoreService: NSObject {
             guard await V3HeadlessRuntime.shared.auth.cancelAndWait(id: target) else { throw ServiceError.invalidRequest }
             guard let reply = V3HeadlessRuntime.shared.auth.poll(id: target) else { throw ServiceError.invalidRequest }
             return reply
+        case "legacyReplacementPrepare":
+            guard let runID = payload["runID"] as? String, let requestID = payload["requestID"] as? String else { throw ServiceError.invalidRequest }
+            return V3LegacyReplacementAssessments.shared.prepare(target: target, runID: runID, requestID: requestID)
         case "opRecoveryPrepare":
             guard let kind = payload["kind"] as? String,
                   let session = payload["session"] as? String,
                   let operationTarget = payload["target"] as? String else {
                 throw ServiceError.invalidRequest
             }
+            if kind == "legacyReplacement" { try V3LegacyReplacementAssessments.shared.reserve(operationTarget, session: session) }
             let stagedIPAToken = kind == "installSharedIPA" ? operationTarget : nil
             do {
                 guard try V3OperationRecoveryJournal.reserve(sessionID: session, kind: kind,
@@ -10369,6 +10381,7 @@ final class V3SideStoreService: NSObject {
             } else {
                 value = nil
             }
+            if kind == "legacyReplacement", !V3LegacyReplacementPolicy.consent(payload["riskAcknowledgmentVersion"], confirmed: payload["userConfirmed"]) { throw ServiceError.invalidRequest }
             let opTarget = payload["target"] as? String ?? target
             let stagedIPAToken = kind == "installSharedIPA" ? opTarget : nil
             do {
@@ -12885,7 +12898,15 @@ final class V3HeadlessPipelineHandler: PipelineExecutionHandler, PreflightChecks
     EntitlementsReviewHandler, ExtensionRemovalHandler, UnsupportedVersionHandler,
     InstallAppHandler, UserCustomizationHandler {
     let sessionID: String
-    init(sessionID: String) { self.sessionID = sessionID }
+    let legacyReplacementBinding: V3LegacyReplacementBinding?
+    private let replacementAdmission: (@MainActor () throws -> Void)?
+    init(sessionID: String, legacyReplacementBinding: V3LegacyReplacementBinding? = nil,
+         replacementAdmission: (@MainActor () throws -> Void)? = nil) {
+        self.sessionID = sessionID
+        self.legacyReplacementBinding = legacyReplacementBinding
+        self.replacementAdmission = replacementAdmission
+    }
+    func validateLegacyReplacementAdmission() async throws { try replacementAdmission?() }
 
     var preflightChecksHandler: PreflightChecksHandler { self }
     var entitlementsReviewHandler: EntitlementsReviewHandler { self }
@@ -13062,7 +13083,7 @@ enum V3DirectInstallEvidencePolicy {
     static let uncertainMessage = "The installation was requested, but its result could not be confirmed. It will not be repeated automatically."
     static func applying(_ response: [String: Any], kind: String,
                          observations: [[String: Any]], operationStarted: Bool) -> [String: Any] {
-        guard operationStarted, ["install", "installURL", "installSharedIPA", "update", "refreshApp", "resign", "activate", "restore"].contains(kind) else { return response }
+        guard operationStarted, ["install", "installURL", "installSharedIPA", "update", "refreshApp", "resign", "activate", "restore", "legacyReplacement"].contains(kind) else { return response }
         var reply = response
         func unknown() -> [String: Any] {
             reply["outcomeUnknown"] = true
@@ -13112,6 +13133,187 @@ enum V3DirectInstallEvidencePolicy {
         reply["retryable"] = false
         guard acknowledged, response["state"] as? String == "completed" else { return unknown() }
         return reply
+    }
+}
+
+// V3_LEGACY_REPLACEMENT_V1: recorded identity constrains an explicitly consented
+// replacement. It is NOT proof of current installed entitlements or data access.
+struct V3LegacyReplacementBinding: Sendable, Equatable {
+    let originalBundleID: String
+    let resignedBundleID: String
+    let customBundleID: String?
+    let teamID: String
+    let certificateSerial: String
+    let certificateDER: Data
+    let sourceFingerprint: String
+    let sourceTreeDigest: String
+    let extensionIdentities: [String: String]
+    let recordDigest: String
+}
+
+enum V3LegacyReplacementPolicy {
+    enum Refusal: String, Error {
+        case notEligible, busy, sourceUnavailable, sourceChanged, identityUnavailable
+        case identityMismatch, certificateUnavailable, certificateMismatch, staleAssessment
+    }
+    static func canonical(_ value: String) -> Bool { UUID(uuidString: value)?.uuidString == value }
+    static func integer(_ value: Any?, equals expected: Int) -> Bool {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              ["c", "s", "i", "l", "q", "C", "S", "I", "L", "Q"].contains(String(cString: number.objCType)) else { return false }
+        return number.intValue == expected
+    }
+    static func consent(_ value: Any?, confirmed: Any?) -> Bool {
+        integer(value, equals: 1) && V3WireContract.strictBool(confirmed) == true
+    }
+    static func eligible(manifest: [String: Any], ledger: [String: Any], runID: String,
+                         requestID: String, bundleID: String) -> Bool {
+        guard canonical(runID), canonical(requestID), ledger["run_id"] as? String == runID,
+              ledger["request_id"] as? String == requestID, ledger["state"] as? String == "failed",
+              integer(manifest["version"], equals: 2),
+              CombinedVerification.hasCompleteTerminalResults(manifest, runID: runID),
+              let rows = manifest["results"] as? [[String: Any]],
+              let row = rows.first(where: { $0["bundle_id"] as? String == bundleID }),
+              V3WireContract.strictBool(row["success"]) == false,
+              let raw = row["failure"] as? [String: Any],
+              let failure = CombinedFailure.decode(raw, expectedID: runID),
+              failure.operation == "refresh", failure.stage == .command, failure.code == .failed,
+              failure.sourceStep == .refreshApplication,
+              failure.signingContext["refresh_failure_kind"] == "invalidParameters",
+              failure.signingContext["local_precondition"] == "legacyProofUnavailable",
+              failure.signingContext["refresh_target_scope"] == "nonHost",
+              let verification = row["verification"] as? [String: Any],
+              integer(verification["version"], equals: 1),
+              verification["profileStore"] as? String == "unavailable",
+              verification["renewal"] as? String == "unknown",
+              verification["certificate"] as? String == "unknown",
+              V3WireContract.strictBool(verification["mutationDispatched"]) == false,
+              V3WireContract.strictBool(verification["installAcknowledged"]) == false else { return false }
+        return true
+    }
+}
+
+@MainActor
+final class V3LegacyReplacementAssessments {
+    static let shared = V3LegacyReplacementAssessments()
+    private let now: () -> Date
+    init(now: @escaping () -> Date = Date.init) { self.now = now }
+    struct Assessment {
+        let target: String
+        let runID: String
+        let requestID: String
+        let binding: V3LegacyReplacementBinding
+        let identityStamp: String
+        let expires: Date
+    }
+    private var tokens: [String: Assessment] = [:]
+    private var reservedSessions: [String: String] = [:]
+    private func recorded(_ target: String, runID: String, requestID: String) throws -> (InstalledApp, V3LegacyReplacementBinding) {
+        let visibleApp: InstalledApp = try v3Resolve(target)
+        let snapshotContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+        let objectID = visibleApp.objectID
+        let activeTeamID = DatabaseManager.shared.activeTeam()?.identifier
+        let identityStable = AuthManager.shared.v3IdentityIsStable
+        let identityStamp = AuthManager.shared.v3IdentityStamp
+        let binding = try snapshotContext.performAndWait { () throws -> V3LegacyReplacementBinding in
+            guard let app = try snapshotContext.existingObject(with: objectID) as? InstalledApp,
+                  !app.isDeleted else { throw V3LegacyReplacementPolicy.Refusal.notEligible }
+            let defaults = try V3SharedAppGroup.requireSharedUserDefaults()
+            guard (defaults.string(forKey: "liveContainerAutoRefreshActiveRunID") ?? "").isEmpty,
+                  (defaults.string(forKey: CombinedVerification.uncertainMutationKey) ?? "").isEmpty else { throw V3LegacyReplacementPolicy.Refusal.busy }
+            guard let manifest = defaults.dictionary(forKey: "liveContainerAutoRefreshVerification"),
+                  let ledger = defaults.dictionary(forKey: "liveContainerAutoRefreshRunLedger"),
+                  let record = ledger[runID] as? [String: Any],
+                  V3LegacyReplacementPolicy.eligible(manifest: manifest, ledger: record, runID: runID,
+                      requestID: requestID, bundleID: app.bundleIdentifier),
+                  app.isActive, app.useMainProfile, app.bundleIdentifier != StoreApp.altstoreAppID else { throw V3LegacyReplacementPolicy.Refusal.notEligible }
+            guard let teamID = app.team?.identifier, !teamID.isEmpty,
+                  activeTeamID == teamID,
+                  identityStable, !app.resignedBundleIdentifier.isEmpty else { throw V3LegacyReplacementPolicy.Refusal.identityUnavailable }
+            guard let source = ALTApplication(fileURL: app.fileURL),
+                  source.bundleIdentifier == app.bundleIdentifier,
+                  let fingerprint = app.appBundleFingerprint, !fingerprint.isEmpty,
+                  let digest = AppBundleFingerprint.compute(for: app.fileURL),
+                  AppBundleFingerprint.computeOriginalCacheKey(for: app.fileURL) == fingerprint else { throw V3LegacyReplacementPolicy.Refusal.sourceUnavailable }
+            var extensions: [String: String] = [:]
+            for ext in app.appExtensions {
+                guard ext.bundleIdentifier.hasPrefix(app.bundleIdentifier + "."),
+                      ext.resignedBundleIdentifier.hasPrefix(app.resignedBundleIdentifier + "."),
+                      extensions[ext.bundleIdentifier] == nil else { throw V3LegacyReplacementPolicy.Refusal.identityMismatch }
+                extensions[ext.bundleIdentifier] = ext.resignedBundleIdentifier
+            }
+            guard !extensions.isEmpty, extensions.count <= 128,
+                  Set(extensions.values).count == extensions.count,
+                  Set(source.appExtensions.map { $0.bundleIdentifier }) == Set(extensions.keys),
+                  source.appExtensions.count == extensions.count else { throw V3LegacyReplacementPolicy.Refusal.identityMismatch }
+            guard let historical = CertificateManager.shared.getSigningCertificate(for: app),
+                  let der = historical.data, !der.isEmpty, !historical.serialNumber.isEmpty,
+                  historical.expiryDate > Date(),
+                  let signer = CertificateManager.shared.getSignableCertificate(for: historical.serialNumber) else { throw V3LegacyReplacementPolicy.Refusal.certificateUnavailable }
+            guard signer.x509.data == der, signer.x509.serialNumber == historical.serialNumber,
+                  app.certificateSerialNumber == nil || app.certificateSerialNumber == historical.serialNumber else { throw V3LegacyReplacementPolicy.Refusal.certificateMismatch }
+            let recordValues: [String: Any] = ["target": target, "original": app.bundleIdentifier,
+                "resigned": app.resignedBundleIdentifier, "custom": app.customBundleIdentifier ?? "",
+                "team": teamID, "fingerprint": fingerprint, "extensions": extensions,
+                "installed": app.installedDate.timeIntervalSince1970,
+                "refreshed": app.refreshedDate.timeIntervalSince1970,
+                "expires": app.expirationDate.timeIntervalSince1970,
+                "certificate": app.certificateSerialNumber ?? ""]
+            let bytes = try JSONSerialization.data(withJSONObject: recordValues, options: [.sortedKeys])
+            let recordDigest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            return V3LegacyReplacementBinding(originalBundleID: app.bundleIdentifier,
+                resignedBundleID: app.resignedBundleIdentifier, customBundleID: app.customBundleIdentifier,
+                teamID: teamID, certificateSerial: historical.serialNumber, certificateDER: der,
+                sourceFingerprint: fingerprint, sourceTreeDigest: digest, extensionIdentities: extensions,
+                recordDigest: recordDigest)
+        }
+        guard AuthManager.shared.v3IdentityIsStable,
+              AuthManager.shared.v3IdentityStamp == identityStamp,
+              DatabaseManager.shared.activeTeam()?.identifier == activeTeamID else {
+            throw V3LegacyReplacementPolicy.Refusal.staleAssessment
+        }
+        return (visibleApp, binding)
+    }
+    func prepare(target: String, runID: String, requestID: String) -> [String: Any] {
+        tokens = tokens.filter { $0.value.expires > now() }
+        do {
+            guard V3HeadlessRuntime.shared.operations.activeMutationID == nil,
+                  try V3OperationRecoveryJournal.current() == nil,
+                  try V3OperationRecoveryJournal.direct() == nil else { throw V3LegacyReplacementPolicy.Refusal.busy }
+            let (_, binding) = try recorded(target, runID: runID, requestID: requestID)
+            tokens.removeAll() // at most one review, never a backlog of actionable replacements
+            reservedSessions.removeAll()
+            let token = UUID().uuidString
+            tokens[token] = Assessment(target: target, runID: runID, requestID: requestID,
+                binding: binding, identityStamp: AuthManager.shared.v3IdentityStamp, expires: now().addingTimeInterval(120))
+            return ["version": 1, "eligible": true, "reason": "available", "riskAcknowledgmentVersion": 1,
+                "token": token, "expiresInSeconds": 120, "extensionCount": binding.extensionIdentities.count]
+        } catch {
+            return ["version": 1, "eligible": false,
+                "reason": (error as? V3LegacyReplacementPolicy.Refusal)?.rawValue ?? "notEligible",
+                "riskAcknowledgmentVersion": 1]
+        }
+    }
+    func reserve(_ token: String, session: String) throws {
+        guard V3LegacyReplacementPolicy.canonical(session), let assessment = tokens[token],
+              assessment.expires > now(), reservedSessions[token] == nil || reservedSessions[token] == session else {
+            throw V3LegacyReplacementPolicy.Refusal.staleAssessment
+        }
+        _ = try validate(assessment)
+        reservedSessions[token] = session
+    }
+    func consume(_ token: String, session: String) throws -> Assessment {
+        guard reservedSessions.removeValue(forKey: token) == session,
+              let assessment = tokens.removeValue(forKey: token), assessment.expires > now() else { throw V3LegacyReplacementPolicy.Refusal.staleAssessment }
+        _ = try validate(assessment)
+        return assessment
+    }
+    func validate(_ assessment: Assessment) throws -> InstalledApp {
+        try Task.checkCancellation()
+        guard AuthManager.shared.v3IdentityIsStable,
+              assessment.identityStamp == AuthManager.shared.v3IdentityStamp else { throw V3LegacyReplacementPolicy.Refusal.staleAssessment }
+        let (app, binding) = try recorded(assessment.target, runID: assessment.runID, requestID: assessment.requestID)
+        guard binding == assessment.binding else { throw V3LegacyReplacementPolicy.Refusal.staleAssessment }
+        return app
     }
 }
 
@@ -13549,6 +13751,20 @@ final class V3OperationCenter {
         let background = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         let baseContext = StandaloneOperationContext(steps: .signIn, dbBackgroundContext: background)
         switch kind {
+        case "legacyReplacement":
+            let assessment = try V3LegacyReplacementAssessments.shared.consume(target, session: id)
+            let app = try V3LegacyReplacementAssessments.shared.validate(assessment)
+            let replacementHandler = V3HeadlessPipelineHandler(sessionID: id,
+                legacyReplacementBinding: assessment.binding, replacementAdmission: { [weak self] in
+                    guard let self, self.activeMutationID == id, let session = self.sessions[id],
+                          session.terminal.isEmpty, !session.terminal.isCancellationRequested,
+                          session.deadline > Date() else { throw CancellationError() }
+                    _ = try V3LegacyReplacementAssessments.shared.validate(assessment)
+                })
+            return V3OpDriver(kind: kind) {
+                try await self.single(id: id, operation: .resign(app, alternateIconMode: .preserve),
+                    handler: replacementHandler, context: baseContext)
+            }
         case "install", "installURL", "installSharedIPA":
             let installTarget = try await resolveInstallTarget(id: id, kind: kind, target: target)
             let app: AppProtocol

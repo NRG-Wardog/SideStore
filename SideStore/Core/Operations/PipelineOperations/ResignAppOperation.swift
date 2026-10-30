@@ -21,7 +21,12 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
         }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         
+        try await context.validateLegacyReplacementAdmission()
         let team = try await AuthManager.shared.getAuthenticatedTeam()
+        try await context.validateLegacyReplacementAdmission()
+        if let binding = context.legacyReplacementBinding, team.identifier != binding.teamID {
+            throw OperationError.invalidParameters("The replacement signing team changed.")
+        }
         guard
             let appBundle = self.context.targetAppBundle,
             let profiles = self.context.provisioningProfiles,
@@ -37,17 +42,22 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
         
         self.setProgress(5)
         
+        try context.validateLegacyReplacementBundle(appBundle, signed: false)
+        try context.validateLegacyReplacementProfiles(profiles)
         context.validatedReuseMainGeneration = context.validatedReuseMain && context.useMainProfile ? UUID().uuidString : nil
         let effectiveBundleId = self.context.targetBundleIdentifier
         let appBundleURL = try await self.prepareAppBundle(for: appBundle, profiles: profiles, appexBundleIds: context.appexBundleIds ?? [:])
         
         self.setProgress(40)
         
+        try await context.validateLegacyReplacementAdmission()
         let resignedAppURL = try await self.resignAppBundle(at: appBundleURL, team: team, certificate: certificate, profiles: Array(profiles.values))
         guard let resignedAppBundle = ALTApplication(fileURL: resignedAppURL) else {
             throw OperationError.invalidApp(reason: "Could not load resigned app bundle at '\(resignedAppURL.lastPathComponent)'")
         }
         
+        try await context.validateLegacyReplacementAdmission()
+        try context.validateLegacyReplacementBundle(resignedAppBundle, signed: true)
         self.debugLog("[ResignAppOperation] Resigned app \(self.context.bundleIdentifier) to \(resignedAppBundle.bundleIdentifier).")
         self.setProgress(100)
         
@@ -111,7 +121,12 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
         try self.removeMissingAppExtensionReferences(from: appBundle)
         
         for appExtension in appBundle.appExtensions {
-            let updatedAppExBundleId = appExtension.bundleIdentifier.replacingOccurrences(of: targetAppBundle.bundleIdentifier, with: bundleIdentifier)
+            let updatedAppExBundleId: String
+            if context.legacyReplacementBinding != nil {
+                updatedAppExBundleId = try context.legacyReplacementProfileKey(originalID: appExtension.bundleIdentifier)
+            } else {
+                updatedAppExBundleId = appExtension.bundleIdentifier.replacingOccurrences(of: targetAppBundle.bundleIdentifier, with: bundleIdentifier)
+            }
             try self.prepare(appExtension, bundleID: updatedAppExBundleId, profiles: profiles, appexBundleIds: appexBundleIds)
         }
         
@@ -200,6 +215,7 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
     }
     
     private func resignAppBundle(at fileURL: URL, team: ALTTeam, certificate: ALTCertificate, profiles: [ALTProvisioningProfile]) async throws -> URL {
+        try await context.validateLegacyReplacementAdmission()
         let signer = ALTSigner(team: team, certificate: certificate)
         if context.useMainProfile && context.validatedReuseMain {
             _ = try await signer.signApp(at: fileURL, provisioningProfiles: profiles,

@@ -272,6 +272,8 @@ class InstallAppOperationContext: PipelineOperationContext
     var isStoreUpdate: Bool = false
     var targetAppBundle: ALTApplication?
 
+    var legacyReplacementBinding: V3LegacyReplacementBinding?
+
     var profileMutationAdmission: (() throws -> Void)?
     var readInstalledProvisioningProfiles: (() async throws -> [Data])?
     var verifiedRefreshCertificate: (serial: String, data: Data, expiry: Date)?
@@ -337,6 +339,91 @@ class InstallAppOperationContext: PipelineOperationContext
             return nil
         case .remove:
             return nil
+        }
+    }
+
+    // Explicit replacement has its own immutable consent/source binding. These
+    // checks do not treat cached input as proof of the currently installed binary.
+    func validateLegacyReplacementAdmission() async throws {
+        guard let binding = legacyReplacementBinding else { return }
+        try Task.checkCancellation()
+        try profileMutationAdmission?()
+        func checkLocalState() throws {
+            guard handler.legacyReplacementBinding == binding,
+                  bundleIdentifier == binding.originalBundleID,
+                  customBundleIdentifier == binding.customBundleID,
+                  !useMainProfile, !validatedReuseMain,
+                  overrideProvisioningProfile == nil,
+                  let certificate = targetSigningCertificate,
+                  certificate.serialNumber == binding.certificateSerial,
+                  certificate.x509.data == binding.certificateDER,
+                  certificate.x509.expiryDate > Date() else {
+                throw OperationError.invalidParameters("The confirmed replacement identity is no longer available.")
+            }
+        }
+        try checkLocalState()
+        try await handler.validateLegacyReplacementAdmission()
+        try Task.checkCancellation()
+        try profileMutationAdmission?()
+        try checkLocalState()
+    }
+
+    func validateLegacyReplacementBundle(_ bundle: ALTApplication, signed: Bool) throws {
+        guard let binding = legacyReplacementBinding else { return }
+        let expectedMain = signed ? binding.resignedBundleID : binding.originalBundleID
+        let expectedExtensions = Set(signed ? Array(binding.extensionIdentities.values) : Array(binding.extensionIdentities.keys))
+        let actual = bundle.appExtensions.map { $0.bundleIdentifier }
+        guard bundle.bundleIdentifier == expectedMain, actual.count == expectedExtensions.count,
+              Set(actual) == expectedExtensions else {
+            throw OperationError.invalidParameters("The replacement app or extension identity changed.")
+        }
+        if signed {
+            for part in bundle.allAppBundles {
+                guard let profile = part.provisioningProfile,
+                      profile.bundleIdentifier == part.bundleIdentifier,
+                      profile.teamIdentifier == binding.teamID,
+                      profile.expirationDate > Date(),
+                      profile.certificates.contains(where: { $0.serialNumber == binding.certificateSerial && $0.data == binding.certificateDER }),
+                      let signedApplicationID = part.entitlements[ALTEntitlement.applicationIdentifier] as? String,
+                      let profileApplicationID = profile.entitlements[ALTEntitlement.applicationIdentifier] as? String,
+                      !signedApplicationID.isEmpty, signedApplicationID == profileApplicationID,
+                      signedApplicationID.hasSuffix("." + part.bundleIdentifier),
+                      signedApplicationID.count > part.bundleIdentifier.count + 1,
+                      part.entitlements[ALTEntitlement(rawValue: "com.apple.developer.team-identifier")] as? String == binding.teamID,
+                      let signedCertificate = CertificateManager.shared.getSigningCertificate(at: part.fileURL),
+                      signedCertificate.serialNumber == binding.certificateSerial,
+                      signedCertificate.data == binding.certificateDER else {
+                    throw OperationError.invalidParameters("The signed replacement identity could not be verified.")
+                }
+            }
+        }
+    }
+
+    func legacyReplacementProfileKey(originalID: String) throws -> String {
+        guard let binding = legacyReplacementBinding else { return originalID }
+        if originalID == binding.originalBundleID { return targetBundleIdentifier }
+        guard binding.extensionIdentities[originalID] != nil,
+              originalID.hasPrefix(binding.originalBundleID + ".") else {
+            throw OperationError.invalidParameters("The replacement extension is not part of the confirmed input.")
+        }
+        return targetBundleIdentifier + originalID.dropFirst(binding.originalBundleID.count)
+    }
+
+    func validateLegacyReplacementProfiles(_ profiles: [String: ALTProvisioningProfile]) throws {
+        guard let binding = legacyReplacementBinding else { return }
+        var expected = [targetBundleIdentifier: binding.resignedBundleID]
+        for (original, signed) in binding.extensionIdentities {
+            expected[try legacyReplacementProfileKey(originalID: original)] = signed
+        }
+        guard Set(profiles.keys) == Set(expected.keys), Set(profiles.values.map { $0.uuid }).count == profiles.count else {
+            throw OperationError.invalidParameters("Separate profiles are required for every replacement component.")
+        }
+        for (key, signedID) in expected {
+            guard let profile = profiles[key], profile.bundleIdentifier == signedID,
+                  profile.teamIdentifier == binding.teamID, profile.expirationDate > Date(),
+                  profile.certificates.contains(where: { $0.serialNumber == binding.certificateSerial && $0.data == binding.certificateDER }) else {
+                throw OperationError.invalidParameters("The replacement profile does not match the confirmed signing identity.")
+            }
         }
     }
 

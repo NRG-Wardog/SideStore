@@ -30,6 +30,9 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
             debugLog("[InstallAppOperation] execute() took: \(String(format: "%.3fs", elapsed))")
         }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
+        try await context.validateLegacyReplacementAdmission()
+        if let signed = context.resignedAppBundle { try context.validateLegacyReplacementBundle(signed, signed: true) }
+
         
         defer {
             self.removeRefreshedIPA()
@@ -58,6 +61,10 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
         
         self.setProgress(10)
         let authTeam = try await AuthManager.shared.getAuthenticatedTeam()
+        try await context.validateLegacyReplacementAdmission()
+        if let binding = context.legacyReplacementBinding, authTeam.identifier != binding.teamID {
+            throw OperationError.invalidParameters("The replacement installation team changed.")
+        }
         do {
             let installedApp = try await installApp(
                 in: backgroundContext,
@@ -187,6 +194,8 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
         // owned request immediately before the first installation dispatch.
         try Task.checkCancellation()
         try context.profileMutationAdmission?()
+        try await context.validateLegacyReplacementAdmission()
+        try context.validateLegacyReplacementBundle(resignedAppBundle, signed: true)
         let admissionDate = Date()
         guard certificate.x509.expiryDate > admissionDate,
               expectedProfiles.allSatisfy({ $0.expirationDate > admissionDate }) else {
@@ -238,6 +247,17 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
             }
         }
         
+        // V3_LEGACY_REPLACEMENT_POST_ACK_SAVE_V1: later cache/cleanup steps may
+        // observe cancellation. Commit the already acknowledged replacement now;
+        // no admission check may abandon this owned accounting after dispatch.
+        if context.legacyReplacementBinding != nil {
+            try await backgroundContext.perform {
+                try V3MutationPersistencePolicy.persistResult(hasChanges: backgroundContext.hasChanges) {
+                    try backgroundContext.save()
+                }
+            }
+        }
+
         self.setProgress(100)
         return installedApp
     }

@@ -27,6 +27,8 @@ final class SendAppOperation: BasePipelineOperation<InstallAppOperationContext, 
             throw OperationError.invalidParameters("SendAppOperation.main: self.resignedAppBundle is nil")
         }
 
+        try await context.validateLegacyReplacementAdmission()
+        try context.validateLegacyReplacementBundle(resignedAppBundle, signed: true)
         let bundleIdentifier = self.context.targetBundleIdentifier
         let appURL = resignedAppBundle.fileURL
         verboseLog("[SendAppOperation] AFC App Bundle `fileURL`: \(appURL.absoluteString)")
@@ -34,6 +36,8 @@ final class SendAppOperation: BasePipelineOperation<InstallAppOperationContext, 
         do {
             await CellularRefreshManager.shared.turnOffDataIfNeeded()
             
+            try await context.validateLegacyReplacementAdmission()
+            try context.validateLegacyReplacementBundle(resignedAppBundle, signed: true)
             if UserDefaults.standard.preferResignedIPA, let ipaURL = self.context.ipaURL {
                 debugLog("[SendAppOperation] Sending IPA at \(ipaURL.path) via AFC...")
                 let rawBytes = try Data(contentsOf: ipaURL, options: .mappedIfSafe)

@@ -22,6 +22,32 @@ final class StageAppOperation: BasePipelineOperation<InstallAppOperationContext,
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         self.setProgress(10)
         
+        if let binding = context.legacyReplacementBinding {
+            try await context.validateLegacyReplacementAdmission()
+            guard let source = context.targetAppBundle,
+                  AppBundleFingerprint.compute(for: source.fileURL) == binding.sourceTreeDigest,
+                  AppBundleFingerprint.computeOriginalCacheKey(for: source.fileURL) == binding.sourceFingerprint else {
+                throw OperationError.invalidParameters("The confirmed replacement input changed.")
+            }
+            try context.validateLegacyReplacementBundle(source, signed: false)
+            let root = context.temporaryDirectory.resolvingSymlinksInPath().standardizedFileURL
+            let destination = root.appendingPathComponent("LegacyReplacement.app", isDirectory: true)
+            guard source.fileURL.resolvingSymlinksInPath().standardizedFileURL != destination,
+                  !FileManager.default.fileExists(atPath: destination.path) else {
+                throw OperationError.invalidParameters("The owned replacement staging destination is not empty.")
+            }
+            try FileManager.default.copyItem(at: source.fileURL, to: destination)
+            guard AppBundleFingerprint.compute(for: destination) == binding.sourceTreeDigest,
+                  let staged = ALTApplication(fileURL: destination) else {
+                throw OperationError.invalidParameters("The replacement staging copy could not be verified.")
+            }
+            try context.validateLegacyReplacementBundle(staged, signed: false)
+            try await context.validateLegacyReplacementAdmission()
+            context.targetAppBundle = staged
+            self.setProgress(100)
+            return staged
+        }
+
         if let appBundle = self.context.targetAppBundle,
            appBundle.bundle.bundleURL.path.contains("SideBackup") || appBundle.bundle.bundleURL.path.contains("AltBackup"),
            let installedApp = self.context.installedApp {

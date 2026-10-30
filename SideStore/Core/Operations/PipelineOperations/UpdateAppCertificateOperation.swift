@@ -23,6 +23,14 @@ final class UpdateAppCertificateOperation: BasePipelineOperation<InstallAppOpera
         }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         
+        if context.legacyReplacementBinding != nil {
+            // Do not let a global assigned profile or fallback certificate replace
+            // the per-operation identity explicitly confirmed by the owner.
+            try await context.validateLegacyReplacementAdmission()
+            self.setProgress(100)
+            return
+        }
+
         let targetBundleID = self.context.installedApp?.bundleIdentifier ?? self.context.targetBundleIdentifier
         let profileToUse = self.context.overrideProvisioningProfile ?? ProfileManager.shared.getAssignedProfile(for: targetBundleID)
 

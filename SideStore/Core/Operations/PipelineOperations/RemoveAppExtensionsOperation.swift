@@ -73,6 +73,15 @@ final class RemoveAppExtensionsOperation: BasePipelineOperation<InstallAppOperat
             throw OperationError.invalidParameters("RemoveAppExtensionsOperation: context.appBundle is nil")
         }
         
+        if context.legacyReplacementBinding != nil {
+            try await context.validateLegacyReplacementAdmission()
+            try context.validateLegacyReplacementBundle(targetAppBundle, signed: false)
+            context.useMainProfile = false
+            context.validatedReuseMain = false
+            self.setProgress(100)
+            return targetAppBundle
+        }
+
         // target App Bundle doesn't contain extensions so don't bother
         guard !targetAppBundle.appExtensions.isEmpty else {
             self.setProgress(100)

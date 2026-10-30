@@ -30,6 +30,8 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
             throw OperationError.invalidParameters("FetchProvisioningProfilesOperation: context.targetAppBundle is nil")
         }
 
+        try await self.context.validateLegacyReplacementAdmission()
+        try self.context.validateLegacyReplacementBundle(targetAppBundle, signed: false)
         let effectiveBundleId = self.context.targetBundleIdentifier
 
         let appExtensions = targetAppBundle.appExtensions
@@ -53,16 +55,36 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
             var profiles = [effectiveBundleId: overrideProfile]
             if !self.context.useMainProfile, !appExtensions.isEmpty {
                 for appExtension in appExtensions {
-                    let updatedExtensionBundleId = appExtension.bundleIdentifier.replacingOccurrences(of: targetAppBundle.bundleIdentifier, with: effectiveBundleId)
+                    let updatedExtensionBundleId: String
+                    if self.context.legacyReplacementBinding != nil {
+                        updatedExtensionBundleId = try self.context.legacyReplacementProfileKey(originalID: appExtension.bundleIdentifier)
+                    } else {
+                        updatedExtensionBundleId = appExtension.bundleIdentifier.replacingOccurrences(of: targetAppBundle.bundleIdentifier, with: effectiveBundleId)
+                    }
                     profiles[updatedExtensionBundleId] = overrideProfile
                 }
             }
             self.setProgress(100)
             self.debugLog("[FetchProvisioningProfiles] Total override profiles prepared: \(profiles.count)")
+            try self.context.validateLegacyReplacementProfiles(profiles)
             return profiles
         }
 
         let team = try await AuthManager.shared.getAuthenticatedTeam()
+        try await self.context.validateLegacyReplacementAdmission()
+        if let binding = self.context.legacyReplacementBinding {
+            guard team.identifier == binding.teamID else {
+                throw OperationError.invalidParameters("The replacement team changed.")
+            }
+            try await self.context.validateLegacyReplacementAdmission()
+            let appIDs = try await DeveloperPortalProxy.shared.fetchAppIDs(for: team)
+            try await self.context.validateLegacyReplacementAdmission()
+            let desired = Set([binding.resignedBundleID] + Array(binding.extensionIdentities.values))
+            let missing = desired.subtracting(Set(appIDs.map { $0.bundleIdentifier }))
+            guard team.type != .free || missing.count <= max(0, Team.maximumFreeAppIDs - appIDs.count) else {
+                throw OperationError.invalidParameters("Separate replacement profiles exceed the available App ID quota.")
+            }
+        }
         self.debugLog("[FetchProvisioningProfiles] Executing profile preparation; useMainProfile: \(self.context.useMainProfile)")
         
         self.setProgress(10)
@@ -90,6 +112,7 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         guard !self.context.useMainProfile, !appExtensions.isEmpty else {
             self.setProgress(100)
             self.debugLog("[FetchProvisioningProfiles] Total profiles prepared: \(profiles.count)")
+            try self.context.validateLegacyReplacementProfiles(profiles)
             return profiles
         }
         
@@ -101,7 +124,12 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
                     self.verboseLog("[FetchProvisioningProfiles] Preparing extension profile...")
                     let extProfile = try await self.provisionAndFetchProfile(for: appExtension, parentAppBundle: targetAppBundle, team: team)
                     // Use customized bundle ID if applicable
-                    let updatedExtensionBundleId = appExtension.bundleIdentifier.replacingOccurrences(of: targetAppBundle.bundleIdentifier, with: effectiveBundleId)
+                    let updatedExtensionBundleId: String
+                    if self.context.legacyReplacementBinding != nil {
+                        updatedExtensionBundleId = try self.context.legacyReplacementProfileKey(originalID: appExtension.bundleIdentifier)
+                    } else {
+                        updatedExtensionBundleId = appExtension.bundleIdentifier.replacingOccurrences(of: targetAppBundle.bundleIdentifier, with: effectiveBundleId)
+                    }
                     self.verboseLog("[FetchProvisioningProfiles] Extension profile prepared.")
                     return (updatedExtensionBundleId, extProfile)
                 }
@@ -125,6 +153,8 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         }
         
         self.debugLog("[FetchProvisioningProfiles] Total profiles prepared: \(profiles.count)")
+        try await self.context.validateLegacyReplacementAdmission()
+        try self.context.validateLegacyReplacementProfiles(profiles)
         return profiles
     }
 
@@ -228,7 +258,14 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         }
 
         let bundleID: String
-        if let parentAppBundle {
+        if let binding = self.context.legacyReplacementBinding {
+            try await self.context.validateLegacyReplacementAdmission()
+            guard team.identifier == binding.teamID,
+                  let exactID = parentAppBundle == nil ? (targetAppBundle.bundleIdentifier == binding.originalBundleID ? binding.resignedBundleID : nil) : binding.extensionIdentities[targetAppBundle.bundleIdentifier] else {
+                throw OperationError.invalidParameters("The replacement profile identity is not in the confirmed selection.")
+            }
+            bundleID = exactID
+        } else if let parentAppBundle {
             guard targetAppBundle.bundleIdentifier.hasPrefix(parentAppBundle.bundleIdentifier + ".") else {
                 throw OperationError.invalidApp(reason: "Extension bundle ID does not start with its parent bundle ID.")
             }
@@ -253,17 +290,38 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         
         self.debugLog("[FetchProvisioningProfiles] Registering App ID...")
         let appID = try await self.registerAppID(for: targetAppBundle, name: preferredName, bundleIdentifier: bundleID, team: team)
+        try await self.context.validateLegacyReplacementAdmission()
+        if self.context.legacyReplacementBinding != nil, appID.bundleIdentifier != bundleID {
+            throw OperationError.invalidParameters("The replacement portal identity changed.")
+        }
         self.debugLog("[FetchProvisioningProfiles] App ID registered successfully.")
         
         self.debugLog("[FetchProvisioningProfiles] Updating App ID features...")
         let updatedAppID = try await self.updateFeatures(for: appID, targetAppBundle: targetAppBundle, team: team)
+        try await self.context.validateLegacyReplacementAdmission()
+        if self.context.legacyReplacementBinding != nil, updatedAppID.bundleIdentifier != bundleID {
+            throw OperationError.invalidParameters("The replacement portal identity changed.")
+        }
         
         self.debugLog("[FetchProvisioningProfiles] Updating App ID groups...")
         let groupAppID = try await self.updateAppGroups(for: updatedAppID, targetAppBundle: targetAppBundle, team: team)
+        try await self.context.validateLegacyReplacementAdmission()
+        if self.context.legacyReplacementBinding != nil, groupAppID.bundleIdentifier != bundleID {
+            throw OperationError.invalidParameters("The replacement portal identity changed.")
+        }
         
         self.debugLog("[FetchProvisioningProfiles] Fetching provisioning profile from Apple...")
+        try await self.context.validateLegacyReplacementAdmission()
         let profile = try await DeveloperPortalProxy.shared.downloadProvisioningProfile(for: groupAppID, deviceType: DeveloperPortalProxy.currentDeviceType, team: team)
         self.debugLog("[FetchProvisioningProfiles] Provisioning profile fetched.")
+        try await self.context.validateLegacyReplacementAdmission()
+        if let binding = self.context.legacyReplacementBinding {
+            guard profile.bundleIdentifier == bundleID, profile.teamIdentifier == binding.teamID,
+                  profile.certificates.contains(where: { $0.serialNumber == binding.certificateSerial && $0.data == binding.certificateDER }),
+                  profile.expirationDate > Date() else {
+                throw OperationError.invalidParameters("The returned replacement profile changed identity.")
+            }
+        }
         return profile
         }
     }
@@ -282,6 +340,7 @@ private extension FetchProvisioningProfilesOperation{
                 return cachedAppIDs
             }
             self.debugLog("[FetchProvisioningProfiles] Fetching existing App IDs from Apple...")
+            try await self.context.validateLegacyReplacementAdmission()
             let fetchedAppIDs = try await DeveloperPortalProxy.shared.fetchAppIDs(for: team)
             self.context.sharedContext.appIDs = fetchedAppIDs
             self.verboseLog("[FetchProvisioningProfiles] Found \(fetchedAppIDs.count) existing App IDs on portal.")
@@ -301,6 +360,7 @@ private extension FetchProvisioningProfilesOperation{
             let appIDName = self.sanitizeAppIDName(name: name, bundleIdentifier: bundleIdentifier)
             
             self.debugLog("[FetchProvisioningProfiles] Requesting new App ID registration...")
+            try await self.context.validateLegacyReplacementAdmission()
             let appID = try await DeveloperPortalProxy.shared.addAppID(name: appIDName, bundleIdentifier: bundleIdentifier, team: team)
             self.context.sharedContext.appendAppID(appID)
             self.debugLog("[FetchProvisioningProfiles] Successfully registered new App ID on Apple portal.")
@@ -367,6 +427,7 @@ private extension FetchProvisioningProfilesOperation{
         appID.features = targetFeatures
         
         do {
+            try await self.context.validateLegacyReplacementAdmission()
             let updated = try await DeveloperPortalProxy.shared.updateAppID(appID, team: team)
             self.verboseLog("[FetchProvisioningProfiles] Updated App ID features.")
             return updated
@@ -439,6 +500,7 @@ private extension FetchProvisioningProfilesOperation{
                     return cachedGroups
                 }
                 self.debugLog("[FetchProvisioningProfiles] Fetching existing App Groups from Apple...")
+                try await self.context.validateLegacyReplacementAdmission()
                 let fetched = try await DeveloperPortalProxy.shared.fetchAppGroups(for: team)
                 self.context.sharedContext.appGroups = fetched
                 self.verboseLog("[FetchProvisioningProfiles] Found \(fetched.count) existing App Groups on portal.")
@@ -464,6 +526,7 @@ private extension FetchProvisioningProfilesOperation{
                             if let existing = self.context.sharedContext.appGroups?.first(where: { $0.groupIdentifier == adjustedGroupIdentifier }) {
                                 return existing
                             }
+                            try await self.context.validateLegacyReplacementAdmission()
                             let newGroup = try await DeveloperPortalProxy.shared.addAppGroup(name: name, groupIdentifier: adjustedGroupIdentifier, team: team)
                             self.context.sharedContext.appendAppGroup(newGroup)
                             self.verboseLog("[FetchProvisioningProfiles] Created new App Group.")
@@ -477,6 +540,7 @@ private extension FetchProvisioningProfilesOperation{
                 groups.append(group)
             }
             
+            try await self.context.validateLegacyReplacementAdmission()
             try await DeveloperPortalProxy.shared.assignAppID(appID, to: Array(groups), team: team)
             let groupIDs = groups.map { $0.groupIdentifier }
             self.debugLog("[FetchProvisioningProfiles] Assigned App ID to \(groupIDs.count) App Groups.")

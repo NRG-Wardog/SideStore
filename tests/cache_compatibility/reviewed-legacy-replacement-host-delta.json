@@ -1,0 +1,15 @@
+{
+  "schema": "reviewed-legacy-replacement-host-delta-v1",
+  "before_sha256": "e0548ae54c23b31e5df7f9fc583e0df3b92ed4512524ff42f57685db86f11a48",
+  "after_sha256": "071cc0e8273e3e55eea61a1bbc8462f0695ccf2912ba25f55b282ef8003e9e0e",
+  "hunks": [
+    {
+      "before": "            }\n        }\n        \n        context.beginInstallationHandler = { (installedApp) in\n            group.beginInstallationHandler?(installedApp)\n        }\n",
+      "after": "            }\n        }\n        \n        if let binding = handler.legacyReplacementBinding {\n            guard case .resign = operation,\n                  operation.bundleIdentifier == binding.originalBundleID,\n                  operation.bundleIdentifier != StoreApp.altstoreAppID,\n                  let certificate = CertificateManager.shared.getSignableCertificate(for: binding.certificateSerial),\n                  certificate.serialNumber == binding.certificateSerial,\n                  certificate.x509.data == binding.certificateDER else {\n                throw OperationError.invalidParameters(\"The confirmed replacement certificate is unavailable.\")\n            }\n            context.legacyReplacementBinding = binding\n            context.overrideSigningCertificate = certificate\n            context.customBundleIdentifier = binding.customBundleID\n            context.useMainProfile = false\n            context.validatedReuseMain = false\n            context.validatedReuseMainGeneration = nil\n            context.validateExtensionSigningCapabilities = false\n            context.overrideProvisioningProfile = nil\n            context.appexBundleIds = nil\n            try await context.validateLegacyReplacementAdmission()\n        }\n\n        context.beginInstallationHandler = { (installedApp) in\n            group.beginInstallationHandler?(installedApp)\n        }\n"
+    }
+  ],
+  "cache_key_caller": {
+    "path": "SideStore/Core/Operations/PipelineOperations/StageAppOperation.swift",
+    "sha256": "c5becaa90cfcfcab29ed5658bd1447dcbe5e3056658a9715f09821dc92807553"
+  }
+}
