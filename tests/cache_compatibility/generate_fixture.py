@@ -88,6 +88,23 @@ REVIEWED_COLD_VPN_DELTA_SHA256 = '923df9acc16531a738f8ac9a3f5e6df6a4b29228d955f2
 
 REVIEWED_REFRESH_TRUTH_DELTA_SHA256 = '60400c47b35b9ebfd6e3ac8ab5c7d73ef3244c99f70dafeb8254c72cb9e58d75'
 
+REVIEWED_TRANSPORT_OBSERVATION_DELTA_SHA256 = '14b1bb801ca53db5d1c9237aef1bf308fc6650ae1d5086582f22ccb52c392676'
+
+def project_reviewed_transport_observation(text):
+    """Reverse the exact reviewed observation plumbing, never accept other changes."""
+    raw = (HERE / 'reviewed-transport-observation-host-delta.json').read_bytes()
+    assert digest(raw) == REVIEWED_TRANSPORT_OBSERVATION_DELTA_SHA256, 'Reviewed transport-observation delta changed'
+    receipt = json.loads(raw)
+    if 'V3TransportObservationConfiguration' not in text:
+        return text, False
+    assert digest(text.encode()) == receipt['after_sha256'], 'Unreviewed transport-observation host changes'
+    for hunk in receipt['hunks']:
+        assert text.count(hunk['after']) == 1, 'Changed, absent or duplicate transport-observation hunk'
+        text = text.replace(hunk['after'], hunk['before'], 1)
+    assert digest(text.encode()) == receipt['before_sha256'], 'Changes outside reviewed transport-observation hunks'
+    return text, True
+
+
 def project_reviewed_refresh_truth(text):
     """Exact reviewed evidence plumbing only, before the historical cache proof."""
     raw = (HERE / 'reviewed-refresh-truth-host-delta.json').read_bytes()
@@ -118,6 +135,7 @@ def project_reviewed_cold_vpn(text):
 
 
 def verify_host_preservation(text):
+    text, observation = project_reviewed_transport_observation(text)
     text, truth = project_reviewed_refresh_truth(text)
     text, cold_vpn = project_reviewed_cold_vpn(text)
     if digest(text.encode()) == PINNED['host']:
@@ -130,6 +148,7 @@ def verify_host_preservation(text):
                 ('host_pipeline_except_reviewed_refresh_truth_cold_vpn_and_reuse_main_byte_identical' if truth else
                  'host_pipeline_except_reviewed_cold_vpn_and_reuse_main_byte_identical'): True,
                 'reviewed_cold_vpn_delta_sha256': REVIEWED_COLD_VPN_DELTA_SHA256,
+                **({'reviewed_transport_observation_delta_sha256': REVIEWED_TRANSPORT_OBSERVATION_DELTA_SHA256} if observation else {}),
                 **({'reviewed_refresh_truth_delta_sha256': REVIEWED_REFRESH_TRUTH_DELTA_SHA256} if truth else {}),
                 'reviewed_reuse_main_insertion_sha256': REVIEWED_REUSE_MAIN_SHA256}
     return {'host_pipeline_byte_identical': False,
@@ -232,7 +251,7 @@ class InstalledApp {
         "swift_compiled": False, "swift_executed": False,
         "native_provider_executed": False, "network_executed": False,
         "inputs_sha256": {"SideStore/" + path: digest(source[key].encode()) for key, path in PRODUCTION.items()},
-        "fixture_inputs_sha256": {name: digest((HERE / name).read_bytes()) for name in ["generate_fixture.py", "reviewed-cold-vpn-host-delta.json", "reviewed-refresh-truth-host-delta.json", "Cases.swift", *ORIGINAL_PINS]},
+        "fixture_inputs_sha256": {name: digest((HERE / name).read_bytes()) for name in ["generate_fixture.py", "reviewed-cold-vpn-host-delta.json", "reviewed-refresh-truth-host-delta.json", "reviewed-transport-observation-host-delta.json", "Cases.swift", *ORIGINAL_PINS]},
         "generated_sha256": digest(generated.encode()),
         "expected_case_names": cases, "expected_case_count": len(cases),
         "strict_compute_byte_identical": True, **host_proof,

@@ -13,7 +13,42 @@ spec.loader.exec_module(generator)
 
 class HostPreservationTests(unittest.TestCase):
     def setUp(self):
-        self.host = (HERE.parents[1] / generator.PRODUCTION['host']).read_text()
+        self.current = (HERE.parents[1] / generator.PRODUCTION['host']).read_text()
+        self.host, applied = generator.project_reviewed_transport_observation(self.current)
+        self.assertTrue(applied)
+
+    def test_observation_projection_reconstructs_exact_frozen_truth_source(self):
+        raw = (HERE / 'reviewed-transport-observation-host-delta.json').read_bytes()
+        receipt = json.loads(raw)
+        self.assertEqual(generator.digest(self.host.encode()), receipt['before_sha256'])
+        rebuilt = self.host
+        for hunk in receipt['hunks']:
+            self.assertEqual(rebuilt.count(hunk['before']), 1)
+            rebuilt = rebuilt.replace(hunk['before'], hunk['after'], 1)
+        self.assertEqual(rebuilt, self.current)
+        proof = generator.verify_host_preservation(self.current)
+        self.assertEqual(proof['reviewed_transport_observation_delta_sha256'], generator.digest(raw))
+        self.assertTrue(proof['host_pipeline_except_reviewed_refresh_truth_cold_vpn_and_reuse_main_byte_identical'])
+
+    def test_observation_changed_missing_duplicate_and_unrelated_source_rejected(self):
+        receipt = json.loads((HERE / 'reviewed-transport-observation-host-delta.json').read_bytes())
+        for changed in (
+            self.current.replace('nativeReady: true', 'nativeReady: false', 1),
+            self.current.replace('configurationUnchanged: transportObservationConfiguration == .capture()', 'configurationUnchanged: true', 1),
+            self.current.replace('V3TransportObservationConfiguration', 'OtherConfiguration'),
+            self.current.replace(receipt['hunks'][0]['after'], '', 1),
+            self.current + receipt['hunks'][0]['after'],
+            self.current + '\n// unrelated change\n',
+        ):
+            with self.subTest(changed=changed[-40:]):
+                with self.assertRaises(AssertionError): generator.verify_host_preservation(changed)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            raw = (HERE / 'reviewed-transport-observation-host-delta.json').read_bytes()
+            (root / 'reviewed-transport-observation-host-delta.json').write_bytes(raw + b' ')
+            with patch.object(generator, 'HERE', root):
+                with self.assertRaisesRegex(AssertionError, 'Reviewed transport-observation delta changed'):
+                    generator.verify_host_preservation(self.current)
 
     def test_current_exact_guard_and_original_host_are_distinguished(self):
         proof = generator.verify_host_preservation(self.host)
@@ -43,6 +78,7 @@ class HostPreservationTests(unittest.TestCase):
             root = Path(tmp).resolve()
             (root / 'reviewed-cold-vpn-host-delta.json').write_bytes(raw + b' ')
             (root / 'reviewed-refresh-truth-host-delta.json').write_bytes((HERE / 'reviewed-refresh-truth-host-delta.json').read_bytes())
+            (root / 'reviewed-transport-observation-host-delta.json').write_bytes((HERE / 'reviewed-transport-observation-host-delta.json').read_bytes())
             with patch.object(generator, 'HERE', root):
                 with self.assertRaisesRegex(AssertionError, 'Reviewed cold-VPN delta changed'):
                     generator.verify_host_preservation(self.host)
@@ -66,6 +102,7 @@ class HostPreservationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             (root / 'reviewed-refresh-truth-host-delta.json').write_bytes(raw + b' ')
+            (root / 'reviewed-transport-observation-host-delta.json').write_bytes((HERE / 'reviewed-transport-observation-host-delta.json').read_bytes())
             with patch.object(generator, 'HERE', root):
                 with self.assertRaisesRegex(AssertionError, 'Reviewed refresh-truth delta changed'):
                     generator.verify_host_preservation(self.host)
