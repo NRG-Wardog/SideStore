@@ -1,7 +1,13 @@
 #!/bin/bash
 set -euo pipefail
-if [[ $# != 2 || "$1" != "--openssl-root" ]]; then
-  echo "usage: run_public.sh --openssl-root <same-run OpenSSL 3.5.9 install>" >&2; exit 2
+if [[ $# != 4 || "$1" != "--openssl-root" || "$3" != "--python" ]]; then
+  echo "usage: run_public.sh --openssl-root <same-run OpenSSL 3.5.9 install> --python <absolute harness interpreter>" >&2; exit 2
+fi
+# Use the same harness interpreter as the C lane, never PATH-selected Python.
+# Preserve the invocation path (including a valid executable symlink).
+python="$4"
+if [[ "$python" != /* || ! -f "$python" || ! -x "$python" ]]; then
+  echo "invalid bound harness interpreter" >&2; exit 2
 fi
 openssl_root=$(cd "$2" && pwd -P)
 cd "$(dirname "$0")/../.."
@@ -36,9 +42,9 @@ swiftc "$mini/Sources/ProfileCMSVerifier.swift" \
   SideStore/Core/Operations/PipelineOperations/PreservedProfileDecoder.swift "$work/main.swift" \
   -I "$work" -I "$work/module" -L "$work" -lLibimobiledeviceGateway \
   -Xlinker -rpath -Xlinker "$work" -o "$work/public"
-python3 -B tests/preservation_der/fetch_public_fixtures.py --output "$work/public-inputs" >/dev/null
+"$python" -B tests/preservation_der/fetch_public_fixtures.py --output "$work/public-inputs" >/dev/null
 "$work/public" "$work/public-inputs" | tee "$work/result.json"
-python3 - "$work/result.json" <<'PY'
+"$python" - "$work/result.json" <<'PY'
 import json,pathlib,sys
 suffixes=['outer-role-authenticated','inner-pinned-role-authenticated','complete-authority-bound','outer-tamper-rejected','inner-tamper-rejected','inner-cannot-be-outer-role','outer-cannot-be-inner-role']
 expected=[f'public-{i}-{s}' for i in range(2) for s in suffixes]+[f'public-{i}-cross-profile-binding-rejected' for i in range(2)]

@@ -23,7 +23,7 @@ Primary schema reference:
 https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles
 The format is changeable; this deliberately supports a strict bounded subset.
 
-`run_public.sh --openssl-root <same-run OpenSSL 3.5.9 install>` compiles the
+`run_public.sh --openssl-root <same-run OpenSSL 3.5.9 install> --python <absolute harness interpreter>` compiles the
 actual C verifier, actual gateway Swift module, actual public Minimuxer facade
 and this decoder. It checks compile-header and linked-library versions, uses no
 synthetic-anchor define and validates a 16-case structured result. Public cases
@@ -45,3 +45,5 @@ Regressions retain the observed negative and cover unused padding bits, excess/
 missing/interior padding, trailing garbage, truncation and valid 0/1/2 padding.
 Canonical standard alphabet and zero-pad-bit reference:
 https://www.rfc-editor.org/rfc/rfc4648.html#section-3.5
+
+The required `--python` is the same existing `sys.executable` used by the harness and C test lane, including a valid invocation symlink. Both public-fixture acquisition and final JSON validation use that path; there is no PATH-based Python fallback. This preserves interpreter continuity, not a separate cryptographic Python-version pin or a new installation.
