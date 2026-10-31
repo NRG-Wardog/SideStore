@@ -4,18 +4,28 @@ import Foundation
 var cases: [String] = []
 var outerContents: [Data] = []
 var innerContents: [Data] = []
+let caseSuffixes = ["outer-role-authenticated", "inner-pinned-role-authenticated", "complete-authority-bound", "outer-tamper-rejected", "inner-tamper-rejected", "inner-cannot-be-outer-role", "outer-cannot-be-inner-role", "cross-profile-binding-rejected"]
+let allowedCaseNames = Set((0..<2).flatMap { index in caseSuffixes.map { "public-\(index)-\($0)" } })
+func beginCase(_ name: String) {
+    precondition(allowedCaseNames.contains(name))
+    FileHandle.standardError.write(Data(("V3_PUBLIC_CASE_BEGIN " + name + "\n").utf8))
+}
 func rejected(_ name: String, _ operation: () throws -> Void) {
+    beginCase(name)
     do { try operation(); fatalError("unexpected acceptance: \(name)") }
     catch { cases.append(name) }
 }
 for index in 0..<2 {
+    beginCase("public-\(index)-outer-role-authenticated")
     let cms = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]).appendingPathComponent("profile-\(index).cms"))
     let outer = try ProfileCMSVerifier.authenticateOuter(cms)
     cases.append("public-\(index)-outer-role-authenticated")
+    beginCase("public-\(index)-inner-pinned-role-authenticated")
     let dictionary = try PreservedProfileDecoder.decodeOuter(verifiedOuterXML: outer)
     guard let nested = dictionary["DER-Encoded-Profile"] as? Data, !nested.isEmpty else { fatalError("public fixture schema") }
     let inner = try ProfileCMSVerifier.authenticateInner(nested)
     cases.append("public-\(index)-inner-pinned-role-authenticated")
+    beginCase("public-\(index)-complete-authority-bound")
     let result = try PreservedProfileDecoder.decode(verifiedOuterXML: outer, verifiedInnerDER: inner)
     precondition(result.rawInner == inner && !result.normalizedInnerAuthority.isEmpty)
     cases.append("public-\(index)-complete-authority-bound")
