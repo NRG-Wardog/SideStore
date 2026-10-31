@@ -1,4 +1,4 @@
-import base64,json,pathlib,unittest
+import base64,json,pathlib,unittest,importlib.util,re
 HERE=pathlib.Path(__file__).resolve().parent
 ROOT=HERE.parents[1]
 class Contract(unittest.TestCase):
@@ -16,6 +16,23 @@ class Contract(unittest.TestCase):
   self.assertIn('cat SideStore/Core/Operations/PipelineOperations/PreservedProfileDecoder.swift tests/preservation_der/SwiftCases.swift',s)
   self.assertIn('swiftc "$work/main.swift"',s)
   self.assertIn("r['cms_verified'] is False",s)
+  self.assertIn('primary_status=$?',s)
+  self.assertIn('exit "$primary_status"',s)
+  self.assertLess(s.index('exit "$primary_status"'),s.index("python3 - "))
+  spec=importlib.util.spec_from_file_location('failure_diagnostic',HERE/'generate_failure_diagnostic.py')
+  module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+  source=(ROOT/'SideStore/Core/Operations/PipelineOperations/PreservedProfileDecoder.swift').read_text()
+  generated=module.instrument(source)
+  restored=generated.split('\n',1)[1].split('\n#sourceLocation()\n',1)[0]
+  restored=restored.replace('_ condition: Bool, sourceLine: Int = #line)', '_ condition: Bool)')
+  restored=restored.replace('_ parser: XMLParser, sourceLine: Int = #line)', '_ parser: XMLParser)')
+  restored=restored.replace('diagnosticLog("callback line=\\(sourceLine)"); ', '')
+  restored=re.sub(r'throw diagnosticFailure\(\.(malformed|unsupported|inconsistent), line: (sourceLine|[0-9]+)\)',r'throw Failure.\1',restored)
+  self.assertEqual(restored,source.rstrip('\n'))
+  self.assertIn('guard count < 12 else { return }',module.HELPERS)
+  self.assertIn('return reason',module.HELPERS)
+  self.assertNotIn('localizedDescription',module.MAIN)
+
  def test_strict_boundaries_remain(self):
   s=(ROOT/'SideStore/Core/Operations/PipelineOperations/PreservedProfileDecoder.swift').read_text()
   for t in ['static func decodeOuter(verifiedOuterXML:', 'parser.externalEntityResolvingPolicy = .never', 'rawInner: verifiedInnerDER', 'Set<String> = ["UUID","CreationDate","ExpirationDate"]', 'pair.raw', 'a.utf8.elementsEqual(b.utf8)', 'CFBooleanGetTypeID()']:

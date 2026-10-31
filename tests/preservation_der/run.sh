@@ -6,7 +6,18 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cat SideStore/Core/Operations/PipelineOperations/PreservedProfileDecoder.swift tests/preservation_der/SwiftCases.swift > "$work/main.swift"
 swiftc "$work/main.swift" -o "$work/parser"
-"$work/parser" tests/preservation_der/swift-cases.json | tee "$work/parser.json"
+if "$work/parser" tests/preservation_der/swift-cases.json | tee "$work/parser.json"; then
+  : # Only the original exact-source executable can reach receipt validation below.
+else
+  primary_status=$?
+  # Diagnostic execution cannot convert the primary failure into success.
+  # Only fixed synthetic baseline bytes are used; no public or user profiles.
+  if python3 -B tests/preservation_der/generate_failure_diagnostic.py --output "$work/diagnostic" &&
+     swiftc "$work/diagnostic/main.swift" -o "$work/diagnostic/probe"; then
+    "$work/diagnostic/probe" "$work/diagnostic/baseline.json" || true
+  fi
+  exit "$primary_status"
+fi
 python3 - "$work/parser.json" <<'PY'
 import json,pathlib,sys
 expected=json.loads(pathlib.Path('tests/preservation_der/swift-cases.json').read_text())
