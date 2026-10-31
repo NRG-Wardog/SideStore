@@ -265,16 +265,16 @@ func runFixture() async throws -> [String] {
             try require(!context.validatedReuseMain && context.acknowledgedReuseMainIdentity == nil, "V1 is not live proof")
         }
     }
-    let identity = V3ValidatedReuseMainRegistry.AcknowledgedIdentity(original: ordinaryID,
+    let acknowledgedIdentity = V3ValidatedReuseMainRegistry.AcknowledgedIdentity(original: ordinaryID,
         resigned: ordinary.resignedBundleIdentifier, sourceFingerprint: ordinary.appBundleFingerprint!,
         sourceDigest: AppBundleFingerprint.compute(for: ordinaryURL)!, profileUUID: UUID(), generation: generation,
         teamID: "TEAM", certificateDER: Data([1, 2]), extensionIdentities: [:], reusedExtensionIdentifiers: [])
-    V3ValidatedReuseMainRegistry.didAcknowledgeInstall(identity, original: ordinaryID,
+    V3ValidatedReuseMainRegistry.didAcknowledgeInstall(acknowledgedIdentity, original: ordinaryID,
         resigned: ordinary.resignedBundleIdentifier)
     try await record("integration_ack_history_recovered_from_nonce_free_source") {
         try require(ordinaryBundle.infoPlist[V3ValidatedReuseMainRegistry.generationKey] == nil, "Original source has no signed nonce")
         try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
-            try require(context.acknowledgedReuseMainIdentity == identity, "Consumer reads acknowledged output history")
+            try require(context.acknowledgedReuseMainIdentity == acknowledgedIdentity, "Consumer reads acknowledged output history")
             try require(!context.validatedReuseMain, "History is not live installed-state proof")
         }
     }

@@ -15508,7 +15508,7 @@ public struct CombinedFailure: Error, LocalizedError {
         let preparationScope = normalized == "refresh" && stage == .signing && code == .failed && sourceStep == .provisioningProfileFetch
         let local = context["local_precondition"] ?? ""
         if !(selectionScope && Self.refreshSelectionPreconditions.contains(local)) &&
-            !(preparationScope && ["missingTargetAppBundle", "unknownTeamType", "unresolvedAppGroupPlaceholder", "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"].contains(local)) {
+            !(preparationScope && (["missingTargetAppBundle", "unknownTeamType", "unresolvedAppGroupPlaceholder", "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"].contains(local) || Self.preservationRefreshPreconditions.contains(local))) {
             context.removeValue(forKey: "local_precondition")
         }
         if !selectionScope || context["local_precondition"] == nil { context.removeValue(forKey: "refresh_target_scope") }
@@ -15814,12 +15814,12 @@ public struct CombinedFailure: Error, LocalizedError {
         }
     }
     private var refreshSelectionPrecondition: String? {
-        guard operation == "refresh", stage == .command, code == .failed,
+        guard operation == "refresh", code == .failed,
               signingContext["refresh_failure_kind"] == "invalidParameters",
               let token = signingContext["local_precondition"],
               Self.refreshSelectionPreconditions.contains(token),
-              sourceStep == .refreshApplication ||
-                (sourceStep == .provisioningProfileFetch && Self.preservationRefreshPreconditions.contains(token)) else { return nil }
+              (stage == .command && sourceStep == .refreshApplication) ||
+                (stage == .signing && sourceStep == .provisioningProfileFetch && Self.preservationRefreshPreconditions.contains(token)) else { return nil }
         return token
     }
     private var localRefreshMessage: String? {
