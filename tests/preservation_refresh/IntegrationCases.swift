@@ -212,7 +212,8 @@
    precondition(c.installedApp!.expirationDate==oldMain && c.installedApp!.appExtensions[0].expirationDate==oldExtension)
    passed.append(label)
   }
-  precondition(passed.count==22)
+  passed += try await AuthenticatedAdapterCases.run(now:now,makeContext:{ setup() },execute:run)
+  precondition(passed.count==38)
   print(String(data:try JSONSerialization.data(withJSONObject:["schema":"preservation-refresh-integration-v1","status":"PASS","cases":passed,"device_executed":false],options:[.sortedKeys]),encoding:.utf8)!)
  }
 }

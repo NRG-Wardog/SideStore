@@ -131,3 +131,30 @@ var fixturePayloads: [Data: [String: Any]] = [:]
 extension ALTProvisioningProfile {
  func propertyList() -> [String: Any] { fixturePayloads[data] ?? [:] }
 }
+
+// Inert CMS boundary only; the full production DER/XML decoder is extracted.
+// Raw-only fixtures have no admitted values and therefore fail closed if a new
+// semantic path is accidentally taken. No trust policy is simulated as proven.
+enum ProfileCMSVerificationError: Error { case unsupportedSigner, signerTimeInvalid, verificationFailed, unsupportedRepresentation }
+enum FixtureCMSBoundary {
+ static var outer: [Data: Data] = [:]
+ static var inner: [Data: Data] = [:]
+ static var calls = 0
+ static var failure: ProfileCMSVerificationError?
+ static var duringCall: (() -> Void)?
+ static func reset() { outer=[:];inner=[:];calls=0;failure=nil;duringCall=nil }
+}
+enum ProfileCMSVerifier {
+ static func authenticateOuter(_ data: Data) throws -> Data {
+  FixtureCMSBoundary.calls += 1;FixtureCMSBoundary.duringCall?()
+  if let error=FixtureCMSBoundary.failure { throw error }
+  guard let result=FixtureCMSBoundary.outer[data] else { throw ProfileCMSVerificationError.unsupportedSigner }
+  return result
+ }
+ static func authenticateInner(_ data: Data) throws -> Data {
+  FixtureCMSBoundary.calls += 1;FixtureCMSBoundary.duringCall?()
+  if let error=FixtureCMSBoundary.failure { throw error }
+  guard let result=FixtureCMSBoundary.inner[data] else { throw ProfileCMSVerificationError.unsupportedSigner }
+  return result
+ }
+}

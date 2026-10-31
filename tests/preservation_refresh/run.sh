@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+python3 -B tests/preservation_refresh/test_contract.py -v
 python3 tests/preservation_refresh/generate_fixture.py --output "$work"
 swiftc "$work/Policy.swift" "$work/main.swift" -o "$work/policy"
 "$work/policy" | tee "$work/policy.log"

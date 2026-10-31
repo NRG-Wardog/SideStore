@@ -9,6 +9,7 @@
 import Foundation
 import CoreData
 import SideSign
+import Minimuxer
 
 // Fixed local observations only. No profile, certificate, bundle ID or provider text.
 struct V3RefreshSelectionFailure: Error, Sendable {
@@ -37,7 +38,9 @@ struct V3RefreshSelectionFailure: Error, Sendable {
            let detail = preservationConflict,
            ["multipleIdentities", "alternateIdentity", "teamMismatch", "prefixMismatch", "signerMissing",
             "entitlementsDiffer", "certificatesDiffer", "devicesDiffer", "platformsDiffer",
-            "embeddedDERDiffer", "displayMetadataDiffer", "otherAuthorityDiffer"].contains(detail) {
+            "embeddedDERDiffer", "displayMetadataDiffer", "otherAuthorityDiffer",
+            "embeddedDERUnsupportedSigner", "embeddedDERSignerTimeInvalid", "embeddedDERVerificationFailed",
+            "embeddedDERUnsupportedRepresentation", "embeddedDERBindingMismatch"].contains(detail) {
             result["preservation_conflict"] = detail
         }
         return result
@@ -165,16 +168,10 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         }
         try refreshAdmission?()
         do {
-            let fresh = try PreservedProfilePolicy.snapshot(binding: state.baseline.binding,
-                installed: V3PreservationRefreshState.payloads(bytes), now: verificationNow())
-            guard fresh.hasSameTarget(as: state.baseline) else {
-                throw selectionFailure(.preservationSnapshotChanged)
-            }
-            let candidate = try ALTProvisioningProfile(data: state.candidateData)
-            _ = try PreservedProfilePolicy.validate(candidate: candidate.propertyList().mapValues { $0 as Any },
-                baseline: fresh, now: verificationNow())
+            try state.validateFresh(bytes, now: verificationNow(), admission: refreshAdmission)
             return try bytes.map { try ALTProvisioningProfile(data: $0) }
         } catch let failure as V3RefreshSelectionFailure { throw failure }
+        catch is CancellationError { throw CancellationError() }
         catch { throw V3PreservationRefreshState.map(error) }
     }
 
@@ -477,13 +474,27 @@ enum PreservedProfilePolicy {
         case multipleIdentities, alternateIdentity, teamMismatch, prefixMismatch, signerMissing
         case entitlementsDiffer, certificatesDiffer, devicesDiffer, platformsDiffer
         case embeddedDERDiffer, displayMetadataDiffer, otherAuthorityDiffer
+        case embeddedDERUnsupportedSigner, embeddedDERSignerTimeInvalid, embeddedDERVerificationFailed
+        case embeddedDERUnsupportedRepresentation, embeddedDERBindingMismatch
         var preservationConflict: String? {
             switch self {
             case .multipleIdentities, .alternateIdentity, .teamMismatch, .prefixMismatch, .signerMissing,
                  .entitlementsDiffer, .certificatesDiffer, .devicesDiffer, .platformsDiffer,
-                 .embeddedDERDiffer, .displayMetadataDiffer, .otherAuthorityDiffer: return rawValue
+                 .embeddedDERDiffer, .displayMetadataDiffer, .otherAuthorityDiffer,
+                 .embeddedDERUnsupportedSigner, .embeddedDERSignerTimeInvalid, .embeddedDERVerificationFailed,
+                 .embeddedDERUnsupportedRepresentation, .embeddedDERBindingMismatch: return rawValue
             default: return nil
             }
+        }
+    }
+    // Projection can only be constructed by the authenticated adapter in this
+    // source file, never by a marker inside an untrusted plist dictionary.
+    struct ProfileInput {
+        let raw: [String: Any]
+        fileprivate let normalizedInnerAuthority: [String: Data]?
+        init(raw: [String: Any]) { self.raw = raw; normalizedInnerAuthority = nil }
+        fileprivate init(raw: [String: Any], authenticatedInner: [String: Data]) {
+            self.raw = raw; normalizedInnerAuthority = authenticatedInner
         }
     }
     struct Binding: Equatable, Sendable {
@@ -557,7 +568,9 @@ enum PreservedProfilePolicy {
             }
             return String(applicationID.dropFirst(prefix.count + 1)) == bundleID
         }
-        init(_ raw: [String: Any]) throws {
+        init(_ raw: [String: Any]) throws { try self.init(ProfileInput(raw: raw)) }
+        init(_ input: ProfileInput) throws {
+            let raw = input.raw
             guard let id = raw["UUID"] as? String, let parsed = UUID(uuidString: id),
                   let entitlements = raw["Entitlements"] as? [String: Any],
                   let appID = entitlements["application-identifier"] as? String, !appID.isEmpty,
@@ -582,14 +595,26 @@ enum PreservedProfilePolicy {
             for key in ["UUID", "CreationDate", "ExpirationDate", "TimeToLive"] {
                 authorization.removeValue(forKey: key)
             }
-            authority = try Value(authorization)
+            var compared = try authorization.mapValues { try Value($0) }
+            if let inner = input.normalizedInnerAuthority {
+                guard raw["DER-Encoded-Profile"] is Data else { throw Failure.embeddedDERUnsupportedRepresentation }
+                compared["DER-Encoded-Profile"] = .dictionary(inner.mapValues { .data($0) })
+            }
+            authority = .dictionary(compared)
         }
     }
     static func selectSnapshot(resignedBundleID: String, teamID: String,
                                historicalSignerDER: Data, certificateExpiration: Date,
                                useMainProfile: Bool, installed: [[String: Any]], now: Date) throws -> Evidence {
+        try selectSnapshot(resignedBundleID: resignedBundleID, teamID: teamID,
+            historicalSignerDER: historicalSignerDER, certificateExpiration: certificateExpiration,
+            useMainProfile: useMainProfile, inputs: installed.map { ProfileInput(raw: $0) }, now: now)
+    }
+    static func selectSnapshot(resignedBundleID: String, teamID: String,
+                               historicalSignerDER: Data, certificateExpiration: Date,
+                               useMainProfile: Bool, inputs: [ProfileInput], now: Date) throws -> Evidence {
         guard !resignedBundleID.isEmpty else { throw Failure.missingHistoricalBinding }
-        let parsed = try installed.map { try Profile($0) }
+        let parsed = try inputs.map { try Profile($0) }
         let identities = Set(parsed.filter {
             $0.targetsBundle(resignedBundleID)
         }.map(\.applicationID))
@@ -599,16 +624,19 @@ enum PreservedProfilePolicy {
         }
         return try snapshot(binding: Binding(resignedBundleID: resignedBundleID,
             applicationIdentifier: identity, teamID: teamID, historicalSignerDER: historicalSignerDER,
-            certificateExpiration: certificateExpiration, useMainProfile: useMainProfile), installed: installed, now: now)
+            certificateExpiration: certificateExpiration, useMainProfile: useMainProfile), inputs: inputs, now: now)
     }
     static func snapshot(binding: Binding, installed: [[String: Any]], now: Date) throws -> Evidence {
+        try snapshot(binding: binding, inputs: installed.map { ProfileInput(raw: $0) }, now: now)
+    }
+    static func snapshot(binding: Binding, inputs: [ProfileInput], now: Date) throws -> Evidence {
         guard binding.useMainProfile, !binding.resignedBundleID.isEmpty,
               !binding.teamID.isEmpty, !binding.historicalSignerDER.isEmpty,
               binding.applicationIdentifier.hasSuffix("." + binding.resignedBundleID),
               binding.applicationIdentifier.count > binding.resignedBundleID.count + 1,
               !binding.applicationIdentifier.contains("*") else { throw Failure.missingHistoricalBinding }
         guard binding.certificateExpiration > now else { throw Failure.expiredCertificate }
-        let all = try installed.map { try Profile($0) }
+        let all = try inputs.map { try Profile($0) }
         var byUUID: [String: Value] = [:]
         for profile in all {
             if let previous = byUUID[profile.uuid], previous != profile.complete {
@@ -658,9 +686,12 @@ enum PreservedProfilePolicy {
             authority: first.authority, installedPayloadsByUUID: byUUID)
     }
     static func validate(candidate: [String: Any], baseline: Evidence, now: Date) throws -> Decision {
+        try validate(input: ProfileInput(raw: candidate), baseline: baseline, now: now)
+    }
+    static func validate(input: ProfileInput, baseline: Evidence, now: Date) throws -> Decision {
         let binding = baseline.binding
         guard binding.certificateExpiration > now else { throw Failure.expiredCertificate }
-        let new = try Profile(candidate)
+        let new = try Profile(input)
         if let sameUUID = baseline.installedPayloadsByUUID[new.uuid], sameUUID != new.complete {
             // Do not intentionally overwrite an existing UUID with changed payload semantics.
             throw Failure.duplicateUUIDConflict
@@ -675,6 +706,36 @@ enum PreservedProfilePolicy {
         return Decision(priorUUIDs: baseline.priorUUIDs,
                         priorEffectiveExpiration: prior, newEffectiveExpiration: next)
     }
+    static func hasOnlyEmbeddedDERDifference(candidate: [String: Any], baseline: Evidence) throws -> Bool {
+        let profile = try Profile(candidate)
+        guard case let .dictionary(oldAuthority) = baseline.authority,
+              case let .dictionary(newAuthority) = profile.authority,
+              case let .data(oldDER)? = oldAuthority["DER-Encoded-Profile"],
+              case let .data(newDER)? = newAuthority["DER-Encoded-Profile"],
+              !oldDER.isEmpty, !newDER.isEmpty, oldDER != newDER else { return false }
+        var old = oldAuthority, new = newAuthority
+        old.removeValue(forKey: "DER-Encoded-Profile")
+        new.removeValue(forKey: "DER-Encoded-Profile")
+        return old == new
+    }
+    static func targetIndices(resignedBundleID: String, installed: [[String: Any]]) throws -> [Int] {
+        let parsed = try installed.map { try Profile($0) }
+        return parsed.indices.filter { parsed[$0].targetsBundle(resignedBundleID) }
+    }
+    // Raw target drift must be checked even when raw authority equality would
+    // reject different embedded CMS signatures. No semantic-mode upgrade here.
+    static func sameRawTarget(baseline: Evidence, installed: [[String: Any]]) throws -> Bool {
+        let all = try installed.map { try Profile($0) }
+        var complete: [String: Value] = [:]
+        for profile in all {
+            if let prior = complete[profile.uuid], prior != profile.complete { throw Failure.duplicateUUIDConflict }
+            complete[profile.uuid] = profile.complete
+        }
+        let target = all.filter { $0.targetsBundle(baseline.binding.resignedBundleID) }
+        guard target.allSatisfy({ $0.applicationID == baseline.binding.applicationIdentifier }),
+              Array(Set(target.map(\.uuid))).sorted() == baseline.priorUUIDs else { return false }
+        return baseline.priorUUIDs.allSatisfy { complete[$0] == baseline.installedPayloadsByUUID[$0] }
+    }
     static func evaluate(binding: Binding, installed: [[String: Any]],
                          candidate: [String: Any], now: Date) throws -> Decision {
         try validate(candidate: candidate, baseline: snapshot(binding: binding, installed: installed, now: now), now: now)
@@ -685,6 +746,161 @@ enum PreservedProfilePolicy {
 struct V3PreservationRefreshState: Sendable {
     let baseline: PreservedProfilePolicy.Evidence
     let candidateData: Data
+    let originalInventory: [Data]
+    let usesAuthenticatedDER: Bool
+
+    struct Prepared: Sendable {
+        let baseline: PreservedProfilePolicy.Evidence
+        let originalInventory: [Data]
+        let usesAuthenticatedDER: Bool
+    }
+
+    static func prepare(resignedBundleID: String, teamID: String, signerDER: Data,
+                        certificateExpiration: Date, inventory: [Data], now: Date,
+                        admission: (() throws -> Void)?) throws -> Prepared {
+        let raw = try payloads(inventory)
+        do {
+            let baseline = try PreservedProfilePolicy.selectSnapshot(resignedBundleID: resignedBundleID,
+                teamID: teamID, historicalSignerDER: signerDER, certificateExpiration: certificateExpiration,
+                useMainProfile: true, installed: raw, now: now)
+            return Prepared(baseline: baseline, originalInventory: inventory, usesAuthenticatedDER: false)
+        } catch PreservedProfilePolicy.Failure.embeddedDERDiffer {
+            let started = ProcessInfo.processInfo.systemUptime
+            let inputs = try authenticatedTargetInputs(inventory: inventory, raw: raw,
+                resignedBundleID: resignedBundleID, admission: admission, started: started)
+            let baseline = try PreservedProfilePolicy.selectSnapshot(resignedBundleID: resignedBundleID,
+                teamID: teamID, historicalSignerDER: signerDER, certificateExpiration: certificateExpiration,
+                useMainProfile: true, inputs: inputs, now: now)
+            try checkWork(admission, started: started)
+            return Prepared(baseline: baseline, originalInventory: inventory, usesAuthenticatedDER: true)
+        }
+    }
+
+    static func finish(prepared: Prepared, candidateData: Data, now: Date,
+                       admission: (() throws -> Void)?) throws -> Self {
+        let started = ProcessInfo.processInfo.systemUptime
+        var effective = prepared
+        if !prepared.usesAuthenticatedDER {
+            do {
+                _ = try PreservedProfilePolicy.validate(candidate: payloads([candidateData])[0],
+                    baseline: prepared.baseline, now: now)
+                return Self(baseline: prepared.baseline, candidateData: candidateData,
+                    originalInventory: prepared.originalInventory, usesAuthenticatedDER: false)
+            } catch PreservedProfilePolicy.Failure.changedAuthorization {
+                guard try PreservedProfilePolicy.hasOnlyEmbeddedDERDifference(
+                    candidate: payloads([candidateData])[0], baseline: prepared.baseline) else {
+                    throw PreservedProfilePolicy.Failure.changedAuthorization
+                }
+                // Only this previously rejected comparison can request the
+                // stronger alternative. Every original target participates.
+                let inputs = try authenticatedTargetInputs(inventory: prepared.originalInventory,
+                    raw: payloads(prepared.originalInventory),
+                    resignedBundleID: prepared.baseline.binding.resignedBundleID, admission: admission, started: started)
+                let baseline = try PreservedProfilePolicy.snapshot(binding: prepared.baseline.binding,
+                    inputs: inputs, now: now)
+                effective = Prepared(baseline: baseline, originalInventory: prepared.originalInventory,
+                    usesAuthenticatedDER: true)
+            }
+        }
+        try checkWork(admission, started: started)
+        let candidate = try authenticatedInput(candidateData)
+        try checkWork(admission, started: started)
+        _ = try PreservedProfilePolicy.validate(input: candidate, baseline: effective.baseline, now: now)
+        try checkWork(admission, started: started)
+        return Self(baseline: effective.baseline, candidateData: candidateData,
+            originalInventory: effective.originalInventory, usesAuthenticatedDER: true)
+    }
+
+    func validateFresh(_ inventory: [Data], now: Date, admission: (() throws -> Void)?) throws {
+        let started = ProcessInfo.processInfo.systemUptime
+        let raw = try Self.payloads(inventory)
+        let fresh: PreservedProfilePolicy.Evidence
+        if usesAuthenticatedDER {
+            // Never repair raw target drift by upgrading semantic comparison.
+            guard try PreservedProfilePolicy.sameRawTarget(baseline: baseline, installed: raw) else {
+                throw Self.failure(.preservationSnapshotChanged)
+            }
+            let inputs = try Self.authenticatedTargetInputs(inventory: inventory, raw: raw,
+                resignedBundleID: baseline.binding.resignedBundleID, admission: admission, started: started)
+            fresh = try PreservedProfilePolicy.snapshot(binding: baseline.binding, inputs: inputs, now: now)
+        } else {
+            fresh = try PreservedProfilePolicy.snapshot(binding: baseline.binding, installed: raw, now: now)
+        }
+        guard fresh.hasSameTarget(as: baseline) else { throw Self.failure(.preservationSnapshotChanged) }
+        if usesAuthenticatedDER {
+            try Self.checkWork(admission, started: started)
+            let candidate = try Self.authenticatedInput(candidateData)
+            try Self.checkWork(admission, started: started)
+            _ = try PreservedProfilePolicy.validate(input: candidate, baseline: fresh, now: now)
+            try Self.checkWork(admission, started: started)
+        } else {
+            _ = try PreservedProfilePolicy.validate(candidate: Self.payloads([candidateData])[0], baseline: fresh, now: now)
+        }
+    }
+
+    private static func checkWork(_ admission: (() throws -> Void)?, started: TimeInterval) throws {
+        try Task.checkCancellation()
+        try admission?()
+        guard ProcessInfo.processInfo.systemUptime - started <= 20 else {
+            throw failure(.preservationEvidenceUnavailable)
+        }
+    }
+    private static func authenticatedTargetInputs(inventory: [Data], raw: [[String: Any]],
+        resignedBundleID: String, admission: (() throws -> Void)?, started: TimeInterval) throws -> [PreservedProfilePolicy.ProfileInput] {
+        // A semantic alternative has an explicit bounded budget; raw-equal
+        // legacy admission above is unchanged. Never truncate the inventory.
+        guard inventory.count == raw.count, inventory.count <= 512 else { throw failure(.preservationEvidenceUnavailable) }
+        var total = 0
+        for bytes in inventory {
+            let (next, overflow) = total.addingReportingOverflow(bytes.count)
+            guard !overflow, !bytes.isEmpty, bytes.count <= 1_048_576, next <= 32 * 1024 * 1024 else { throw failure(.preservationEvidenceUnavailable) }
+            total = next
+        }
+        var inputs = raw.map { PreservedProfilePolicy.ProfileInput(raw: $0) }
+        let indices = try PreservedProfilePolicy.targetIndices(resignedBundleID: resignedBundleID, installed: raw)
+        for index in indices {
+            try checkWork(admission, started: started)
+            let verified = try authenticatedInput(inventory[index])
+            // Authentication must decode exactly the same raw payload, never
+            // replace a scanner-selected identity with a different CMS content.
+            guard try PreservedProfilePolicy.Value(verified.raw) == PreservedProfilePolicy.Value(raw[index]) else {
+                throw PreservedProfilePolicy.Failure.embeddedDERBindingMismatch
+            }
+            inputs[index] = verified
+        }
+        try checkWork(admission, started: started)
+        return inputs
+    }
+    private static func authenticatedInput(_ bytes: Data) throws -> PreservedProfilePolicy.ProfileInput {
+        do {
+            let outerXML = try ProfileCMSVerifier.authenticateOuter(bytes)
+            let outer = try PreservedProfileDecoder.decodeOuter(verifiedOuterXML: outerXML)
+            guard let nestedCMS = outer["DER-Encoded-Profile"] as? Data, !nestedCMS.isEmpty else {
+                throw PreservedProfilePolicy.Failure.embeddedDERUnsupportedRepresentation
+            }
+            let innerDER = try ProfileCMSVerifier.authenticateInner(nestedCMS)
+            let decoded = try PreservedProfileDecoder.decode(verifiedOuterXML: outerXML, verifiedInnerDER: innerDER)
+            // Includes candidates: model/selection metadata must describe the
+            // exact authenticated payload, not a different scanner substring.
+            guard try PreservedProfilePolicy.Value(decoded.rawOuter) == PreservedProfilePolicy.Value(payloads([bytes])[0]) else {
+                throw PreservedProfilePolicy.Failure.embeddedDERBindingMismatch
+            }
+            return PreservedProfilePolicy.ProfileInput(raw: decoded.rawOuter,
+                authenticatedInner: decoded.normalizedInnerAuthority)
+        } catch let error as ProfileCMSVerificationError {
+            switch error {
+            case .unsupportedSigner: throw PreservedProfilePolicy.Failure.embeddedDERUnsupportedSigner
+            case .signerTimeInvalid: throw PreservedProfilePolicy.Failure.embeddedDERSignerTimeInvalid
+            case .verificationFailed: throw PreservedProfilePolicy.Failure.embeddedDERVerificationFailed
+            case .unsupportedRepresentation: throw PreservedProfilePolicy.Failure.embeddedDERUnsupportedRepresentation
+            }
+        } catch let error as PreservedProfileDecoder.Failure {
+            switch error {
+            case .inconsistent: throw PreservedProfilePolicy.Failure.embeddedDERBindingMismatch
+            case .malformed, .unsupported: throw PreservedProfilePolicy.Failure.embeddedDERUnsupportedRepresentation
+            }
+        }
+    }
 
     static func payloads(_ profiles: [Data]) throws -> [[String: Any]] {
         try profiles.map { data in
@@ -706,7 +922,9 @@ struct V3PreservationRefreshState: Sendable {
         case .conflictingInstalledAuthority, .multipleIdentities, .alternateIdentity,
              .teamMismatch, .prefixMismatch, .signerMissing, .entitlementsDiffer,
              .certificatesDiffer, .devicesDiffer, .platformsDiffer, .embeddedDERDiffer,
-             .displayMetadataDiffer, .otherAuthorityDiffer: reason = .preservationAuthorityConflict
+             .displayMetadataDiffer, .otherAuthorityDiffer,
+             .embeddedDERUnsupportedSigner, .embeddedDERSignerTimeInvalid, .embeddedDERVerificationFailed,
+             .embeddedDERUnsupportedRepresentation, .embeddedDERBindingMismatch: reason = .preservationAuthorityConflict
         case .duplicateUUIDConflict: reason = .preservationUUIDConflict
         case .changedAuthorization: reason = .preservationAuthorizationChanged
         case .expiredCertificate: reason = .preservationExpiredCertificate

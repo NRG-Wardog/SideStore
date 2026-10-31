@@ -78,6 +78,22 @@
     "conflict-detail-preflight-read-only-no-portal-no-install",
     "conflict-detail-finite-map-and-scope",
     "fresh-alternate-identity-detail-no-install",
-    "fresh-entitlements-detail-no-install"
+    "fresh-entitlements-detail-no-install",
+    "authenticated-candidate-der-equivalence-real-decoder",
+    "authenticated-initial-der-equivalence-real-decoder",
+    "non-der-authority-rejection-never-authenticates",
+    "authenticated-preflight-embeddedDERUnsupportedSigner",
+    "authenticated-preflight-embeddedDERSignerTimeInvalid",
+    "authenticated-preflight-embeddedDERVerificationFailed",
+    "authenticated-preflight-embeddedDERUnsupportedRepresentation",
+    "authenticated-hidden-inner-authority-rejected",
+    "authenticated-fresh-raw-drift-no-repair",
+    "authenticated-cancellation-before-portal-no-install",
+    "authenticated-count-boundary-512",
+    "authenticated-count-boundary-513",
+    "authenticated-byte-boundary-32mib",
+    "authenticated-byte-boundary-over32mib",
+    "authenticated-record-boundary-over1mib",
+    "raw-equal-admission-unchanged-by-semantic-budget"
   ]
 }

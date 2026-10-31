@@ -210,13 +210,14 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
                 throw V3PreservationRefreshState.failure(.preservationIdentityUnavailable)
             }
         }
-        let baseline: PreservedProfilePolicy.Evidence
+        let prepared: V3PreservationRefreshState.Prepared
         do {
-            baseline = try PreservedProfilePolicy.selectSnapshot(resignedBundleID: identity.resigned,
-                teamID: team.identifier, historicalSignerDER: certificate.data,
-                certificateExpiration: certificate.expiry, useMainProfile: true,
-                installed: try V3PreservationRefreshState.payloads(bytes), now: Date())
-        } catch { throw V3PreservationRefreshState.map(error) }
+            prepared = try V3PreservationRefreshState.prepare(resignedBundleID: identity.resigned,
+                teamID: team.identifier, signerDER: certificate.data,
+                certificateExpiration: certificate.expiry, inventory: bytes, now: Date(),
+                admission: context.profileMutationAdmission)
+        } catch is CancellationError { throw CancellationError() }
+        catch { throw V3PreservationRefreshState.map(error) }
 
         let candidate: ALTProvisioningProfile
         if let supplied = context.overrideProvisioningProfile {
@@ -236,10 +237,10 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         }
         try context.profileMutationAdmission?()
         do {
-            _ = try PreservedProfilePolicy.validate(candidate: candidate.propertyList().mapValues { $0 as Any },
-                baseline: baseline, now: Date())
-        } catch { throw V3PreservationRefreshState.map(error) }
-        context.preservationRefreshState = V3PreservationRefreshState(baseline: baseline, candidateData: candidate.data)
+            context.preservationRefreshState = try V3PreservationRefreshState.finish(prepared: prepared,
+                candidateData: candidate.data, now: Date(), admission: context.profileMutationAdmission)
+        } catch is CancellationError { throw CancellationError() }
+        catch { throw V3PreservationRefreshState.map(error) }
         self.setProgress(100)
         return [context.targetBundleIdentifier: candidate]
     }
