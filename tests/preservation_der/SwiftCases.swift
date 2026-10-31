@@ -11,7 +11,9 @@ for test in input.cases {
     guard let outer = Data(base64Encoded: test.outer), let inner = Data(base64Encoded: test.inner) else { fatalError("fixture encoding") }
     if test.name == "legacy-character-whitespace-reproduces-lf" {
         // Source-local reproduction of the original bug, before corrected decode.
-        precondition(Array(" \t\r\n") == [" ", "\t", "\r\n"])
+        let legacyWhitespaceCharacters: [Character] = Array(" \t\r\n")
+        let expectedLegacyCharacters: [Character] = [" ", "\t", "\r\n"]
+        precondition(legacyWhitespaceCharacters == expectedLegacyCharacters)
         let legacy = "\nQQ==\n".filter { !" \t\r\n".contains($0) }
         precondition(legacy == "\nQQ==\n" && Data(base64Encoded: legacy) == nil)
     }
