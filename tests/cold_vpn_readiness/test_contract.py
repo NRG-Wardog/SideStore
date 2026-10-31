@@ -15,9 +15,17 @@ def actual_injection_fragment(refresh):
     # The continuation consumes this value during post-install verification.
     baseline = refresh[refresh.index('        var before = await self.readProfilesWithoutMutation()'):
                        refresh.index('        self.setProgress(10)')]
-    injection = refresh.split('        do {\n            await CellularRefreshManager.shared.turnOffDataIfNeeded()', 1)[1]
-    injection = 'do {\n await CellularRefreshManager.shared.turnOffDataIfNeeded()' + injection.split('    private func validateFreshPreservationSnapshot(', 1)[0].rsplit('    }', 1)[0]
+    # Include the actual local dispatch state used by the typed pre-dispatch
+    # catch. Do not synthesize a value or strip the production guard.
+    injection = refresh[refresh.index('        var preservationMutationDispatched = false'):]
+    injection = injection.split('    private func validateFreshPreservationSnapshot(', 1)[0].rsplit('    }', 1)[0]
     return baseline + injection
+
+
+def actual_selection_failure(refresh):
+    # The catch and its finite facts use the production error type, not a stub.
+    return refresh[refresh.index('struct V3RefreshSelectionFailure:'):
+                   refresh.index('final class RefreshAppOperation:')]
 
 
 class ColdVPNReadinessTests(unittest.TestCase):
@@ -93,6 +101,24 @@ class ColdVPNReadinessTests(unittest.TestCase):
         self.assertIn('try checkReadinessOwnership()', native)
         self.assertNotIn('deadline', native)
 
+    def test_injection_source_closure_keeps_dispatch_state_and_real_failure_type(self):
+        refresh = (ROOT / 'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text()
+        fragment = actual_injection_fragment(refresh)
+        declaration = actual_selection_failure(refresh)
+        self.assertEqual(fragment.count('var preservationMutationDispatched = false'), 1)
+        self.assertLess(fragment.index('var preservationMutationDispatched = false'), fragment.index('turnOffDataIfNeeded()'))
+        self.assertLess(fragment.index('preservationMutationDispatched = true'), fragment.index('installProvisioningProfiles(p.value.data)'))
+        self.assertIn('catch let selection as V3RefreshSelectionFailure where context.isPreservationRefresh && !preservationMutationDispatched', fragment)
+        self.assertIn('await CellularRefreshManager.shared.turnOnDataIfNeeded()\n            throw selection', fragment)
+        self.assertIn('struct V3RefreshSelectionFailure: Error, Sendable', declaration)
+        self.assertIn('var facts: [String: String]', declaration)
+        self.assertIn('preservation_conflict', declaration)
+        self.assertEqual(refresh.count(declaration), 1)
+        self.assertIn(fragment[fragment.index('        var preservationMutationDispatched = false'):], refresh)
+        doubles = (ROOT / 'tests/cold_vpn_readiness/boundary_doubles.swift').read_text()
+        self.assertNotIn('struct V3RefreshSelectionFailure', doubles)
+        self.assertNotIn('preservationMutationDispatched', doubles)
+
     def test_native_production_wait_and_expiry(self):
         compiler = shutil.which('swiftc')
         if not compiler:
@@ -120,6 +146,7 @@ final class V3RefreshReadinessLifetime:''' + production
         native = 'let nativeResult =' + native
         refresh = (ROOT / 'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text()
         injection = actual_injection_fragment(refresh)
+        source += '\n' + actual_selection_failure(refresh)
         source += (ROOT / 'tests/cold_vpn_readiness/boundary_doubles.swift').read_text()
         source += '\nfunc extractedPhase(context: PhaseContext, downloadingApp: DownloadingApp, step: Int, appOperation: FakeOperation, refreshAdmission: (() throws -> Void)?) async throws {\n' + phase + '\n}\n'
         source += '\nfunc extractedNative(transportCore: NativeCore, checkReadinessOwnership: () throws -> Void) async throws {\nlet group = NativeObservationGroup(); let transportObservationConfiguration = V3TransportObservationConfiguration.capture()\n' + native + '\n}\n'
