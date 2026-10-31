@@ -32,7 +32,19 @@
     "certificate-change-retained",
     "duplicate-ce-key",
     "missing-inner-devices",
-    "absent-both-devices-retained"
+    "absent-both-devices-retained",
+    "xml-data-lf-accepted",
+    "xml-data-cr-accepted",
+    "xml-data-crlf-accepted",
+    "xml-data-tab-accepted",
+    "xml-data-space-accepted",
+    "xml-data-nbsp-rejected",
+    "xml-data-invalid-alphabet-rejected",
+    "xml-data-invalid-padding-rejected",
+    "legacy-character-whitespace-reproduces-lf",
+    "xml-data-vt-rejected",
+    "xml-data-ff-rejected",
+    "xml-data-line-separator-rejected"
   ],
   "public": [
     "public-0-outer-role-authenticated",

@@ -27,6 +27,6 @@ r=json.loads(lines[0])
 assert set(r)=={'schema','status','cases','cms_verified','device_executed'}
 assert r['schema']=='preservation-der-parser-v1' and r['status']=='PASS'
 assert r['cms_verified'] is False and r['device_executed'] is False
-assert r['cases']==[x['name'] for x in expected['cases']] and len(r['cases'])==33
+assert r['cases']==[x['name'] for x in expected['cases']] and len(r['cases'])==45
 assert r['cases']==json.loads(pathlib.Path('tests/preservation_der/expected-cases.json').read_text())['parser']
 PY

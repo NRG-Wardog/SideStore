@@ -1,6 +1,6 @@
 # Strict preservation DER decoder qualification
 
-`run.sh` compiles the complete production decoder with 33 synthetic cases.
+`run.sh` compiles the complete production decoder with 45 synthetic cases.
 It does not authenticate CMS and explicitly reports `cms_verified:false`.
 Run `python3 -B tests/preservation_der/test_contract.py` for source/fixture closure.
 
@@ -31,3 +31,9 @@ cover both role signatures and complete binding for two profiles, corrupted
 signatures, role confusion and cross-profile binding rejection. Downloaded
 public bytes never leave the runner's temporary directory; the trap cleans it.
 This runner still requires native macOS execution before being called qualified.
+
+The XML data regression reproduces Swift Character CRLF grapheme behavior,
+then checks LF/CR/CRLF/tab/space acceptance and NBSP/invalid alphabet/padding
+rejection. Only ASCII Unicode scalars are removed; strict Base64 remains.
+Primary references: https://developer.apple.com/documentation/swift/character/isnewline
+and https://www.unicode.org/reports/tr29/ (GB3).

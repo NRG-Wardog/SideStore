@@ -4,8 +4,8 @@ ROOT=HERE.parents[1]
 class Contract(unittest.TestCase):
  def test_synthetic_identity_closure(self):
   f=json.loads((HERE/'swift-cases.json').read_text());self.assertEqual(f['schema'],'scratch-parser-only-v1')
-  cases=f['cases'];self.assertEqual(len(cases),33);self.assertEqual(len({c['name'] for c in cases}),33)
-  self.assertEqual(sum(c['accept'] for c in cases),13)
+  cases=f['cases'];self.assertEqual(len(cases),45);self.assertEqual(len({c['name'] for c in cases}),45)
+  self.assertEqual(sum(c['accept'] for c in cases),19)
   expected=json.loads((HERE/'expected-cases.json').read_text())
   self.assertEqual([c['name'] for c in cases],expected['parser']);self.assertEqual(len(expected['public']),16)
   for c in cases:
@@ -37,6 +37,9 @@ class Contract(unittest.TestCase):
   s=(ROOT/'SideStore/Core/Operations/PipelineOperations/PreservedProfileDecoder.swift').read_text()
   for t in ['static func decodeOuter(verifiedOuterXML:', 'parser.externalEntityResolvingPolicy = .never', 'rawInner: verifiedInnerDER', 'Set<String> = ["UUID","CreationDate","ExpirationDate"]', 'pair.raw', 'a.utf8.elementsEqual(b.utf8)', 'CFBooleanGetTypeID()']:
    self.assertIn(t,s)
+  self.assertIn('node.text.unicodeScalars.filter',s)
+  self.assertIn('[UInt32(0x20), 0x09, 0x0D, 0x0A]',s)
+  self.assertNotIn('ignoreUnknownCharacters',s)
  def test_public_actual_source_and_version_closure(self):
   s=(HERE/'run_public.sh').read_text()
   for token in ['"$core/profile_cms.c"','"$mini/DeviceGateway/libimobiledevice/ProvisioningCMSVerifier.swift"','"$mini/Sources/ProfileCMSVerifier.swift"','OPENSSL_VERSION_PATCH==9','"$work/version"',"trap 'rm -rf \"$work\"' EXIT",'"$work/public-inputs"']:

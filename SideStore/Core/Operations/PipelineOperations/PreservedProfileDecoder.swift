@@ -268,7 +268,11 @@ enum PreservedProfileDecoder {
                     try check(node.text.range(of: #"^-?(0|[1-9][0-9]*)$"#, options: .regularExpression) != nil && Int64(node.text) != nil)
                 }
                 if node.name == "data" {
-                    let compact = node.text.filter { !" \t\r\n".contains($0) }
+                    // Whitelist ASCII scalars, not Character graphemes: CRLF is one
+                    // Character, so a Character whitelist can accidentally retain LF.
+                    let compact = String(String.UnicodeScalarView(node.text.unicodeScalars.filter {
+                        ![UInt32(0x20), 0x09, 0x0D, 0x0A].contains($0.value)
+                    }))
                     try check(Data(base64Encoded: compact) != nil)
                 }
                 if node.name == "date" {
