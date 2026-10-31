@@ -13,10 +13,10 @@ RUNNER = ROOT / 'SideStore/Core/Operations/PipelineRunner.swift'
 def actual_injection_fragment(refresh):
     # Preserve the actual pre-mutation baseline await and its ownership fence.
     # The continuation consumes this value during post-install verification.
-    baseline = refresh[refresh.index('        let before = await self.readProfilesWithoutMutation()'):
+    baseline = refresh[refresh.index('        var before = await self.readProfilesWithoutMutation()'):
                        refresh.index('        self.setProgress(10)')]
     injection = refresh.split('        do {\n            await CellularRefreshManager.shared.turnOffDataIfNeeded()', 1)[1]
-    injection = 'do {\n await CellularRefreshManager.shared.turnOffDataIfNeeded()' + injection.split('    private func readProfilesWithoutMutation(', 1)[0].rsplit('    }', 1)[0]
+    injection = 'do {\n await CellularRefreshManager.shared.turnOffDataIfNeeded()' + injection.split('    private func validateFreshPreservationSnapshot(', 1)[0].rsplit('    }', 1)[0]
     return baseline + injection
 
 
@@ -73,17 +73,19 @@ class ColdVPNReadinessTests(unittest.TestCase):
         self.assertLess(step.index('await headlessHandler.recordPipelinePhase'), step.index('try refreshAdmission?()'))
         self.assertLess(step.index('try refreshAdmission?()'), step.index('switch step'))
         self.assertIn('if case .refresh = appOperation { step.refreshAdmission = refreshAdmission }', step)
-        self.assertEqual(refresh.count('try refreshAdmission?()'), 2)
+        self.assertEqual(refresh.count('try refreshAdmission?()'), 5)
+        execute = refresh.split('    private func validateFreshPreservationSnapshot(', 1)[0]
+        self.assertEqual(execute.count('try refreshAdmission?()'), 3)
         fragment = actual_injection_fragment(refresh)
-        self.assertEqual(fragment.count('let before = await self.readProfilesWithoutMutation()'), 1)
-        self.assertLess(fragment.index('let before ='), fragment.index('try refreshAdmission?()'))
+        self.assertEqual(fragment.count('var before = await self.readProfilesWithoutMutation()'), 1)
+        self.assertLess(fragment.index('var before ='), fragment.index('try refreshAdmission?()'))
         self.assertLess(fragment.index('try refreshAdmission?()'), fragment.index('turnOffDataIfNeeded()'))
         self.assertIn('before: before, after: after', fragment)
         self.assertNotIn('let before = nil', fragment)
         self.assertLess(refresh.index('try refreshAdmission?()'), refresh.index('turnOffDataIfNeeded()'))
-        self.assertLess(refresh.index('turnOffDataIfNeeded()'), refresh.rindex('try refreshAdmission?()'))
+        self.assertLess(refresh.index('turnOffDataIfNeeded()'), execute.rindex('try refreshAdmission?()'))
         self.assertLess(refresh.index('try refreshAdmission?()'), refresh.index('installProvisioningProfiles(p.value.data)'))
-        self.assertNotIn('refreshAdmission', refresh.split('installProvisioningProfiles(p.value.data)', 1)[1])
+        self.assertNotIn('refreshAdmission', execute.split('installProvisioningProfiles(p.value.data)', 1)[1])
         local = runner.split('if initialMode == .localVPN {', 1)[1].split('} else {', 1)[0]
         self.assertEqual(local.count('await transportCore.isReady('), 1)
         self.assertLess(local.index('V3OwnedRefreshReadinessWait.run'), local.index('await transportCore.isReady('))

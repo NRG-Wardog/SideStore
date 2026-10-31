@@ -89,12 +89,14 @@ class RefreshFailureContract(unittest.TestCase):
         self.assertIn('await CellularRefreshManager.shared.turnOnDataIfNeeded()\n            throw V3RefreshFailureBoundary.provisioningProfileInstallation.preserving(error)', profile)
         self.assertNotIn('retry', profile)
         record = self.refresh.split('        let installedApp: InstalledApp', 1)[1].split('        self.setProgress(100)', 1)[0]
-        self.assertEqual(record.count('try self.updateInstalledApp(for: appBundle, profiles: profiles, in: dbContext)'), 1)
+        self.assertEqual(record.count('try self.updateInstalledApp(profiles: profiles, in: dbContext)'), 1)
         self.assertIn('throw V3RefreshFailureBoundary.refreshRecordUpdate.preserving(error)', record)
         self.assertIn('if error is CancellationError { throw error }', self.pipeline)
         self.assertIn('if case .refresh = appOperation, error is CombinedFailure { throw error }', self.pipeline)
         self.assertIn('if case .refresh = appOperation, sourceStep == nil', self.pipeline)
         self.assertIn('sourceStep = V3RefreshFailureBoundary.pipelineStep(step)?.sourceStep.rawValue', self.pipeline)
+        self.assertIn('case .fetchProvisioningProfiles: sourceStep = "provisioningProfileFetch"', self.pipeline)
+        self.assertIn('(sourceStep == "provisioningProfileFetch" && selection.reason.rawValue.hasPrefix("preservation"))', self.pipeline)
 
     def test_five_finite_boundaries_and_no_mutable_last_step(self):
         boundary = declaration(self.pipeline, 'enum V3RefreshFailureBoundary:')

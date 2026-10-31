@@ -232,10 +232,14 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
         }
 
         if !isDifferentSideStore && !isSelfReinstall && !isSideBackup {
-            V3ValidatedReuseMainRegistry.didInstall(
-                original: context.bundleIdentifier, resigned: resignedAppBundle.bundleIdentifier,
-                profileUUID: resignedAppBundle.provisioningProfile?.uuid,
-                generation: resignedAppBundle.infoPlist[V3ValidatedReuseMainRegistry.generationKey] as? String)
+            // Capture what the signer actually installed, separately from the
+            // original source payload. Never write a generation into source cache.
+            let identity = await backgroundContext.perform {
+                self.acknowledgedReuseMainIdentity(for: installedApp, signedBundle: resignedAppBundle,
+                                                  certificate: certificate)
+            }
+            V3ValidatedReuseMainRegistry.didAcknowledgeInstall(identity,
+                original: context.bundleIdentifier, resigned: resignedAppBundle.bundleIdentifier)
         }
 
         self.setProgress(90)
@@ -262,6 +266,46 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
         return installedApp
     }
     
+    // Run on the InstalledApp managed-object queue, only after native ACK.
+    // This records local installation history; it does not read the live device.
+    private func acknowledgedReuseMainIdentity(for app: InstalledApp, signedBundle: ALTApplication,
+                                               certificate: ALTCertificate) -> V3ValidatedReuseMainRegistry.AcknowledgedIdentity? {
+        guard context.validatedReuseMain, context.useMainProfile,
+              app.bundleIdentifier == context.bundleIdentifier,
+              app.resignedBundleIdentifier == signedBundle.bundleIdentifier,
+              let fingerprint = app.appBundleFingerprint, !fingerprint.isEmpty,
+              fingerprint == context.appBundleFingerprint,
+              AppBundleFingerprint.computeOriginalCacheKey(for: app.fileURL) == fingerprint,
+              let sourceDigest = AppBundleFingerprint.compute(for: app.fileURL),
+              let profile = signedBundle.provisioningProfile,
+              let generation = signedBundle.infoPlist[V3ValidatedReuseMainRegistry.generationKey] as? String,
+              let certificateDER = certificate.x509.data, !certificateDER.isEmpty,
+              profile.certificates.contains(where: { $0.data == certificateDER }),
+              let mainApplicationID = signedBundle.entitlements[ALTEntitlement.applicationIdentifier] as? String,
+              mainApplicationID == profile.entitlements[ALTEntitlement.applicationIdentifier] as? String,
+              app.team?.identifier == profile.teamIdentifier else { return nil }
+        var extensionIdentities: [String: String] = [:]
+        for ext in app.appExtensions {
+            guard extensionIdentities.updateValue(ext.resignedBundleIdentifier, forKey: ext.bundleIdentifier) == nil else { return nil }
+        }
+        guard Set(extensionIdentities.values) == Set(signedBundle.appExtensions.map { $0.bundleIdentifier }),
+              extensionIdentities.count == signedBundle.appExtensions.count else { return nil }
+        var reused = Set<String>()
+        for ext in signedBundle.appExtensions {
+            guard ext.provisioningProfile?.data == profile.data,
+                  ext.entitlements[ALTEntitlement.applicationIdentifier] as? String == mainApplicationID,
+                  ext.entitlements[ALTEntitlement(rawValue: "com.apple.developer.team-identifier")] as? String == profile.teamIdentifier else { return nil }
+            reused.insert(ext.bundleIdentifier)
+        }
+        let identity = V3ValidatedReuseMainRegistry.AcknowledgedIdentity(
+            original: app.bundleIdentifier, resigned: app.resignedBundleIdentifier,
+            sourceFingerprint: fingerprint, sourceDigest: sourceDigest,
+            profileUUID: profile.uuid, generation: generation, teamID: profile.teamIdentifier,
+            certificateDER: certificateDER, extensionIdentities: extensionIdentities,
+            reusedExtensionIdentifiers: reused)
+        return identity.isWellFormed ? identity : nil
+    }
+
     private static func isDifferentSideStoreContainer(_ installedApp: InstalledApp, _ resignedAppBundle: ALTApplication) -> Bool {
         return ((installedApp.bundleIdentifier == StoreApp.altstoreAppID) || resignedAppBundle.isAltStoreApp) &&
                 (resignedAppBundle.bundleIdentifier != installedApp.resignedBundleIdentifier)

@@ -282,8 +282,12 @@ class InstallAppOperationContext: PipelineOperationContext
     var provisioningProfiles: [String: ALTProvisioningProfile]?
     var appexBundleIds: [String: String]?
     var useMainProfile = false
+    var isPreservationRefresh = false
+    var preservationRefreshState: V3PreservationRefreshState?
     var validatedReuseMain = false
     var validatedReuseMainGeneration: String?
+    // Historical acknowledged installation evidence, never live installed-state proof.
+    var acknowledgedReuseMainIdentity: V3ValidatedReuseMainRegistry.AcknowledgedIdentity?
     var validateExtensionSigningCapabilities = false
     var originalExtensionBundleIdentifiers: [String: String] = [:]
     var previouslyReusedExtensionIdentifiers: Set<String> = []
@@ -459,6 +463,78 @@ class InstallAppOperationContext: PipelineOperationContext
 // not just a reusable profile UUID. Activation occurs only after confirmed
 // ordinary-app installation. Host self-install remains on the legacy path.
 enum V3ValidatedReuseMainRegistry {
+    // V2 separates acknowledged signed output from the original source cache.
+    // This is history of an installation we observed, not a claim that no external
+    // installer has subsequently changed the device. Live preservation admission
+    // must still reconcile the device's observed identity before profile mutation.
+    struct AcknowledgedIdentity: Codable, Equatable, Sendable {
+        let original: String
+        let resigned: String
+        let sourceFingerprint: String
+        let sourceDigest: String
+        let profileUUID: UUID
+        let generation: String
+        let teamID: String
+        let certificateDER: Data
+        let extensionIdentities: [String: String]
+        let reusedExtensionIdentifiers: Set<String>
+
+        var isWellFormed: Bool {
+            !original.isEmpty && !resigned.isEmpty && !sourceFingerprint.isEmpty &&
+            !sourceDigest.isEmpty && !teamID.isEmpty && !certificateDER.isEmpty &&
+            UUID(uuidString: generation)?.uuidString == generation &&
+            Set(extensionIdentities.values).count == extensionIdentities.count &&
+            extensionIdentities.allSatisfy { originalID, signedID in
+                originalID.hasPrefix(original + ".") && signedID.hasPrefix(resigned + ".")
+            } && reusedExtensionIdentifiers == Set(extensionIdentities.values)
+        }
+    }
+
+    private static let acknowledgedStorageKey = "v3.validated-reuse-main.acknowledged.v2"
+
+    // Called only after native install acknowledgment. A failed/cancelled install
+    // does not replace the previous record. A confirmed non-opt-in install clears
+    // the prior opt-in association, including the old V1 entry.
+    static func didAcknowledgeInstall(_ identity: AcknowledgedIdentity?, original: String, resigned: String) {
+        lock.withLock {
+            var records = acknowledgedRecords().filter { $0.original != original || $0.resigned != resigned }
+            if let identity, identity.isWellFormed,
+               identity.original == original, identity.resigned == resigned {
+                records.append(identity)
+            }
+            if let data = try? JSONEncoder().encode(records) {
+                UserDefaults.standard.set(data, forKey: acknowledgedStorageKey)
+            } else {
+                // Failed serialization must not leave stale evidence authorized.
+                UserDefaults.standard.removeObject(forKey: acknowledgedStorageKey)
+            }
+            let base = prefix(original: original, resigned: resigned)
+            let old = (UserDefaults.standard.stringArray(forKey: storageKey) ?? []).filter { !$0.hasPrefix(base) }
+            UserDefaults.standard.set(old, forKey: storageKey)
+        }
+    }
+
+    static func acknowledgedIdentity(original: String, resigned: String,
+                                     sourceFingerprint: String?, sourceDigest: String?,
+                                     teamID: String?, extensionIdentities: [String: String]) -> AcknowledgedIdentity? {
+        guard let sourceFingerprint, let sourceDigest, let teamID else { return nil }
+        return lock.withLock {
+            let matches = acknowledgedRecords().filter { $0.original == original && $0.resigned == resigned }
+            guard matches.count == 1, let identity = matches.first, identity.isWellFormed,
+                  identity.sourceFingerprint == sourceFingerprint, identity.sourceDigest == sourceDigest,
+                  identity.teamID == teamID, identity.extensionIdentities == extensionIdentities else { return nil }
+            return identity
+        }
+    }
+
+    private static func acknowledgedRecords() -> [AcknowledgedIdentity] {
+        guard let data = UserDefaults.standard.data(forKey: acknowledgedStorageKey),
+              let records = try? JSONDecoder().decode([AcknowledgedIdentity].self, from: data) else { return [] }
+        return records
+    }
+
+    // V1 API is retained only for existing tests/old storage compatibility. No V1
+    // record can authorize a V2 acknowledgedIdentity lookup or is auto-migrated.
     static let generationKey = "NRGValidatedReuseMainGenerationV1"
     private static let lock = NSLock()
     private static let storageKey = "v3.validated-reuse-main.v1"

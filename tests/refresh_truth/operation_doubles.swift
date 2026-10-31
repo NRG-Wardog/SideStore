@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 struct Cert { var serialNumber: String; var data: Data? }
 struct ALTProvisioningProfile {
  var uuid: UUID; var data: Data; var bundleIdentifier: String; var teamIdentifier: String
@@ -26,10 +27,14 @@ final class InstalledExtension {
  var expirationDate = Date(timeIntervalSince1970: 0)
  func update(provisioningProfile: ALTProvisioningProfile) { expirationDate = provisioningProfile.expirationDate }
 }
+struct FixtureStoredTeam { let identifier: String }
 final class InstalledApp {
+ var certificateSerialNumber: String? = "S"
+ var team: FixtureStoredTeam? = FixtureStoredTeam(identifier: "T")
  let objectID = 1; var bundleIdentifier = "app"; var resignedBundleIdentifier = "app"
  var appExtensions: [InstalledExtension] = []; var certificateStatus = "valid"
  var expirationDate = Date(timeIntervalSince1970: 0)
+ var useMainProfile = false
  func update(provisioningProfile: ALTProvisioningProfile) { expirationDate = provisioningProfile.expirationDate }
 }
 // CoreData is intentionally inert; the production operation keeps its exact type names.
@@ -54,6 +59,10 @@ final class InstallAppOperationContext {
  func validateLegacyReplacementAdmission() async throws { precondition(legacyReplacementBinding == nil) }
  func validateLegacyReplacementBundle(_ app: FixtureSignedBundle, signed: Bool) throws { precondition(legacyReplacementBinding == nil) }
 
+ var isPreservationRefresh = false
+ var acknowledgedReuseMainIdentity: V3ValidatedReuseMainRegistry.AcknowledgedIdentity?
+ var preservationRefreshState: V3PreservationRefreshState?
+ var overrideProvisioningProfile: ALTProvisioningProfile?
  var provisioningProfiles: [String:ALTProvisioningProfile]?
  var targetAppBundle: ALTApplication? = ALTApplication()
  var dbBackgroundContext: NSManagedObjectContext = DatabaseContext()
@@ -115,4 +124,10 @@ final class InstallationHarness {
  func handleSelfReinstallation(for app:InstalledApp) {}
  func installIPA(_ id:String) async throws { try await installProvisioningProfiles(Data()) }
  func installAppBundle(_ id:String,appName:String) async throws { try await installProvisioningProfiles(Data()) }
+}
+
+// Payload lookup only; exact production authorization policy is compiled separately.
+var fixturePayloads: [Data: [String: Any]] = [:]
+extension ALTProvisioningProfile {
+ func propertyList() -> [String: Any] { fixturePayloads[data] ?? [:] }
 }

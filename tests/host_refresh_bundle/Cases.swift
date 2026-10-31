@@ -241,7 +241,7 @@ func runFixture() async throws -> [String] {
         } catch is CancellationError { cancelled = true }
         try require(cancelled && preparedPath != nil && !fm.fileExists(atPath: preparedPath!.path), "Actual defer cleans and preserves pipeline cancellation")
     }
-    // Exercise the exact runner guard and actual registry, not a permissive mock.
+    // Actual runner consumer and actual registry: original payload lacks nonce.
     let ordinaryID = "com.fixture.reuse." + UUID().uuidString
     let ordinaryURL = root.appendingPathComponent("Ordinary.app")
     try writeBundle(ordinaryURL, id: ordinaryID)
@@ -249,42 +249,47 @@ func runFixture() async throws -> [String] {
         resignedBundleIdentifier: ordinaryID + ".TEAM", appExtensions: [])
     let generation = UUID().uuidString
     let ordinaryBundle = ALTApplication(fileURL: ordinaryURL)!
-    defer { V3ValidatedReuseMainRegistry.didInstall(original: ordinaryID,
-        resigned: ordinary.resignedBundleIdentifier, profileUUID: nil, generation: nil) }
+    defer { V3ValidatedReuseMainRegistry.didAcknowledgeInstall(nil, original: ordinaryID,
+        resigned: ordinary.resignedBundleIdentifier) }
     try await record("integration_legacy_bool_does_not_enroll_validated_strategy") {
         try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
             try require(context.useMainProfile && !context.validatedReuseMain, "Legacy bool remains legacy")
-        }
-    }
-    try ordinaryBundle.updateInfoPlist(with: [V3ValidatedReuseMainRegistry.generationKey: generation])
-    try await record("integration_unregistered_payload_nonce_does_not_opt_in") {
-        try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
-            try require(!context.validatedReuseMain, "Imported nonce alone cannot opt in")
+            try require(context.acknowledgedReuseMainIdentity == nil, "No fabricated install history")
         }
     }
     V3ValidatedReuseMainRegistry.didInstall(original: ordinaryID,
         resigned: ordinary.resignedBundleIdentifier, profileUUID: ordinaryBundle.provisioningProfile?.uuid,
         generation: generation)
-    try await record("integration_registered_payload_restores_validated_strategy") {
+    try await record("integration_old_registry_does_not_migrate_implicitly") {
         try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
-            try require(context.validatedReuseMain, "Confirmed matching generation restores opt-in")
+            try require(!context.validatedReuseMain && context.acknowledgedReuseMainIdentity == nil, "V1 is not live proof")
         }
     }
-    try await record("integration_opt_out_bool_overrides_matching_registry") {
+    let identity = V3ValidatedReuseMainRegistry.AcknowledgedIdentity(original: ordinaryID,
+        resigned: ordinary.resignedBundleIdentifier, sourceFingerprint: ordinary.appBundleFingerprint!,
+        sourceDigest: AppBundleFingerprint.compute(for: ordinaryURL)!, profileUUID: UUID(), generation: generation,
+        teamID: "TEAM", certificateDER: Data([1, 2]), extensionIdentities: [:], reusedExtensionIdentifiers: [])
+    V3ValidatedReuseMainRegistry.didAcknowledgeInstall(identity, original: ordinaryID,
+        resigned: ordinary.resignedBundleIdentifier)
+    try await record("integration_ack_history_recovered_from_nonce_free_source") {
+        try require(ordinaryBundle.infoPlist[V3ValidatedReuseMainRegistry.generationKey] == nil, "Original source has no signed nonce")
+        try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
+            try require(context.acknowledgedReuseMainIdentity == identity, "Consumer reads acknowledged output history")
+            try require(!context.validatedReuseMain, "History is not live installed-state proof")
+        }
+    }
+    try await record("integration_opt_out_bool_excludes_ack_history") {
         ordinary.useMainProfile = false
         defer { ordinary.useMainProfile = true }
         try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
-            try require(!context.validatedReuseMain, "Opt-out never restores validated strategy")
+            try require(!context.validatedReuseMain && context.acknowledgedReuseMainIdentity == nil, "Opt-out excludes reuse evidence")
         }
     }
-    try ordinaryBundle.updateInfoPlist(with: [V3ValidatedReuseMainRegistry.generationKey: UUID().uuidString])
-    try await record("integration_known_association_nonce_mismatch_fails_before_pipeline") {
-        var entered = false
-        var rejected = false
-        do {
-            try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { _ in entered = true }
-        } catch OperationError.invalidParameters(_) { rejected = true }
-        try require(rejected && !entered, "Known association cannot silently fall back to legacy")
+    try ordinaryBundle.updateInfoPlist(with: ["FixtureSourceChange": "different"])
+    try await record("integration_changed_source_is_unknown_not_replacement") {
+        try await runIntegration(operation: .refresh(ordinary), context: FixtureContext()) { context in
+            try require(context.acknowledgedReuseMainIdentity == nil && !context.validatedReuseMain, "Source drift invalidates history without reinstall instruction")
+        }
     }
     try await record("all_terminal_paths_preserve_source_and_cleanup") {
         try require(noOwnedCopies(temp), "No request-owned scratch survives")

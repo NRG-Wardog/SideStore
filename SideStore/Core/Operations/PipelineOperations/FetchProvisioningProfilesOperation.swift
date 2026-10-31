@@ -25,6 +25,13 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
             throw error
         }
 
+        // V3_PRESERVATION_REFRESH_FETCH_V1: observe first, then renew the
+        // EXISTING portal identity. Never register/reconfigure an identity or
+        // change its App Groups/capabilities to repair missing legacy evidence.
+        if context.isPreservationRefresh {
+            return try await fetchPreservingInstalledAuthorization()
+        }
+
         guard let targetAppBundle = self.context.targetAppBundle else {
             self.debugLog("[FetchProvisioningProfiles] Target app bundle missing in context.")
             throw OperationError.invalidParameters("FetchProvisioningProfilesOperation: context.targetAppBundle is nil")
@@ -162,6 +169,80 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
     // Explanation metadata only; the existing aggregate rejection and group
     // fallback decisions remain unchanged.
     private var reuseMainRejectionDetails: [String: [String]] = [:]
+
+    private func fetchPreservingInstalledAuthorization() async throws -> [String: ALTProvisioningProfile] {
+        try context.profileMutationAdmission?()
+        guard !context.isCellularRefreshGroup, context.legacyReplacementBinding == nil,
+              let certificate = context.verifiedRefreshCertificate, !certificate.data.isEmpty,
+              let read = context.readInstalledProvisioningProfiles else {
+            throw V3PreservationRefreshState.failure(.preservationEvidenceUnavailable)
+        }
+        // The database serial stores only an override certificate; ordinary
+        // active-certificate installs legitimately leave it nil. Reconcile any
+        // recorded value, but derive complete DER authorization from readback.
+        let identity = try await context.dbBackgroundContext.perform { () throws -> (resigned: String, team: String?) in
+            guard let app = self.context.installedApp, app.useMainProfile,
+                  app.bundleIdentifier == self.context.bundleIdentifier,
+                  app.bundleIdentifier != StoreApp.altstoreAppID,
+                  !app.resignedBundleIdentifier.isEmpty,
+                  !certificate.serial.isEmpty,
+                  (app.certificateSerialNumber == nil || app.certificateSerialNumber == certificate.serial) else {
+                throw V3PreservationRefreshState.failure(.preservationIdentityUnavailable)
+            }
+            return (app.resignedBundleIdentifier, app.team?.identifier)
+        }
+        try context.profileMutationAdmission?()
+        let bytes: [Data]
+        do { bytes = try await read() }
+        catch {
+            if error is CancellationError { throw error }
+            throw V3PreservationRefreshState.failure(.preservationEvidenceUnavailable)
+        }
+        try context.profileMutationAdmission?()
+        let team = try await AuthManager.shared.getAuthenticatedTeam()
+        try context.profileMutationAdmission?()
+        guard identity.team == nil || identity.team == team.identifier else {
+            throw V3PreservationRefreshState.failure(.preservationIdentityUnavailable)
+        }
+        if let history = context.acknowledgedReuseMainIdentity {
+            guard history.original == context.bundleIdentifier, history.resigned == identity.resigned,
+                  history.teamID == team.identifier, history.certificateDER == certificate.data else {
+                throw V3PreservationRefreshState.failure(.preservationIdentityUnavailable)
+            }
+        }
+        let baseline: PreservedProfilePolicy.Evidence
+        do {
+            baseline = try PreservedProfilePolicy.selectSnapshot(resignedBundleID: identity.resigned,
+                teamID: team.identifier, historicalSignerDER: certificate.data,
+                certificateExpiration: certificate.expiry, useMainProfile: true,
+                installed: try V3PreservationRefreshState.payloads(bytes), now: Date())
+        } catch { throw V3PreservationRefreshState.map(error) }
+
+        let candidate: ALTProvisioningProfile
+        if let supplied = context.overrideProvisioningProfile {
+            candidate = supplied
+        } else {
+            // Lookup the existing ID, then request a generated team profile.
+            // No addAppID, updateFeatures, updateAppGroups, certificate
+            // replacement, or fallback to the signing pipeline is requested.
+            let appIDs = try await DeveloperPortalProxy.shared.fetchAppIDs(for: team)
+            try context.profileMutationAdmission?()
+            let matching = appIDs.filter { $0.bundleIdentifier == identity.resigned }
+            guard matching.count == 1, let existing = matching.first else {
+                throw V3PreservationRefreshState.failure(.preservationPortalIdentityUnavailable)
+            }
+            candidate = try await DeveloperPortalProxy.shared.downloadProvisioningProfile(
+                for: existing, deviceType: DeveloperPortalProxy.currentDeviceType, team: team)
+        }
+        try context.profileMutationAdmission?()
+        do {
+            _ = try PreservedProfilePolicy.validate(candidate: candidate.propertyList().mapValues { $0 as Any },
+                baseline: baseline, now: Date())
+        } catch { throw V3PreservationRefreshState.map(error) }
+        context.preservationRefreshState = V3PreservationRefreshState(baseline: baseline, candidateData: candidate.data)
+        self.setProgress(100)
+        return [context.targetBundleIdentifier: candidate]
+    }
 
     private func reuseMainRejectionReasons(app: ALTApplication, profile: ALTProvisioningProfile) async throws -> [String] {
         reuseMainRejectionDetails = [:]

@@ -67,7 +67,7 @@ class Contract(unittest.TestCase):
    if os.environ.get('V3_REQUIRE_SWIFT')=='1': self.fail('swiftc required')
    self.skipTest('swiftc unavailable; native qualification required')
   production=source('SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift')
-  helper=production[production.index('struct V3RefreshVerification:'):]
+  helper=production[production.index('struct V3RefreshVerification:'):production.index('// V3_PRESERVATION_PROFILE_AUTHORIZATION_V1')]
   fixture=source('tests/refresh_truth/runtime.swift')+'\n'+helper+'\n'+source('tests/refresh_truth/cases.swift')
   with tempfile.TemporaryDirectory(prefix='refresh-truth-') as temporary:
    root=pathlib.Path(temporary).resolve(); src=root/'Fixture.swift'; exe=root/'fixture'
@@ -93,6 +93,7 @@ class Contract(unittest.TestCase):
     depth+=(text[end]=='{')-(text[end]=='}');end+=1
    return text[start:end]
   replacementBinding=declaration(source('AltStore/AppDelegate.swift'),'struct V3LegacyReplacementBinding:')
+  registry=declaration(source('SideStore/Core/Operations/OperationContexts.swift'),'enum V3ValidatedReuseMainRegistry {')
   policy=declaration(source('AltStore/AppDelegate.swift'),'enum V3MutationPersistencePolicy {')
   runner=source('SideStore/Core/Operations/PipelineRunner.swift')
   persistence=declaration(runner[runner.index('// V3_POST_MUTATION_PERSISTENCE_CONTRACT_V1:'):],'try await dbContext.perform {')
@@ -103,9 +104,9 @@ class Contract(unittest.TestCase):
    group+=declaration(groupSource,signature)+'\n'
   group+='}\n'
   install=source('SideStore/Core/Operations/PipelineOperations/InstallAppOperation.swift')
-  install=install[install.index('        // Read-only baseline on the same owned batch.'):install.index('        if !isDifferentSideStore && !isSelfReinstall && !isSideBackup {\n            V3ValidatedReuseMainRegistry.didInstall')]
+  install=install[install.index('        // Read-only baseline on the same owned batch.'):install.index('        if !isDifferentSideStore && !isSelfReinstall && !isSideBackup {\n            // Capture what the signer actually installed, separately from the')]
   installGlue='\nextension InstallationHarness { func runInstall(resignedAppBundle:FixtureSignedBundle,certificate:FixtureSigningCertificate,isSelfReinstall:Bool=false,isSideBackup:Bool=false) async throws { let installedApp=context.dbBackgroundContext.app; let bundleID="synthetic";\n'+install+'\n} }\n'
-  fixture=replacementBinding+'\n'+source('tests/refresh_truth/operation_doubles.swift')+'\n'+operation+'\n'+policy+glue+group+installGlue+source('tests/refresh_truth/operation_cases.swift')
+  fixture=replacementBinding+'\n'+registry+'\n'+source('tests/refresh_truth/operation_doubles.swift')+'\n'+operation+'\n'+policy+glue+group+installGlue+source('tests/refresh_truth/operation_cases.swift')
   with tempfile.TemporaryDirectory(prefix='refresh-truth-operation-') as temporary:
    root=pathlib.Path(temporary).resolve(); src=root/'Fixture.swift'; exe=root/'fixture'
    src.write_text(fixture)

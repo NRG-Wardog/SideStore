@@ -13,11 +13,29 @@ spec.loader.exec_module(generator)
 
 class HostPreservationTests(unittest.TestCase):
     def setUp(self):
-        self.latest = (HERE.parents[1] / generator.PRODUCTION['host']).read_text()
+        self.preservation = (HERE.parents[1] / generator.PRODUCTION['host']).read_text()
+        self.latest, applied = generator.project_reviewed_preservation_registry(self.preservation)
+        self.assertTrue(applied)
         self.current, applied = generator.project_reviewed_legacy_replacement(self.latest)
         self.assertTrue(applied)
         self.host, applied = generator.project_reviewed_transport_observation(self.current)
         self.assertTrue(applied)
+
+    def test_preservation_exact_hunks_and_tamper_rejected(self):
+        receipt = generator.preservation_receipt()
+        rebuilt = self.latest
+        for hunk in receipt['hunks']:
+            self.assertEqual(rebuilt.count(hunk['before']), 1)
+            rebuilt = rebuilt.replace(hunk['before'], hunk['after'], 1)
+        self.assertEqual(rebuilt, self.preservation)
+        proof = generator.verify_host_preservation(self.preservation)
+        self.assertEqual(proof.pop('reviewed_preservation_registry_delta_sha256'), generator.REVIEWED_PRESERVATION_REGISTRY_DELTA_SHA256)
+        self.assertEqual(proof, generator.verify_host_preservation(self.latest))
+        for changed in [self.preservation + '\n// unrelated\n',
+                        self.preservation.replace('context.validatedReuseMain = false', 'context.validatedReuseMain = true', 1),
+                        self.preservation.replace(receipt['hunks'][0]['after'], '', 1),
+                        self.preservation + receipt['hunks'][0]['after']]:
+            with self.assertRaises(AssertionError): generator.verify_host_preservation(changed)
 
     def test_legacy_exact_delta_preserves_all_prior_layers(self):
         raw = (HERE / 'reviewed-legacy-replacement-host-delta.json').read_bytes()
@@ -51,7 +69,7 @@ class HostPreservationTests(unittest.TestCase):
         receipt = json.loads((HERE / 'reviewed-legacy-replacement-host-delta.json').read_text())
         root = HERE.parents[1]
         caller = receipt['cache_key_caller']
-        self.assertEqual(generator.verify_reviewed_cache_callers(root), {'SideStore/' + caller['path']: caller['sha256']})
+        self.assertEqual(generator.verify_reviewed_cache_callers(root), {'SideStore/' + caller['path']: caller['sha256'], **{'SideStore/' + path: value for path, value in generator.preservation_receipt()['additional_cache_key_callers'].items()}})
         with tempfile.TemporaryDirectory() as temporary:
             tmp = Path(temporary).resolve()
             for relative in (generator.PRODUCTION['cache'], caller['path']):

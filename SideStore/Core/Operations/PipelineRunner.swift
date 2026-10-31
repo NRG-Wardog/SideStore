@@ -586,6 +586,9 @@ final class PipelineRunner: Sendable
             context.installedApp = app
             context.appBundleFingerprint = app.appBundleFingerprint
             context.useMainProfile = app.useMainProfile
+            if case .refresh = operation {
+                context.isPreservationRefresh = app.useMainProfile && app.bundleIdentifier != StoreApp.altstoreAppID
+            }
             context.customBundleIdentifier = app.customBundleIdentifier
             context.targetAppBundle = ALTApplication(fileURL: app.fileURL)
             // V3_HOST_REFRESH_BUNDLE_PREPARATION_V1: no download occurs in a
@@ -614,14 +617,30 @@ final class PipelineRunner: Sendable
                                                      facts: lcRefreshFailureFacts(error))
                 }
             }
-            context.validatedReuseMain = app.useMainProfile && V3ValidatedReuseMainRegistry.contains(
-                original: app.bundleIdentifier, resigned: app.resignedBundleIdentifier,
-                profileUUID: context.targetAppBundle?.provisioningProfile?.uuid,
-                generation: context.targetAppBundle?.infoPlist[V3ValidatedReuseMainRegistry.generationKey] as? String)
-            if app.useMainProfile && !context.validatedReuseMain &&
-                V3ValidatedReuseMainRegistry.hasAssociation(original: app.bundleIdentifier, resigned: app.resignedBundleIdentifier) {
-                throw OperationError.invalidParameters("The cached app no longer matches its validated ReuseMain installation. Reinstall interactively instead of silently switching signing strategies.")
+            // Original payload cache deliberately remains pre-signing input.
+            // Its embedded profile/Info.plist nonce cannot identify signed output.
+            // Resolve historical acknowledged evidence from its separate record.
+            // A missing/mismatched record is unknown, not permission to replace.
+            let identityInputs = await group.dbContext.perform { () -> (String, String, String?, String?, [String: String])? in
+                var extensions: [String: String] = [:]
+                for ext in app.appExtensions {
+                    guard extensions.updateValue(ext.resignedBundleIdentifier, forKey: ext.bundleIdentifier) == nil else { return nil }
+                }
+                return (app.bundleIdentifier, app.resignedBundleIdentifier, app.appBundleFingerprint,
+                        app.team?.identifier, extensions)
             }
+            if app.useMainProfile, let identityInputs, let source = context.targetAppBundle,
+               AppBundleFingerprint.computeOriginalCacheKey(for: source.fileURL) == identityInputs.2 {
+                context.acknowledgedReuseMainIdentity = V3ValidatedReuseMainRegistry.acknowledgedIdentity(
+                    original: identityInputs.0, resigned: identityInputs.1,
+                    sourceFingerprint: identityInputs.2,
+                    sourceDigest: AppBundleFingerprint.compute(for: source.fileURL),
+                    teamID: identityInputs.3, extensionIdentities: identityInputs.4)
+            }
+            // Historical evidence is not live observation. Preservation admission
+            // decides whether it can be reconciled with the installed app. Do not
+            // auto-enroll old V1 records or treat the original cache as signed proof.
+            context.validatedReuseMain = false
         }
         
         if let binding = handler.legacyReplacementBinding {

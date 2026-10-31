@@ -48,7 +48,7 @@ def main():
     integration = text[start:end]
     # The selector, real helper invocation, catches and ownership defer are
     # extracted verbatim. Only the surrounding iOS runner/pipeline is doubled.
-    integration = 'func runIntegration(operation: AppOperation, context: FixtureContext, body: (FixtureContext) throws -> Void) async throws {\n    let handler = FixtureHandler()\n' + integration + '\n    try body(context)\n}\n'
+    integration = 'func runIntegration(operation: AppOperation, context: FixtureContext, body: (FixtureContext) throws -> Void) async throws {\n    let handler = FixtureHandler()\n    let group = FixtureGroup()\n' + integration + '\n    try body(context)\n}\n'
     cases = (here / 'Cases.swift').read_text()
     names = []
     for name in re.findall(r'\brecord\("([^"\n]+)"', cases):

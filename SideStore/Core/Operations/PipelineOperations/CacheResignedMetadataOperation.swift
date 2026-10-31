@@ -18,6 +18,12 @@ final class CacheResignedMetadataOperation: BasePipelineOperation<InstallAppOper
             debugLog("[CacheResignedMetadataOperation] execute() took: \(String(format: "%.3fs", elapsed))")
         }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
+        // Profile-only refresh neither re-signs a bundle nor rewrites historical
+        // signed metadata. In particular, never sweep extension caches here.
+        if context.isPreservationRefresh {
+            self.setProgress(100)
+            return
+        }
         
         guard let targetAppBundle = self.context.resignedAppBundle else {
             debugLog("[CacheResignedMetadataOperation] FAILED: self.context.resignedAppBundle is nil; cannot cache metadata.")

@@ -19,6 +19,9 @@ struct V3RefreshSelectionFailure: Error, Sendable {
         case extensionProfileIdentityMismatch, extensionProfileExpired, extensionProfileCertificateMismatch
         case extensionTeamMismatch, legacyProofUnavailable, legacyHostProofUnavailable
         case missingExtensionProfile, unexpectedProfileKeys, inconsistentProfileUUID, unexpectedProfileUUID
+        case preservationEvidenceUnavailable, preservationIdentityUnavailable, preservationAuthorityConflict
+        case preservationAuthorizationChanged, preservationExpiredCertificate, preservationNotExtended
+        case preservationSnapshotChanged, preservationPortalIdentityUnavailable, preservationMalformedProfile, preservationUUIDConflict
     }
     enum Scope: String, Sendable { case host, nonHost, unknown }
     let reason: Reason
@@ -48,12 +51,12 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
             throw selectionFailure(.missingRefreshProfiles)
         }
         
-        guard let appBundle = self.context.targetAppBundle else {
+        guard self.context.isPreservationRefresh || self.context.targetAppBundle != nil else {
             throw selectionFailure(.missingTargetAppBundle)
         }
         let dbContext = self.context.dbBackgroundContext
         let selection = try await dbContext.perform { try self.selectProfiles(profiles, in: dbContext) }
-        let before = await self.readProfilesWithoutMutation()
+        var before = await self.readProfilesWithoutMutation()
         try refreshAdmission?()
         self.setProgress(10)
         
@@ -78,12 +81,18 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
             // owner. Check once before first injection, never between injected
             // profiles or before recording the resulting database state.
             try refreshAdmission?()
+            if context.isPreservationRefresh {
+                before = try await validateFreshPreservationSnapshot(profiles)
+                // Rebind the database target after readback suspension as well.
+                _ = try await dbContext.perform { try self.selectProfiles(profiles, in: dbContext) }
+                try refreshAdmission?()
+            }
             let admissionDate = verificationNow()
             guard selection.certificateExpiry > admissionDate,
                   selection.profiles.allSatisfy({ $0.expirationDate > admissionDate }) else {
                 throw OperationError.invalidParameters("The selected signing lifetime expired before installation began.")
             }
-            let dispatched = V3RefreshVerification(installAcknowledged: false)
+            let dispatched = V3RefreshVerification(installAcknowledged: false, preservation: context.isPreservationRefresh ? "authorizationPreserved" : nil)
             context.refreshVerification = dispatched
             context.recordRefreshVerification?(dispatched)
             for p in profiles {
@@ -91,7 +100,7 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
             }
             // Acknowledged means ALL required injections returned success. A
             // partial batch remains dispatched/unconfirmed; it cannot be replayed.
-            let acknowledged = V3RefreshVerification()
+            let acknowledged = V3RefreshVerification(preservation: context.isPreservationRefresh ? "authorizationPreserved" : nil)
             context.refreshVerification = acknowledged
             context.recordRefreshVerification?(acknowledged)
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
@@ -102,16 +111,17 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         
         self.setProgress(80)
         let after = await self.readProfilesWithoutMutation()
-        let verification = V3RefreshVerification.evaluate(expected: selection.profiles,
+        var verification = V3RefreshVerification.evaluate(expected: selection.profiles,
             before: before, after: after, certificateSerial: selection.certificateSerial,
             certificateExpiry: selection.certificateExpiry, certificateData: selection.certificateData, now: verificationNow())
+        verification.preservation = context.isPreservationRefresh ? "authorizationPreserved" : nil
         self.context.refreshVerification = verification
         self.context.recordRefreshVerification?(verification)
         // No cancellation check after injection: durable accounting must still run.
         let installedApp: InstalledApp
         do {
             installedApp = try await dbContext.perform {
-                try self.updateInstalledApp(for: appBundle, profiles: profiles, in: dbContext)
+                try self.updateInstalledApp(profiles: profiles, in: dbContext)
             }
         } catch {
             throw V3RefreshFailureBoundary.refreshRecordUpdate.preserving(error)
@@ -121,6 +131,34 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         return installedApp
     }
     
+    private func validateFreshPreservationSnapshot(_ profiles: [String: ALTProvisioningProfile]) async throws -> [ALTProvisioningProfile] {
+        guard let state = context.preservationRefreshState,
+              let read = context.readInstalledProvisioningProfiles,
+              profiles.count == 1, profiles[context.targetBundleIdentifier]?.data == state.candidateData else {
+            throw selectionFailure(.preservationEvidenceUnavailable)
+        }
+        try refreshAdmission?()
+        let bytes: [Data]
+        do { bytes = try await read() }
+        catch {
+            if error is CancellationError { throw error }
+            throw selectionFailure(.preservationEvidenceUnavailable)
+        }
+        try refreshAdmission?()
+        do {
+            let fresh = try PreservedProfilePolicy.snapshot(binding: state.baseline.binding,
+                installed: V3PreservationRefreshState.payloads(bytes), now: verificationNow())
+            guard fresh.hasSameTarget(as: state.baseline) else {
+                throw selectionFailure(.preservationSnapshotChanged)
+            }
+            let candidate = try ALTProvisioningProfile(data: state.candidateData)
+            _ = try PreservedProfilePolicy.validate(candidate: candidate.propertyList().mapValues { $0 as Any },
+                baseline: fresh, now: verificationNow())
+            return try bytes.map { try ALTProvisioningProfile(data: $0) }
+        } catch let failure as V3RefreshSelectionFailure { throw failure }
+        catch { throw V3PreservationRefreshState.map(error) }
+    }
+
     private func readProfilesWithoutMutation() async -> [ALTProvisioningProfile]? {
         await V3RefreshVerification.readProfiles(context.readInstalledProvisioningProfiles)
     }
@@ -195,6 +233,29 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         guard let certificate = context.verifiedRefreshCertificate, !certificate.data.isEmpty else {
             throw selectionFailure(.missingVerifiedCertificate)
         }
+        if context.isPreservationRefresh {
+            guard let state = context.preservationRefreshState,
+                  !context.isCellularRefreshGroup, context.legacyReplacementBinding == nil,
+                  app.useMainProfile, app.bundleIdentifier == context.bundleIdentifier,
+                  app.bundleIdentifier != StoreApp.altstoreAppID,
+                  app.resignedBundleIdentifier == state.baseline.binding.resignedBundleID,
+                  !certificate.serial.isEmpty,
+                  (app.certificateSerialNumber == nil || app.certificateSerialNumber == certificate.serial),
+                  app.team == nil || app.team?.identifier == state.baseline.binding.teamID,
+                  certificate.data == state.baseline.binding.historicalSignerDER,
+                  certificate.expiry == state.baseline.binding.certificateExpiration,
+                  profiles.count == 1, main.data == state.candidateData else {
+                throw selectionFailure(.preservationIdentityUnavailable)
+            }
+            if let history = context.acknowledgedReuseMainIdentity {
+                guard history.original == app.bundleIdentifier, history.resigned == app.resignedBundleIdentifier,
+                      history.teamID == state.baseline.binding.teamID, history.certificateDER == certificate.data else {
+                    throw selectionFailure(.preservationIdentityUnavailable)
+                }
+            }
+            return ProfileSelection(profiles: [main], certificateSerial: certificate.serial,
+                                    certificateExpiry: certificate.expiry, certificateData: certificate.data)
+        }
         func authorizationFailure(_ profile: ALTProvisioningProfile, signedID: String, extensionProfile: Bool) -> V3RefreshSelectionFailure.Reason? {
             let pattern = profile.bundleIdentifier
             guard !signedID.isEmpty && (pattern == signedID ||
@@ -265,15 +326,22 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
                                 certificateExpiry: certificate.expiry, certificateData: certificate.data)
     }
 
-    private func updateInstalledApp(for appBundle: ALTApplication, profiles: [String: ALTProvisioningProfile], in dbContext: NSManagedObjectContext) throws -> InstalledApp {
+    private func updateInstalledApp(profiles: [String: ALTProvisioningProfile], in dbContext: NSManagedObjectContext) throws -> InstalledApp {
         self.setProgress(self.progress.completedUnitCount + 1)
         
         guard let mainApp = self.context.installedApp,
               let installedApp = dbContext.object(with: mainApp.objectID) as? InstalledApp else {
-            throw OperationError.invalidParameters("Could not find installed database record for '\(appBundle.name)'")
+            throw selectionFailure(.missingInstalledRecord)
         }
         guard let mainProfile = profiles[self.context.targetBundleIdentifier] else {
             throw OperationError.invalidParameters("The main provisioning profile is missing.")
+        }
+        if context.isPreservationRefresh {
+            // Do not advertise an expiry that readback did not confirm. Even a
+            // confirmed store renewal is not proof of installed extension launch.
+            guard let observed = context.refreshVerification,
+                  observed.profileStore == .matched, observed.renewal == .extended,
+                  observed.certificate == "valid" else { return installedApp }
         }
         installedApp.update(provisioningProfile: mainProfile)
         
@@ -281,6 +349,9 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
             installedApp.certificateStatus = certStatus
         }
 
+        // Profile-store renewal does not assert which profile each installed
+        // extension uses. Leave its historical identity/lifetime untouched.
+        if context.isPreservationRefresh { return installedApp }
         for installedExtension in installedApp.appExtensions {
             let key = try extensionProfileKey(installedExtension, main: installedApp)
             guard let provisioningProfile = profiles[key] ?? (context.useMainProfile ? mainProfile : nil) else {
@@ -302,9 +373,12 @@ struct V3RefreshVerification: Sendable {
     var certificate = "unknown"
     var installAcknowledged = true
     var mutationDispatched = true
+    var preservation: String?
     var wire: [String: Any] {
-        ["version": 1, "mutationDispatched": mutationDispatched, "installAcknowledged": installAcknowledged, "profileStore": profileStore.rawValue,
+        var result: [String: Any] = ["version": 1, "mutationDispatched": mutationDispatched, "installAcknowledged": installAcknowledged, "profileStore": profileStore.rawValue,
          "renewal": renewal.rawValue, "certificate": certificate]
+        if preservation == "authorizationPreserved" { result["preservation"] = preservation }
+        return result
     }
 
     static func readProfiles(_ read: (() async throws -> [Data])?) async -> [ALTProvisioningProfile]? {
@@ -366,5 +440,209 @@ struct V3RefreshVerification: Sendable {
         let newEffective = min(newProfileExpiry, certificateExpiry)
         result.renewal = newEffective > oldEffective ? .extended : (newEffective == oldEffective ? .unchanged : .shortened)
         return result
+    }
+}
+
+// V3_PRESERVATION_PROFILE_AUTHORIZATION_V1
+import CoreFoundation
+
+// Pure policy only. The adapter must supply COMPLETE decoded profile payloads
+// from a fresh owned readback, never a projection or an unsigned source cache.
+// This proves equal profile authorization, NOT installed-binary/extension linkage.
+enum PreservedProfilePolicy {
+    enum Failure: String, Error, Sendable {
+        case missingHistoricalBinding, malformedProfile, missingInstalledProfile
+        case conflictingInstalledAuthority, duplicateUUIDConflict, changedAuthorization
+        case expiredCertificate, noEffectiveExtension
+    }
+    struct Binding: Equatable, Sendable {
+        let resignedBundleID: String
+        let applicationIdentifier: String // Exact prefix + ID; not synthesized from team.
+        let teamID: String
+        let historicalSignerDER: Data
+        let certificateExpiration: Date
+        let useMainProfile: Bool
+    }
+    struct Decision: Sendable {
+        let priorUUIDs: [String]
+        let priorEffectiveExpiration: Date
+        let newEffectiveExpiration: Date
+        // Deliberately no validatedReuseMain / extension-renewal claim.
+    }
+    indirect enum Value: Equatable, Sendable {
+        case string(String), data(Data), date(Date), bool(Bool), number(String)
+        case array([Value]), dictionary([String: Value])
+        init(_ raw: Any) throws {
+            switch raw {
+            case let x as String: self = .string(x)
+            case let x as Data: self = .data(x)
+            case let x as Date: self = .date(x)
+            case let x as NSNumber:
+                if CFGetTypeID(x) == CFBooleanGetTypeID() { self = .bool(x.boolValue) }
+                else {
+                    guard x.doubleValue.isFinite else { throw Failure.malformedProfile }
+                    self = .number(x.stringValue)
+                }
+            case let x as [Any]: self = .array(try x.map { try Value($0) })
+            case let x as [String: Any]: self = .dictionary(try x.mapValues { try Value($0) })
+            default: throw Failure.malformedProfile
+            }
+        }
+    }
+    struct Evidence: Equatable, Sendable {
+        let binding: Binding
+        let priorUUIDs: [String]
+        let priorEffectiveExpiration: Date
+        let authority: Value
+        let installedPayloadsByUUID: [String: Value]
+        func hasSameTarget(as other: Evidence) -> Bool {
+            binding == other.binding && priorUUIDs == other.priorUUIDs &&
+            priorEffectiveExpiration == other.priorEffectiveExpiration && authority == other.authority &&
+            priorUUIDs.allSatisfy { installedPayloadsByUUID[$0] == other.installedPayloadsByUUID[$0] }
+        }
+    }
+    private struct Profile {
+        let uuid: String
+        let applicationID: String
+        let teamID: String
+        let expiration: Date
+        let certificates: [Data]
+        let prefixes: [String]
+        let authority: Value
+        let complete: Value
+        init(_ raw: [String: Any]) throws {
+            guard let id = raw["UUID"] as? String, let parsed = UUID(uuidString: id),
+                  let entitlements = raw["Entitlements"] as? [String: Any],
+                  let appID = entitlements["application-identifier"] as? String, !appID.isEmpty,
+                  let team = entitlements["com.apple.developer.team-identifier"] as? String, !team.isEmpty,
+                  let teams = raw["TeamIdentifier"] as? [String], teams == [team],
+                  let prefixes = raw["ApplicationIdentifierPrefix"] as? [String], !prefixes.isEmpty,
+                  let expiry = raw["ExpirationDate"] as? Date,
+                  let creation = raw["CreationDate"] as? Date, expiry > creation,
+                  let certs = raw["DeveloperCertificates"] as? [Data], !certs.isEmpty,
+                  certs.allSatisfy({ !$0.isEmpty }), Set(certs).count == certs.count else {
+                throw Failure.malformedProfile
+            }
+            uuid = parsed.uuidString; applicationID = appID; teamID = team
+            expiration = expiry; certificates = certs; self.prefixes = prefixes
+            complete = try Value(raw)
+            var authorization = raw
+            // CMS envelope signature is outside this decoded payload. All unknown
+            // payload fields remain compared, including Name, platforms, devices,
+            // prefix arrays, every entitlement and certificate bytes. Array order
+            // is intentionally preserved (e.g. default keychain group).
+            for key in ["UUID", "CreationDate", "ExpirationDate", "TimeToLive"] {
+                authorization.removeValue(forKey: key)
+            }
+            authority = try Value(authorization)
+        }
+    }
+    static func selectSnapshot(resignedBundleID: String, teamID: String,
+                               historicalSignerDER: Data, certificateExpiration: Date,
+                               useMainProfile: Bool, installed: [[String: Any]], now: Date) throws -> Evidence {
+        guard !resignedBundleID.isEmpty else { throw Failure.missingHistoricalBinding }
+        let parsed = try installed.map { try Profile($0) }
+        let identities = Set(parsed.filter {
+            !$0.applicationID.contains("*") &&
+            $0.applicationID.hasSuffix("." + resignedBundleID) &&
+            $0.applicationID.count > resignedBundleID.count + 1
+        }.map(\.applicationID))
+        guard !identities.isEmpty else { throw Failure.missingInstalledProfile }
+        guard identities.count == 1, let identity = identities.first else {
+            throw Failure.conflictingInstalledAuthority
+        }
+        return try snapshot(binding: Binding(resignedBundleID: resignedBundleID,
+            applicationIdentifier: identity, teamID: teamID, historicalSignerDER: historicalSignerDER,
+            certificateExpiration: certificateExpiration, useMainProfile: useMainProfile), installed: installed, now: now)
+    }
+    static func snapshot(binding: Binding, installed: [[String: Any]], now: Date) throws -> Evidence {
+        guard binding.useMainProfile, !binding.resignedBundleID.isEmpty,
+              !binding.teamID.isEmpty, !binding.historicalSignerDER.isEmpty,
+              binding.applicationIdentifier.hasSuffix("." + binding.resignedBundleID),
+              binding.applicationIdentifier.count > binding.resignedBundleID.count + 1,
+              !binding.applicationIdentifier.contains("*") else { throw Failure.missingHistoricalBinding }
+        guard binding.certificateExpiration > now else { throw Failure.expiredCertificate }
+        let all = try installed.map { try Profile($0) }
+        var byUUID: [String: Value] = [:]
+        for profile in all {
+            if let previous = byUUID[profile.uuid], previous != profile.complete {
+                throw Failure.duplicateUUIDConflict
+            }
+            byUUID[profile.uuid] = profile.complete
+        }
+        // A new alternate prefix for this exact bundle identity is target drift,
+        // not an unrelated application's inventory change.
+        guard all.filter({ !$0.applicationID.contains("*") &&
+            $0.applicationID.hasSuffix("." + binding.resignedBundleID) &&
+            $0.applicationID.count > binding.resignedBundleID.count + 1
+        }).allSatisfy({ $0.applicationID == binding.applicationIdentifier }) else {
+            throw Failure.conflictingInstalledAuthority
+        }
+        let old = all.filter { $0.applicationID == binding.applicationIdentifier }
+        guard let first = old.first else { throw Failure.missingInstalledProfile }
+        let exactPrefix = String(binding.applicationIdentifier.dropLast(binding.resignedBundleID.count + 1))
+        guard !exactPrefix.isEmpty, !exactPrefix.contains("."), old.allSatisfy({ $0.teamID == binding.teamID &&
+            $0.prefixes == [exactPrefix] &&
+            $0.certificates.contains(binding.historicalSignerDER) && $0.authority == first.authority }) else {
+            throw Failure.conflictingInstalledAuthority
+        }
+        return Evidence(binding: binding, priorUUIDs: Array(Set(old.map(\.uuid))).sorted(),
+            priorEffectiveExpiration: min(old.map(\.expiration).max()!, binding.certificateExpiration),
+            authority: first.authority, installedPayloadsByUUID: byUUID)
+    }
+    static func validate(candidate: [String: Any], baseline: Evidence, now: Date) throws -> Decision {
+        let binding = baseline.binding
+        guard binding.certificateExpiration > now else { throw Failure.expiredCertificate }
+        let new = try Profile(candidate)
+        if let sameUUID = baseline.installedPayloadsByUUID[new.uuid], sameUUID != new.complete {
+            // Do not intentionally overwrite an existing UUID with changed payload semantics.
+            throw Failure.duplicateUUIDConflict
+        }
+        guard new.applicationID == binding.applicationIdentifier,
+              new.teamID == binding.teamID,
+              new.certificates.contains(binding.historicalSignerDER),
+              new.authority == baseline.authority else { throw Failure.changedAuthorization }
+        let prior = baseline.priorEffectiveExpiration
+        let next = min(new.expiration, binding.certificateExpiration)
+        guard next > now, next > prior else { throw Failure.noEffectiveExtension }
+        return Decision(priorUUIDs: baseline.priorUUIDs,
+                        priorEffectiveExpiration: prior, newEffectiveExpiration: next)
+    }
+    static func evaluate(binding: Binding, installed: [[String: Any]],
+                         candidate: [String: Any], now: Date) throws -> Decision {
+        try validate(candidate: candidate, baseline: snapshot(binding: binding, installed: installed, now: now), now: now)
+    }
+}
+
+// Snapshot and candidate remain internal; raw profile bytes never enter wire facts.
+struct V3PreservationRefreshState: Sendable {
+    let baseline: PreservedProfilePolicy.Evidence
+    let candidateData: Data
+
+    static func payloads(_ profiles: [Data]) throws -> [[String: Any]] {
+        try profiles.map { data in
+            try ALTProvisioningProfile(data: data).propertyList().mapValues { $0 as Any }
+        }
+    }
+
+    static func failure(_ reason: V3RefreshSelectionFailure.Reason) -> V3RefreshSelectionFailure {
+        V3RefreshSelectionFailure(reason: reason, scope: .nonHost)
+    }
+
+    static func map(_ error: Error) -> V3RefreshSelectionFailure {
+        if let existing = error as? V3RefreshSelectionFailure { return existing }
+        let reason: V3RefreshSelectionFailure.Reason
+        switch error as? PreservedProfilePolicy.Failure {
+        case .missingHistoricalBinding: reason = .preservationIdentityUnavailable
+        case .missingInstalledProfile: reason = .preservationEvidenceUnavailable
+        case .malformedProfile: reason = .preservationMalformedProfile
+        case .conflictingInstalledAuthority: reason = .preservationAuthorityConflict
+        case .duplicateUUIDConflict: reason = .preservationUUIDConflict
+        case .changedAuthorization: reason = .preservationAuthorizationChanged
+        case .expiredCertificate: reason = .preservationExpiredCertificate
+        case .noEffectiveExtension: reason = .preservationNotExtended
+        case nil: reason = .preservationMalformedProfile
+        }
+        return V3RefreshSelectionFailure(reason: reason, scope: .nonHost)
     }
 }

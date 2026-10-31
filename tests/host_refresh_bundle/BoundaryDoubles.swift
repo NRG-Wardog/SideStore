@@ -39,19 +39,24 @@ struct ALTApplication: Hashable, Sendable {
     }
 }
 
+struct FixtureTeam { let identifier: String }
+struct FixtureDB { func perform<T>(_ body: () -> T) async -> T { body() } }
+struct FixtureGroup { let dbContext = FixtureDB() }
 struct InstalledExtension { let bundleIdentifier: String; let resignedBundleIdentifier: String }
 final class InstalledApp {
     let fileURL: URL
     let bundleIdentifier: String
     let resignedBundleIdentifier: String
     var appExtensions: [InstalledExtension]
-    let appBundleFingerprint = "preserve-existing-fingerprint"
+    var appBundleFingerprint: String?
+    var team: FixtureTeam? = FixtureTeam(identifier: "TEAM")
     var useMainProfile = true
     let customBundleIdentifier: String? = "preserve-custom-id"
     init(fileURL: URL, bundleIdentifier: String, resignedBundleIdentifier: String,
          appExtensions: [InstalledExtension]) {
         self.fileURL = fileURL; self.bundleIdentifier = bundleIdentifier
         self.resignedBundleIdentifier = resignedBundleIdentifier; self.appExtensions = appExtensions
+        self.appBundleFingerprint = AppBundleFingerprint.computeOriginalCacheKey(for: fileURL)
     }
 }
 enum AppOperation {
@@ -74,6 +79,7 @@ final class CertificateManager {
 }
 struct FixtureHandler { let legacyReplacementBinding: V3LegacyReplacementBinding? = nil }
 final class FixtureContext {
+    var isPreservationRefresh = false
     var legacyReplacementBinding: V3LegacyReplacementBinding?
     var overrideSigningCertificate: FixtureSigningCertificate?
     var overrideProvisioningProfile: FixtureProfile?
@@ -86,6 +92,7 @@ final class FixtureContext {
     var appBundleFingerprint: String?
     var useMainProfile = false
     var validatedReuseMain = false
+    var acknowledgedReuseMainIdentity: V3ValidatedReuseMainRegistry.AcknowledgedIdentity?
     var customBundleIdentifier: String?
     var targetAppBundle: ALTApplication?
 }

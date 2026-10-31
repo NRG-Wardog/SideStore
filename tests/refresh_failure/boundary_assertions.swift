@@ -29,7 +29,12 @@ struct RefreshFailureBoundaryHarness {
             let facts = lcRefreshFailureFacts(local, sourceStep: "refreshApplication")
             precondition(facts["local_precondition"] == reason.rawValue)
             precondition(facts["refresh_target_scope"] == "nonHost")
-            precondition(lcRefreshFailureFacts(local, sourceStep: "provisioningProfileFetch").isEmpty)
+            let fetchFacts = lcRefreshFailureFacts(local, sourceStep: "provisioningProfileFetch")
+            if reason.rawValue.hasPrefix("preservation") {
+                precondition(fetchFacts["local_precondition"] == reason.rawValue)
+                precondition(fetchFacts["refresh_target_scope"] == "nonHost")
+            } else { precondition(fetchFacts.isEmpty) }
+            precondition(lcRefreshFailureFacts(local, sourceStep: "provisioningProfileRetrieval").isEmpty)
             let marked = lcStructuredSigningFailure(local, stage: "command", sourceStep: "refreshApplication", facts: facts)
             let target = InstalledApp(bundleIdentifier: "com.fixture.selection", name: "Fixture App")
             let mapped = getMappedError(for: .refresh(target), error: marked)

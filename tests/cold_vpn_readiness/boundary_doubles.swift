@@ -41,6 +41,7 @@ final class DatabaseContext {
     func perform(_ body: () throws -> InstalledApp) async throws -> InstalledApp { try body() }
 }
 final class InjectionContext {
+ let isPreservationRefresh = false
  let dbBackgroundContext = DatabaseContext()
  var refreshVerification: V3RefreshVerification?
  var recordRefreshVerification: ((V3RefreshVerification) -> Void)?
@@ -48,6 +49,7 @@ final class InjectionContext {
 struct Selection { let profiles: [Profile]; let certificateSerial = "fixture"; let certificateExpiry = Date.distantFuture; let certificateData = Data() }
 struct V3RefreshVerification {
  var installAcknowledged = true
+ var preservation: String?
  static func evaluate(expected: [Profile], before: [Profile]?, after: [Profile]?, certificateSerial: String, certificateExpiry: Date, certificateData: Data, now: Date) -> Self { Self() }
 }
 final class InjectionHarness {
@@ -58,7 +60,9 @@ final class InjectionHarness {
     func verificationNow() -> Date { Date() }
     func readProfilesWithoutMutation() async -> [Profile]? { reads += 1; duringRead(); return nil }
     func setProgress(_ value: Int) {}
-    func updateInstalledApp(for appBundle: Int, profiles: [String: Profile], in context: DatabaseContext) throws -> InstalledApp {
+    func selectProfiles(_ profiles: [String: Profile], in context: DatabaseContext) throws -> InstalledApp { fatalError("Preservation reselection has its own actual-source fixture") }
+    func validateFreshPreservationSnapshot(_ profiles: [String: Profile]) async throws -> [Profile] { fatalError("Preservation path has a separate actual-source integration fixture") }
+    func updateInstalledApp(profiles: [String: Profile], in context: DatabaseContext) throws -> InstalledApp {
         persisted += 1; return persisted
     }
 }

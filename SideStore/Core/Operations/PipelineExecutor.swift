@@ -415,7 +415,9 @@ enum V3RefreshFailureBoundary: String, CaseIterable {
 // unknown. Readiness additionally recognizes only exact local VPN guard text;
 // arbitrary noDevice/backend payloads must never authorize an enable request.
 func lcRefreshFailureFacts(_ error: Error, sourceStep: String? = nil) -> [String: String] {
-    if let selection = error as? V3RefreshSelectionFailure, sourceStep == "refreshApplication" {
+    if let selection = error as? V3RefreshSelectionFailure,
+       sourceStep == "refreshApplication" ||
+       (sourceStep == "provisioningProfileFetch" && selection.reason.rawValue.hasPrefix("preservation")) {
         return selection.facts
     }
     let certificateError = error as NSError
