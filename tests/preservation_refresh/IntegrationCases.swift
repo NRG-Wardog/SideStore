@@ -161,7 +161,58 @@
    precondition(c.installedApp!.certificateSerialNumber==nil)
    passed.append("normal-install-nil-recorded-serial-preserved-refresh")
   }
-  precondition(passed.count==18)
+  do {
+   let c=setup()
+   c.readInstalledProvisioningProfiles={ PortalProbe.shared.calls.append("read"); return [old.data,changed.data] }
+   let oldMain=c.installedApp!.expirationDate, oldExtension=c.installedApp!.appExtensions[0].expirationDate
+   do { try await run(c);fatalError("conflicting baseline accepted") }
+   catch let e as V3RefreshSelectionFailure {
+    precondition(e.reason == .preservationAuthorityConflict && e.scope == .nonHost)
+    precondition(e.preservationConflict == "entitlementsDiffer")
+    precondition(e.facts["preservation_conflict"] == "entitlementsDiffer")
+   }
+   precondition(PortalProbe.shared.calls == ["read","team"])
+   precondition(Injection.shared.count==0 && c.refreshVerification==nil)
+   precondition(c.installedApp!.expirationDate==oldMain && c.installedApp!.appExtensions[0].expirationDate==oldExtension)
+   passed.append("conflict-detail-preflight-read-only-no-portal-no-install")
+  }
+  do {
+   for reason in [PreservedProfilePolicy.Failure.multipleIdentities, .alternateIdentity, .teamMismatch,
+       .prefixMismatch, .signerMissing, .entitlementsDiffer, .certificatesDiffer, .devicesDiffer,
+       .platformsDiffer, .embeddedDERDiffer, .displayMetadataDiffer, .otherAuthorityDiffer] {
+    let mapped=V3PreservationRefreshState.map(reason)
+    precondition(mapped.reason == .preservationAuthorityConflict)
+    precondition(mapped.facts["preservation_conflict"] == reason.rawValue)
+   }
+   precondition(V3PreservationRefreshState.map(PreservedProfilePolicy.Failure.conflictingInstalledAuthority).facts["preservation_conflict"]==nil)
+   precondition(V3RefreshSelectionFailure(reason:.preservationAuthorityConflict,scope:.nonHost,preservationConflict:"private raw text").facts["preservation_conflict"]==nil)
+   precondition(V3RefreshSelectionFailure(reason:.preservationAuthorityConflict,scope:.host,preservationConflict:"teamMismatch").facts["preservation_conflict"]==nil)
+   precondition(V3RefreshSelectionFailure(reason:.preservationIdentityUnavailable,scope:.nonHost,preservationConflict:"teamMismatch").facts["preservation_conflict"]==nil)
+   passed.append("conflict-detail-finite-map-and-scope")
+  }
+  for (detail,label) in [("alternateIdentity","fresh-alternate-identity-detail-no-install"),
+                          ("entitlementsDiffer","fresh-entitlements-detail-no-install")] {
+   let c=setup();var reads=0
+   let oldMain=c.installedApp!.expirationDate, oldExtension=c.installedApp!.appExtensions[0].expirationDate
+   let alternate=profile(5,1500)
+   var payload=fixturePayloads[alternate.data]!
+   var entitlement=payload["Entitlements"] as! [String:Any]
+   entitlement["application-identifier"]="OTHER.app";payload["Entitlements"]=entitlement
+   payload["ApplicationIdentifierPrefix"]=["OTHER"];fixturePayloads[alternate.data]=payload
+   c.readInstalledProvisioningProfiles={
+    reads += 1;PortalProbe.shared.calls.append("read")
+    return reads==3 ? [old.data,detail=="alternateIdentity" ? alternate.data:changed.data] : [old.data]
+   }
+   do { try await run(c);fatalError("fresh conflict accepted") }
+   catch let e as V3RefreshSelectionFailure {
+    precondition(e.reason == .preservationAuthorityConflict && e.preservationConflict==detail)
+    precondition(e.facts["preservation_conflict"]==detail)
+   }
+   precondition(reads==3 && Injection.shared.count==0 && c.refreshVerification==nil)
+   precondition(c.installedApp!.expirationDate==oldMain && c.installedApp!.appExtensions[0].expirationDate==oldExtension)
+   passed.append(label)
+  }
+  precondition(passed.count==22)
   print(String(data:try JSONSerialization.data(withJSONObject:["schema":"preservation-refresh-integration-v1","status":"PASS","cases":passed,"device_executed":false],options:[.sortedKeys]),encoding:.utf8)!)
  }
 }

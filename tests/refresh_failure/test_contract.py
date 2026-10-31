@@ -50,9 +50,9 @@ def generate_source(root):
     pipeline = read('SideStore/Core/Operations/PipelineExecutor.swift')
     step_source = read('SideStore/Core/Operations/OperationStep.swift')
     step_cases = step_source[step_source.index('enum PipelineStep:'):step_source.index('    fileprivate static let stepMap:')]
-    source = '\nprotocol OperationStep: Equatable, Hashable {}\n' + step_cases + '}\n'
+    source = '\nimport CryptoKit\nprotocol OperationStep: Equatable, Hashable {}\n' + step_cases + '}\n'
     source += '\n' + declaration(read('SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift'), 'struct V3RefreshSelectionFailure:')
-    for signature in ['enum V3RefreshFailureBoundary:', 'func lcRefreshFailureFacts(', 'func lcSafeSigningCause(', 'func lcStructuredSigningFailure(', 'private final class LCSigningHTTPObservation:', 'func lcPortalSigningRequest<T>']:
+    for signature in ['func lcSigningHash(', 'func lcPreservationCertificateFacts(', 'enum V3RefreshFailureBoundary:', 'func lcRefreshFailureFacts(', 'func lcSafeSigningCause(', 'func lcStructuredSigningFailure(', 'private final class LCSigningHTTPObservation:', 'func lcPortalSigningRequest<T>']:
         source += '\n' + declaration(pipeline, signature)
     app_operation = read('SideStore/Core/Operations/AppOperation.swift')
     source += '\n' + app_operation[app_operation.index('enum AppOperation:'):app_operation.index('    func logSummary(')]
@@ -97,6 +97,19 @@ class RefreshFailureContract(unittest.TestCase):
         self.assertIn('sourceStep = V3RefreshFailureBoundary.pipelineStep(step)?.sourceStep.rawValue', self.pipeline)
         self.assertIn('case .fetchProvisioningProfiles: sourceStep = "provisioningProfileFetch"', self.pipeline)
         self.assertIn('(sourceStep == "provisioningProfileFetch" && selection.reason.rawValue.hasPrefix("preservation"))', self.pipeline)
+
+    def test_preservation_certificate_source_is_verified_cache_without_active_fallback(self):
+        branch = declaration(self.pipeline, '                if context.isPreservationRefresh {')
+        self.assertIn('verifiedSerial: context.verifiedRefreshCertificate?.serial', branch)
+        self.assertIn('verifiedDER: context.verifiedRefreshCertificate?.data', branch)
+        self.assertNotIn('targetSigningCertificate', branch)
+        helper = declaration(self.pipeline, 'func lcPreservationCertificateFacts(')
+        self.assertNotIn('targetSigningCertificate', helper)
+        self.assertIn('lcSigningHash(serial)', helper)
+        source, _ = generate_source(ROOT)
+        self.assertIn('import CryptoKit', source)
+        self.assertIn(declaration(self.pipeline, 'func lcSigningHash('), source)
+        self.assertIn(helper, source)
 
     def test_five_finite_boundaries_and_no_mutable_last_step(self):
         boundary = declaration(self.pipeline, 'enum V3RefreshFailureBoundary:')

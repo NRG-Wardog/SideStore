@@ -117,6 +117,31 @@ struct RefreshFailureBoundaryHarness {
             precondition(failure.signingContext["refresh_failure_kind"] == kind)
             precondition(failure.technicalDetails.contains("refresh_failure_kind=\(kind)"))
         }
+        // Actual typed producer classification: bounded detail survives only at
+        // fetch/pre-dispatch refresh steps, never arbitrary installation errors.
+        let conflict = V3RefreshSelectionFailure(reason: .preservationAuthorityConflict,
+            scope: .nonHost, preservationConflict: "embeddedDERDiffer")
+        for step in ["provisioningProfileFetch", "refreshApplication"] {
+            let facts = lcRefreshFailureFacts(conflict, sourceStep: step)
+            precondition(facts["local_precondition"] == "preservationAuthorityConflict")
+            precondition(facts["refresh_target_scope"] == "nonHost")
+            precondition(facts["preservation_conflict"] == "embeddedDERDiffer")
+        }
+        precondition(lcRefreshFailureFacts(conflict, sourceStep: "provisioningProfileInstallation").isEmpty)
+        precondition(lcRefreshFailureFacts(conflict).isEmpty)
+        let activeSerial = "ACTIVE_SYNTHETIC_SERIAL"
+        let verifiedSerial = "VERIFIED_SYNTHETIC_SERIAL"
+        let verifiedFacts = lcPreservationCertificateFacts(verifiedSerial: verifiedSerial, verifiedDER: Data([1]))
+        precondition(verifiedFacts["signing_certificate_source"] == "verifiedRefreshCache")
+        precondition(verifiedFacts["signing_certificate_present"] == "true")
+        precondition(verifiedFacts["signing_certificate_serial_sha256"] == lcSigningHash(verifiedSerial))
+        precondition(verifiedFacts["signing_certificate_serial_sha256"] != lcSigningHash(activeSerial))
+        precondition(!verifiedFacts.values.contains(verifiedSerial) && !verifiedFacts.values.contains(activeSerial))
+        let missingInputs: [(String?, Data?)] = [(nil,nil),(nil,Data([1])),("",Data([1])),(verifiedSerial,nil),(verifiedSerial,Data())]
+        for (serial,der) in missingInputs {
+            precondition(lcPreservationCertificateFacts(verifiedSerial:serial,verifiedDER:der) ==
+                ["signing_certificate_present":"false","signing_certificate_source":"unavailable"])
+        }
         precondition(lcRefreshFailureFacts(privateNative).isEmpty)
         var injected = known.wire
         injected["signingContext"] = ["refresh_failure_kind": secret]

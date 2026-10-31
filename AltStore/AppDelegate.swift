@@ -15511,7 +15511,14 @@ public struct CombinedFailure: Error, LocalizedError {
             !(preparationScope && (["missingTargetAppBundle", "unknownTeamType", "unresolvedAppGroupPlaceholder", "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"].contains(local) || Self.preservationRefreshPreconditions.contains(local))) {
             context.removeValue(forKey: "local_precondition")
         }
-        if !selectionScope || context["local_precondition"] == nil { context.removeValue(forKey: "refresh_target_scope") }
+        let preservationScope = preparationScope && Self.preservationRefreshPreconditions.contains(local)
+        if !(selectionScope || preservationScope) || context["local_precondition"] == nil { context.removeValue(forKey: "refresh_target_scope") }
+        if !(selectionScope || preservationScope) || context["local_precondition"] != "preservationAuthorityConflict" {
+            context.removeValue(forKey: "preservation_conflict")
+        }
+        if !(selectionScope || preservationScope) || !Self.preservationRefreshPreconditions.contains(context["local_precondition"] ?? "") {
+            context.removeValue(forKey: "signing_certificate_source")
+        }
         if normalized != "refresh" || stage != .command || code != .failed || sourceStep != .refreshReadiness {
             context.removeValue(forKey: "refresh_readiness_reason")
         }
@@ -15544,14 +15551,42 @@ public struct CombinedFailure: Error, LocalizedError {
         if fields["refresh_target_scope"] != nil && !(fields["refresh_target_scope"] is String) {
             fields.removeValue(forKey: "refresh_target_scope")
         }
+        if fields["signing_certificate_source"] != nil && (!(fields["signing_certificate_source"] is String) || fields.count > 20) {
+            fields.removeValue(forKey: "signing_certificate_source")
+        }
+        if fields["preservation_conflict"] != nil && (!(fields["preservation_conflict"] is String) || fields.count > 20) {
+            fields.removeValue(forKey: "preservation_conflict")
+        }
         guard let strings = V3AuthenticationDiagnostics.sanitizingWireContext(fields) else { return nil }
         return validatedSigningContext(strings)
     }
     public static let refreshSelectionPreconditions: Set<String> = ["missingTargetAppBundle", "missingRefreshProfiles", "missingInstalledRecord", "missingMainProfile", "missingVerifiedCertificate", "mainProfileIdentityMismatch", "mainProfileExpired", "mainProfileCertificateMismatch", "extensionOutsideParent", "extensionProfileIdentityMismatch", "extensionProfileExpired", "extensionProfileCertificateMismatch", "extensionTeamMismatch", "legacyProofUnavailable", "legacyHostProofUnavailable", "missingExtensionProfile", "unexpectedProfileKeys", "inconsistentProfileUUID", "unexpectedProfileUUID", "preservationIdentityUnavailable", "preservationMalformedProfile", "preservationEvidenceUnavailable", "preservationAuthorityConflict", "preservationUUIDConflict", "preservationAuthorizationChanged", "preservationExpiredCertificate", "preservationNotExtended", "preservationSnapshotChanged", "preservationPortalIdentityUnavailable"]
+    public static let preservationConflictKinds: Set<String> = ["multipleIdentities", "alternateIdentity", "teamMismatch", "prefixMismatch", "signerMissing", "entitlementsDiffer", "certificatesDiffer", "devicesDiffer", "platformsDiffer", "embeddedDERDiffer", "displayMetadataDiffer", "otherAuthorityDiffer"]
     public static let preservationRefreshPreconditions: Set<String> = ["preservationIdentityUnavailable", "preservationMalformedProfile", "preservationEvidenceUnavailable", "preservationAuthorityConflict", "preservationUUIDConflict", "preservationAuthorizationChanged", "preservationExpiredCertificate", "preservationNotExtended", "preservationSnapshotChanged", "preservationPortalIdentityUnavailable"]
     private static let refreshLocalPreconditions: Set<String> = refreshSelectionPreconditions.union(["unknownTeamType", "unresolvedAppGroupPlaceholder", "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"])
     public static func validatedSigningContext(_ value: [String: String]) -> [String: String]? {
-        var fields = V3AuthenticationDiagnostics.sanitizingContext(V3TemporaryADIConsumption.sanitizingContext(value))
+        var supplied = value
+        // Drop this ancillary extension before other sanitizers can trim existing facts.
+        if supplied.count > 20 { supplied.removeValue(forKey: "signing_certificate_source") }
+        if supplied.count > 20 { supplied.removeValue(forKey: "preservation_conflict") }
+        var fields = V3AuthenticationDiagnostics.sanitizingContext(V3TemporaryADIConsumption.sanitizingContext(supplied))
+        if let source = fields["signing_certificate_source"] {
+            let verified = source == "verifiedRefreshCache" && fields["signing_certificate_present"] == "true" &&
+                fields["signing_certificate_serial_sha256"]?.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+            let unavailable = source == "unavailable" && fields["signing_certificate_present"] == "false" &&
+                fields["signing_certificate_serial_sha256"] == nil
+            if !(verified || unavailable) || fields["refresh_failure_kind"] != "invalidParameters" ||
+                !Self.preservationRefreshPreconditions.contains(fields["local_precondition"] ?? "") {
+                fields.removeValue(forKey: "signing_certificate_source")
+            }
+        }
+        // Optional local subtype cannot invalidate or add privilege to the primary failure.
+        if let conflict = fields["preservation_conflict"],
+           !Self.preservationConflictKinds.contains(conflict) ||
+           fields["local_precondition"] != "preservationAuthorityConflict" ||
+           fields["refresh_failure_kind"] != "invalidParameters" || fields.count > 20 {
+            fields.removeValue(forKey: "preservation_conflict")
+        }
         // This optional observation must never replace or invalidate the primary
         // failure. Admit only the finite local guard vocabulary, with its kind.
         if let local = fields["local_precondition"],
@@ -15634,6 +15669,10 @@ public struct CombinedFailure: Error, LocalizedError {
             case "refresh_target_scope":
                 guard ["host", "nonHost", "unknown"].contains(text),
                       Self.refreshSelectionPreconditions.contains(fields["local_precondition"] ?? "") else { return nil }
+            case "preservation_conflict":
+                guard Self.preservationConflictKinds.contains(text),
+                      fields["local_precondition"] == "preservationAuthorityConflict",
+                      fields["refresh_failure_kind"] == "invalidParameters" else { return nil }
             case "local_precondition":
                 guard fields["refresh_failure_kind"] == "invalidParameters",
                     Self.refreshLocalPreconditions.contains(text) else { return nil }
@@ -15672,6 +15711,10 @@ public struct CombinedFailure: Error, LocalizedError {
                     "SERVICE_UNAVAILABLE", "UNEXPECTED_ERROR", "UNKNOWN_ERROR"].contains(text) else { return nil }
             case "account_binding", "team_binding":
                 guard text == "verified" else { return nil }
+            case "signing_certificate_source":
+                guard ["verifiedRefreshCache", "unavailable"].contains(text),
+                      fields["refresh_failure_kind"] == "invalidParameters",
+                      Self.preservationRefreshPreconditions.contains(fields["local_precondition"] ?? "") else { return nil }
             case "signing_certificate_present":
                 guard text == "true" || text == "false" else { return nil }
             case "preferred_parent_id_match":

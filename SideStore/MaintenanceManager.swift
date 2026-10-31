@@ -249,9 +249,20 @@ private extension MaintenanceManager {
             do {
                 let installedApps = try context.fetch(InstalledApp.fetchRequest())
                 let appsDir = InstalledApp.appsDirectoryURL
+                // A legacy original-ID cache has no clone identity binding. Do
+                // not fan its signer out to multiple resigned identities, even
+                // when their destination files are absent. Preserve all existing
+                // bytes; this does not repair an earlier ambiguous migration.
+                let destinationsByOriginal = Dictionary(grouping: installedApps, by: { $0.bundleIdentifier })
+                    .mapValues { Set($0.map { $0.resignedBundleIdentifier }) }
                 for app in installedApps where app.bundleIdentifier != app.resignedBundleIdentifier {
                     let source = appsDir.appendingPathComponent(app.bundleIdentifier).appendingPathComponent("signing_certificate.der")
                     guard FileManager.default.fileExists(atPath: source.path) else { continue }
+                    guard !app.bundleIdentifier.isEmpty, !app.resignedBundleIdentifier.isEmpty,
+                          destinationsByOriginal[app.bundleIdentifier]?.count == 1 else {
+                        outcomes.conflict += 1
+                        continue
+                    }
                     do {
                         outcomes.record(try self.copyPreservingOriginal(source, to: app.signingCertificateURL, within: appsDir))
                     } catch {

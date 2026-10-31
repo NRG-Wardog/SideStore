@@ -714,6 +714,92 @@ class PreservationRegressionSourceContracts(unittest.TestCase):
         self.assertLess(fetch.index("persistedActiveProtocol"), fetch.index("if let legacy = fetchPairingFile(for: .unknown) { return legacy }"))
 
 
+class CertificateMigrationIdentityTests(unittest.TestCase):
+    """MODEL + source contracts; placeholders are not real certificates."""
+    def migrate(self, root, rows):
+        destinations = {}
+        for original, resigned in rows:
+            destinations.setdefault(original, set()).add(resigned)
+        outcomes = []
+        for original, resigned in rows:
+            if original == resigned:
+                continue
+            source = root / original / "signing_certificate.der"
+            if not source.exists():
+                continue
+            if not original or not resigned or len(destinations[original]) != 1:
+                outcomes.append("conflict")
+                continue
+            outcomes.append(copy_preserving(source, root / resigned / "signing_certificate.der", root))
+        return outcomes
+
+    def test_two_clones_do_not_receive_one_unbound_legacy_signer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "original" / "signing_certificate.der"
+            source.parent.mkdir(); source.write_bytes(b"FAKE signer A")
+            rows = [("original", "clone.a"), ("original", "clone.b")]
+            self.assertEqual(self.migrate(root, rows), ["conflict", "conflict"])
+            self.assertEqual(source.read_bytes(), b"FAKE signer A")
+            self.assertFalse((root / "clone.a").exists())
+            self.assertFalse((root / "clone.b").exists())
+            # Existing possibly wrong cache is preserved, not silently repaired.
+            existing = root / "clone.b" / "signing_certificate.der"
+            existing.parent.mkdir(); existing.write_bytes(b"FAKE signer B")
+            before = existing.stat()
+            self.assertEqual(self.migrate(root, rows), ["conflict", "conflict"])
+            self.assertEqual(existing.read_bytes(), b"FAKE signer B")
+            self.assertEqual(existing.stat(), before)
+
+    def test_original_install_plus_clone_is_also_ambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "original" / "signing_certificate.der"
+            source.parent.mkdir(); source.write_bytes(b"FAKE original signer")
+            self.assertEqual(self.migrate(root, [("original", "original"), ("original", "clone")]), ["conflict"])
+            self.assertFalse((root / "clone").exists())
+
+    def test_single_identity_migration_keeps_existing_no_overwrite_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "original" / "signing_certificate.der"
+            source.parent.mkdir(); source.write_bytes(b"FAKE legacy signer")
+            self.assertEqual(self.migrate(root, [("original", "resigned")]), ["copied"])
+            self.assertEqual(self.migrate(root, [("original", "resigned")]), ["identical"])
+            target = root / "resigned" / "signing_certificate.der"
+            target.write_bytes(b"FAKE distinct signer")
+            self.assertEqual(self.migrate(root, [("original", "resigned")]), ["conflict"])
+            self.assertEqual(target.read_bytes(), b"FAKE distinct signer")
+            self.assertEqual(source.read_bytes(), b"FAKE legacy signer")
+
+    def test_current_coredata_identity_permits_distinct_clones(self):
+        import xml.etree.ElementTree as ET
+        model = REPO_ROOT / "AltStore/Core/Model/AltStore.xcdatamodeld"
+        version = plistlib.loads((model / ".xccurrentversion").read_bytes())["_XCCurrentVersionName"]
+        app = ET.parse(model / version / "contents").find("entity[@name='InstalledApp']")
+        constraints = [[c.attrib["value"] for c in group] for group in app.find("uniquenessConstraints")]
+        self.assertEqual(constraints, [["resignedBundleIdentifier"]])
+
+    def test_duplicate_rows_with_same_resigned_identity_are_not_fanout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "original" / "signing_certificate.der"
+            source.parent.mkdir(); source.write_bytes(b"FAKE same signer")
+            self.assertEqual(self.migrate(root, [("original", "same"), ("original", "same")]), ["copied", "identical"])
+
+    def test_source_groups_all_identities_before_any_certificate_copy(self):
+        body = SOURCE.read_text().split("func migrateLegacyCachedSigningCertificates()", 1)[1].split("func migratePairingFiles()", 1)[0]
+        grouped = body.index("Dictionary(grouping: installedApps, by: { $0.bundleIdentifier })")
+        unique = body.index("destinationsByOriginal[app.bundleIdentifier]?.count == 1")
+        copied = body.index("copyPreservingOriginal(source, to: app.signingCertificateURL")
+        self.assertLess(grouped, unique)
+        self.assertLess(unique, copied)
+        self.assertIn("Set($0.map { $0.resignedBundleIdentifier })", body)
+        self.assertIn("outcomes.conflict += 1", body[unique:copied])
+        for forbidden in ("removeItem", "write(to:", "getSignableCertificate", "resignApp"):
+            self.assertNotIn(forbidden, body)
+
+
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromModule(__import__(__name__))
     result = unittest.TextTestRunner(verbosity=2).run(suite)

@@ -333,9 +333,15 @@ final class PipelineExecutor: @unchecked Sendable {
             var facts: [String: String] = [:]
             if stage == "signing" {
                 facts["extension_count"] = String(context.targetAppBundle?.appExtensions.count ?? 0)
-                facts["signing_certificate_present"] = context.targetSigningCertificate == nil ? "false" : "true"
-                if let certificate = context.targetSigningCertificate {
-                    facts["signing_certificate_serial_sha256"] = lcSigningHash(certificate.serialNumber)
+                if context.isPreservationRefresh {
+                    facts.merge(lcPreservationCertificateFacts(
+                        verifiedSerial: context.verifiedRefreshCertificate?.serial,
+                        verifiedDER: context.verifiedRefreshCertificate?.data)) { _, observed in observed }
+                } else {
+                    facts["signing_certificate_present"] = context.targetSigningCertificate == nil ? "false" : "true"
+                    if let certificate = context.targetSigningCertificate {
+                        facts["signing_certificate_serial_sha256"] = lcSigningHash(certificate.serialNumber)
+                    }
                 }
             }
             if case .refresh = appOperation {
@@ -550,6 +556,17 @@ func lcSafeSigningCause(_ error: Error, portalResponse: Bool = false) -> String 
         }
     }
     return "unknownSigningCause"
+}
+
+// Evidence source for preservation admission only, never the active signing
+// certificate. Missing/empty verified cache evidence must not imply a fallback.
+func lcPreservationCertificateFacts(verifiedSerial: String?, verifiedDER: Data?) -> [String: String] {
+    guard let serial = verifiedSerial, !serial.isEmpty,
+          let der = verifiedDER, !der.isEmpty else {
+        return ["signing_certificate_present": "false", "signing_certificate_source": "unavailable"]
+    }
+    return ["signing_certificate_present": "true", "signing_certificate_source": "verifiedRefreshCache",
+            "signing_certificate_serial_sha256": lcSigningHash(serial)]
 }
 
 func lcSigningHash(_ value: String) -> String {

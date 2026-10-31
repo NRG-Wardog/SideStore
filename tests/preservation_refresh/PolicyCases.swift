@@ -63,7 +63,7 @@ rejected("bool not integer", .changedAuthorization, old: [old], new: wrongBool)
 var conflict = profile(3, 2500)
 ent = conflict["Entitlements"] as! [String: Any]; ent["new-entitlement"] = true
 conflict["Entitlements"] = ent
-rejected("same identity authority conflict", .conflictingInstalledAuthority, old: [old, conflict], new: next)
+rejected("same identity authority conflict", .entitlementsDiffer, old: [old, conflict], new: next)
 var malformed = next; malformed.removeValue(forKey: "DeveloperCertificates")
 rejected("partial profile projection", .malformedProfile, old: [old], new: malformed)
 func preflight(_ profiles: [[String: Any]]) throws -> PreservedProfilePolicy.Evidence {
@@ -105,8 +105,91 @@ do {
     _ = try PreservedProfilePolicy.snapshot(binding: baseline.binding, installed: [old, otherPrefix], now: now)
     fatalError("fresh alternate prefix accepted")
 } catch let error as PreservedProfilePolicy.Failure {
-    precondition(error == .conflictingInstalledAuthority); passed.append("fresh-alternate-prefix-conflict")
+    precondition(error == .alternateIdentity); passed.append("fresh-alternate-prefix-conflict")
 }
 
-precondition(passed.count == 34 && Set(passed).count == 34)
+// Every refinement remains rejection-only and is invariant to inventory order.
+func diagnostic(_ label: String, _ expected: PreservedProfilePolicy.Failure, _ inventory: [[String: Any]]) {
+    for items in [inventory, Array(inventory.reversed())] {
+        do { _ = try preflight(items); fatalError("diagnostic accepted") }
+        catch let error as PreservedProfilePolicy.Failure { precondition(error == expected, "\(label): \(error)") }
+        catch { fatalError("unexpected diagnostic error") }
+    }
+    precondition(expected.preservationConflict == expected.rawValue)
+    passed.append(label)
+}
+diagnostic("detail-multiple-identities", .multipleIdentities, [old, otherPrefix])
+var teamMismatch = profile(4, 2500)
+var teamEnt = teamMismatch["Entitlements"] as! [String: Any]
+teamEnt["com.apple.developer.team-identifier"] = "OTHER"
+teamMismatch["Entitlements"] = teamEnt; teamMismatch["TeamIdentifier"] = ["OTHER"]
+diagnostic("detail-team-mismatch", .teamMismatch, [old, teamMismatch])
+diagnostic("detail-prefix-mismatch", .prefixMismatch, [old, inconsistentPrefix.merging(["UUID": profile(4,2500)["UUID"]!]) { _, new in new }])
+var signerMissing = profile(4, 2500); signerMissing["DeveloperCertificates"] = [Data([4])]
+diagnostic("detail-signer-missing", .signerMissing, [old, signerMissing])
+diagnostic("detail-entitlements-differ", .entitlementsDiffer, [old, conflict])
+let fieldDiagnostics: [(String, Any, PreservedProfilePolicy.Failure, String)] = [
+    ("DeveloperCertificates", [der, Data([4])], .certificatesDiffer, "detail-certificates-differ"),
+    ("ProvisionedDevices", ["other"], .devicesDiffer, "detail-devices-differ"),
+    ("Platform", ["other"], .platformsDiffer, "detail-platforms-differ"),
+    ("DER-Encoded-Profile", Data([4]), .embeddedDERDiffer, "detail-embedded-der-differ"),
+    ("Name", "other", .displayMetadataDiffer, "detail-display-metadata-differ"),
+    ("UnknownRestriction", true, .otherAuthorityDiffer, "detail-other-authority-differ")
+]
+for (key, value, expected, label) in fieldDiagnostics {
+    var changed = profile(4, 2500); changed[key] = value
+    diagnostic(label, expected, [old, changed])
+}
+var multipleDifferences = conflict
+multipleDifferences["DER-Encoded-Profile"] = Data([4]); multipleDifferences["Name"] = "other"
+diagnostic("detail-fixed-precedence", .entitlementsDiffer, [old, multipleDifferences])
+// A stale expired profile still participates: diagnosis must not relax admission.
+var expiredConflict = conflict; expiredConflict["ExpirationDate"] = Date(timeIntervalSince1970: 900)
+diagnostic("detail-expired-conflict-retained", .entitlementsDiffer, [old, expiredConflict])
+
+// Identity regression: a different valid bundle can end in our complete ID.
+var suffixNeighbor = profile(20, 2500)
+var suffixEntitlements = suffixNeighbor["Entitlements"] as! [String: Any]
+suffixEntitlements["application-identifier"] = "PREFIX.other.example.app"
+suffixNeighbor["Entitlements"] = suffixEntitlements
+let priorSuffixIdentities = Set([old, suffixNeighbor].compactMap {
+    ($0["Entitlements"] as? [String: Any])?["application-identifier"] as? String
+}.filter { !$0.contains("*") && $0.hasSuffix(".example.app") && $0.count > "example.app".count + 1 })
+precondition(priorSuffixIdentities.count == 2) // Exact prior guard rejected this inventory.
+for inventory in [[old, suffixNeighbor], [suffixNeighbor, old]] {
+    let selected = try preflight(inventory)
+    precondition(selected.binding == baseline.binding && selected.priorUUIDs == baseline.priorUUIDs)
+}
+passed.append("identity-valid-suffix-neighbor-not-target")
+let freshSuffix = try PreservedProfilePolicy.snapshot(binding: baseline.binding, installed: [old, suffixNeighbor], now: now)
+precondition(baseline.hasSameTarget(as: freshSuffix))
+_ = try PreservedProfilePolicy.validate(candidate: next, baseline: freshSuffix, now: now)
+passed.append("identity-fresh-suffix-neighbor-no-drift")
+do { _ = try preflight([suffixNeighbor]); fatalError("suffix-only inventory selected") }
+catch let error as PreservedProfilePolicy.Failure {
+    precondition(error == .missingInstalledProfile); passed.append("identity-suffix-only-missing-target")
+}
+// Legacy prefix remains independent of the team; no TeamID synthesis.
+precondition(baseline.binding.applicationIdentifier == "PREFIX.example.app" && baseline.binding.teamID == "TEAM")
+passed.append("identity-legacy-prefix-not-team-preserved")
+for (label, prefixes) in [("identity-dotted-prefix-rejected", ["PREFIX.other"]),
+                          ("identity-ambiguous-prefix-rejected", ["PREFIX", "OTHER"])] {
+    var malformedIdentity = suffixNeighbor
+    malformedIdentity["ApplicationIdentifierPrefix"] = prefixes
+    do { _ = try preflight([malformedIdentity]); fatalError("malformed prefix selected") }
+    catch let error as PreservedProfilePolicy.Failure {
+        precondition(error == .prefixMismatch); passed.append(label)
+    }
+}
+var wildcardIdentity = suffixNeighbor
+suffixEntitlements["application-identifier"] = "PREFIX.*.example.app"
+wildcardIdentity["Entitlements"] = suffixEntitlements
+let wildcardSnapshot = try preflight([old, wildcardIdentity])
+precondition(baseline.hasSameTarget(as: wildcardSnapshot)); passed.append("identity-wildcard-not-selected")
+do { _ = try preflight([old, suffixNeighbor, otherPrefix]); fatalError("real alternate prefix selected") }
+catch let error as PreservedProfilePolicy.Failure {
+    precondition(error == .multipleIdentities); passed.append("identity-real-alternate-prefix-still-conflicts")
+}
+
+precondition(passed.count == 55 && Set(passed).count == 55)
 print(String(data: try JSONSerialization.data(withJSONObject: ["schema":"preservation-refresh-policy-v1", "status":"PASS", "cases":passed, "device_executed":false], options:[.sortedKeys]), encoding:.utf8)!)

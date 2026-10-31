@@ -33,7 +33,28 @@
     "unrelated-inventory-preserved-target",
     "changed-inventory-different-target",
     "fresh-uuid-collision",
-    "fresh-alternate-prefix-conflict"
+    "fresh-alternate-prefix-conflict",
+    "detail-multiple-identities",
+    "detail-team-mismatch",
+    "detail-prefix-mismatch",
+    "detail-signer-missing",
+    "detail-entitlements-differ",
+    "detail-certificates-differ",
+    "detail-devices-differ",
+    "detail-platforms-differ",
+    "detail-embedded-der-differ",
+    "detail-display-metadata-differ",
+    "detail-other-authority-differ",
+    "detail-fixed-precedence",
+    "detail-expired-conflict-retained",
+    "identity-valid-suffix-neighbor-not-target",
+    "identity-fresh-suffix-neighbor-no-drift",
+    "identity-suffix-only-missing-target",
+    "identity-legacy-prefix-not-team-preserved",
+    "identity-dotted-prefix-rejected",
+    "identity-ambiguous-prefix-rejected",
+    "identity-wildcard-not-selected",
+    "identity-real-alternate-prefix-still-conflicts"
   ],
   "integration": [
     "actual-fetch-refresh-preserves-identity-and-extension-metadata",
@@ -53,6 +74,10 @@
     "postread-unavailable-preserves-main-and-extension-expiry",
     "postread-mismatch-preserves-main-and-extension-expiry",
     "admission-revoked-after-preflight-before-injection",
-    "normal-install-nil-recorded-serial-preserved-refresh"
+    "normal-install-nil-recorded-serial-preserved-refresh",
+    "conflict-detail-preflight-read-only-no-portal-no-install",
+    "conflict-detail-finite-map-and-scope",
+    "fresh-alternate-identity-detail-no-install",
+    "fresh-entitlements-detail-no-install"
   ]
 }

@@ -26,9 +26,21 @@ struct V3RefreshSelectionFailure: Error, Sendable {
     enum Scope: String, Sendable { case host, nonHost, unknown }
     let reason: Reason
     let scope: Scope
+    let preservationConflict: String?
+    init(reason: Reason, scope: Scope, preservationConflict: String? = nil) {
+        self.reason = reason; self.scope = scope; self.preservationConflict = preservationConflict
+    }
     var facts: [String: String] {
-        ["refresh_failure_kind": "invalidParameters", "local_precondition": reason.rawValue,
-         "refresh_target_scope": scope.rawValue]
+        var result = ["refresh_failure_kind": "invalidParameters", "local_precondition": reason.rawValue,
+                      "refresh_target_scope": scope.rawValue]
+        if reason == .preservationAuthorityConflict, scope == .nonHost,
+           let detail = preservationConflict,
+           ["multipleIdentities", "alternateIdentity", "teamMismatch", "prefixMismatch", "signerMissing",
+            "entitlementsDiffer", "certificatesDiffer", "devicesDiffer", "platformsDiffer",
+            "embeddedDERDiffer", "displayMetadataDiffer", "otherAuthorityDiffer"].contains(detail) {
+            result["preservation_conflict"] = detail
+        }
+        return result
     }
 }
 
@@ -75,6 +87,7 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
             return app
         }
         
+        var preservationMutationDispatched = false
         do {
             await CellularRefreshManager.shared.turnOffDataIfNeeded()
             // V3_REFRESH_PROFILE_ADMISSION_V1: the cellular await may expire the
@@ -92,6 +105,7 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
                   selection.profiles.allSatisfy({ $0.expirationDate > admissionDate }) else {
                 throw OperationError.invalidParameters("The selected signing lifetime expired before installation began.")
             }
+            preservationMutationDispatched = true
             let dispatched = V3RefreshVerification(installAcknowledged: false, preservation: context.isPreservationRefresh ? "authorizationPreserved" : nil)
             context.refreshVerification = dispatched
             context.recordRefreshVerification?(dispatched)
@@ -104,6 +118,11 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
             context.refreshVerification = acknowledged
             context.recordRefreshVerification?(acknowledged)
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
+        } catch let selection as V3RefreshSelectionFailure where context.isPreservationRefresh && !preservationMutationDispatched {
+            // Retain only typed, finite pre-dispatch preservation guards. Actual
+            // injection/ACK failures retain their installation boundary unchanged.
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            throw selection
         } catch {
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
             throw V3RefreshFailureBoundary.provisioningProfileInstallation.preserving(error)
@@ -454,6 +473,18 @@ enum PreservedProfilePolicy {
         case missingHistoricalBinding, malformedProfile, missingInstalledProfile
         case conflictingInstalledAuthority, duplicateUUIDConflict, changedAuthorization
         case expiredCertificate, noEffectiveExtension
+        // Diagnostic refinement only: all map to the existing public conflict.
+        case multipleIdentities, alternateIdentity, teamMismatch, prefixMismatch, signerMissing
+        case entitlementsDiffer, certificatesDiffer, devicesDiffer, platformsDiffer
+        case embeddedDERDiffer, displayMetadataDiffer, otherAuthorityDiffer
+        var preservationConflict: String? {
+            switch self {
+            case .multipleIdentities, .alternateIdentity, .teamMismatch, .prefixMismatch, .signerMissing,
+                 .entitlementsDiffer, .certificatesDiffer, .devicesDiffer, .platformsDiffer,
+                 .embeddedDERDiffer, .displayMetadataDiffer, .otherAuthorityDiffer: return rawValue
+            default: return nil
+            }
+        }
     }
     struct Binding: Equatable, Sendable {
         let resignedBundleID: String
@@ -510,6 +541,22 @@ enum PreservedProfilePolicy {
         let prefixes: [String]
         let authority: Value
         let complete: Value
+        // Decode identity using the profile's declared App ID prefix, not an
+        // arbitrary suffix. A different bundle may end with the target bundle ID.
+        // Legacy App ID prefixes need not equal TeamIdentifier (Apple TN2318).
+        func targetsBundle(_ bundleID: String) -> Bool {
+            guard !applicationID.contains("*") else { return false }
+            guard prefixes.count == 1, let prefix = prefixes.first,
+                  !prefix.isEmpty, !prefix.contains("."), !prefix.contains("*"),
+                  applicationID.hasPrefix(prefix + ".") else {
+                // Preserve prior conservative handling of malformed/ambiguous
+                // declarations: a possible target must still reach rejection,
+                // never disappear from the authority checks as "unrelated".
+                return applicationID.hasSuffix("." + bundleID) &&
+                    applicationID.count > bundleID.count + 1
+            }
+            return String(applicationID.dropFirst(prefix.count + 1)) == bundleID
+        }
         init(_ raw: [String: Any]) throws {
             guard let id = raw["UUID"] as? String, let parsed = UUID(uuidString: id),
                   let entitlements = raw["Entitlements"] as? [String: Any],
@@ -530,7 +577,8 @@ enum PreservedProfilePolicy {
             // CMS envelope signature is outside this decoded payload. All unknown
             // payload fields remain compared, including Name, platforms, devices,
             // prefix arrays, every entitlement and certificate bytes. Array order
-            // is intentionally preserved (e.g. default keychain group).
+            // is conservatively preserved where ordering semantics are unverified;
+            // this does not infer which keychain group an installed binary uses.
             for key in ["UUID", "CreationDate", "ExpirationDate", "TimeToLive"] {
                 authorization.removeValue(forKey: key)
             }
@@ -543,13 +591,11 @@ enum PreservedProfilePolicy {
         guard !resignedBundleID.isEmpty else { throw Failure.missingHistoricalBinding }
         let parsed = try installed.map { try Profile($0) }
         let identities = Set(parsed.filter {
-            !$0.applicationID.contains("*") &&
-            $0.applicationID.hasSuffix("." + resignedBundleID) &&
-            $0.applicationID.count > resignedBundleID.count + 1
+            $0.targetsBundle(resignedBundleID)
         }.map(\.applicationID))
         guard !identities.isEmpty else { throw Failure.missingInstalledProfile }
         guard identities.count == 1, let identity = identities.first else {
-            throw Failure.conflictingInstalledAuthority
+            throw Failure.multipleIdentities
         }
         return try snapshot(binding: Binding(resignedBundleID: resignedBundleID,
             applicationIdentifier: identity, teamID: teamID, historicalSignerDER: historicalSignerDER,
@@ -572,19 +618,40 @@ enum PreservedProfilePolicy {
         }
         // A new alternate prefix for this exact bundle identity is target drift,
         // not an unrelated application's inventory change.
-        guard all.filter({ !$0.applicationID.contains("*") &&
-            $0.applicationID.hasSuffix("." + binding.resignedBundleID) &&
-            $0.applicationID.count > binding.resignedBundleID.count + 1
+        guard all.filter({ $0.targetsBundle(binding.resignedBundleID)
         }).allSatisfy({ $0.applicationID == binding.applicationIdentifier }) else {
-            throw Failure.conflictingInstalledAuthority
+            throw Failure.alternateIdentity
         }
         let old = all.filter { $0.applicationID == binding.applicationIdentifier }
         guard let first = old.first else { throw Failure.missingInstalledProfile }
         let exactPrefix = String(binding.applicationIdentifier.dropLast(binding.resignedBundleID.count + 1))
-        guard !exactPrefix.isEmpty, !exactPrefix.contains("."), old.allSatisfy({ $0.teamID == binding.teamID &&
-            $0.prefixes == [exactPrefix] &&
-            $0.certificates.contains(binding.historicalSignerDER) && $0.authority == first.authority }) else {
-            throw Failure.conflictingInstalledAuthority
+        // Same acceptance predicate, split only for finite privacy-safe diagnostics.
+        // Fixed category precedence is independent of CopyAll inventory order.
+        guard old.allSatisfy({ $0.teamID == binding.teamID }) else { throw Failure.teamMismatch }
+        guard !exactPrefix.isEmpty, !exactPrefix.contains("."),
+              old.allSatisfy({ $0.prefixes == [exactPrefix] }) else { throw Failure.prefixMismatch }
+        guard old.allSatisfy({ $0.certificates.contains(binding.historicalSignerDER) }) else {
+            throw Failure.signerMissing
+        }
+        guard old.allSatisfy({ $0.authority == first.authority }) else {
+            // No field is excluded or normalized by this classification.
+            // Even embedded DER and unknown fields remain part of strict equality.
+            let categories: [([String], Failure)] = [
+                (["Entitlements"], .entitlementsDiffer),
+                (["DeveloperCertificates"], .certificatesDiffer),
+                (["ProvisionedDevices", "ProvisionsAllDevices"], .devicesDiffer),
+                (["Platform"], .platformsDiffer),
+                (["DER-Encoded-Profile"], .embeddedDERDiffer),
+                (["Name", "AppIDName", "TeamName"], .displayMetadataDiffer)
+            ]
+            for (keys, reason) in categories {
+                guard case let .dictionary(reference) = first.authority else { continue }
+                if old.contains(where: { profile in
+                    guard case let .dictionary(value) = profile.authority else { return false }
+                    return keys.contains { value[$0] != reference[$0] }
+                }) { throw reason }
+            }
+            throw Failure.otherAuthorityDiffer
         }
         return Evidence(binding: binding, priorUUIDs: Array(Set(old.map(\.uuid))).sorted(),
             priorEffectiveExpiration: min(old.map(\.expiration).max()!, binding.certificateExpiration),
@@ -636,13 +703,17 @@ struct V3PreservationRefreshState: Sendable {
         case .missingHistoricalBinding: reason = .preservationIdentityUnavailable
         case .missingInstalledProfile: reason = .preservationEvidenceUnavailable
         case .malformedProfile: reason = .preservationMalformedProfile
-        case .conflictingInstalledAuthority: reason = .preservationAuthorityConflict
+        case .conflictingInstalledAuthority, .multipleIdentities, .alternateIdentity,
+             .teamMismatch, .prefixMismatch, .signerMissing, .entitlementsDiffer,
+             .certificatesDiffer, .devicesDiffer, .platformsDiffer, .embeddedDERDiffer,
+             .displayMetadataDiffer, .otherAuthorityDiffer: reason = .preservationAuthorityConflict
         case .duplicateUUIDConflict: reason = .preservationUUIDConflict
         case .changedAuthorization: reason = .preservationAuthorizationChanged
         case .expiredCertificate: reason = .preservationExpiredCertificate
         case .noEffectiveExtension: reason = .preservationNotExtended
         case nil: reason = .preservationMalformedProfile
         }
-        return V3RefreshSelectionFailure(reason: reason, scope: .nonHost)
+        return V3RefreshSelectionFailure(reason: reason, scope: .nonHost,
+            preservationConflict: (error as? PreservedProfilePolicy.Failure)?.preservationConflict)
     }
 }
