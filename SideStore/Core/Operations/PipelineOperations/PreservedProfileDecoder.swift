@@ -273,7 +273,10 @@ enum PreservedProfileDecoder {
                     let compact = String(String.UnicodeScalarView(node.text.unicodeScalars.filter {
                         ![UInt32(0x20), 0x09, 0x0D, 0x0A].contains($0.value)
                     }))
-                    try check(Data(base64Encoded: compact) != nil)
+                    guard let decoded = Data(base64Encoded: compact) else { throw Failure.malformed }
+                    // Foundation may accept excess padding or nonzero unused bits.
+                    // Only the canonical RFC 4648 spelling of these bytes is accepted.
+                    try check(decoded.base64EncodedString().utf8.elementsEqual(compact.utf8))
                 }
                 if node.name == "date" {
                     try check(node.text.range(of: #"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"#, options: .regularExpression) != nil)

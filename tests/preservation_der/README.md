@@ -1,6 +1,6 @@
 # Strict preservation DER decoder qualification
 
-`run.sh` compiles the complete production decoder with 45 synthetic cases.
+`run.sh` compiles the complete production decoder with 59 synthetic cases.
 It does not authenticate CMS and explicitly reports `cms_verified:false`.
 Run `python3 -B tests/preservation_der/test_contract.py` for source/fixture closure.
 
@@ -37,3 +37,11 @@ then checks LF/CR/CRLF/tab/space acceptance and NBSP/invalid alphabet/padding
 rejection. Only ASCII Unicode scalars are removed; strict Base64 remains.
 Primary references: https://developer.apple.com/documentation/swift/character/isnewline
 and https://www.unicode.org/reports/tr29/ (GB3).
+
+Foundation Base64 decoding alone is not canonical validation: the native test
+observed acceptance of an extra '=' after an otherwise complete 40-character
+encoding. Decoded bytes must re-encode to exactly the whitespace-stripped input.
+Regressions retain the observed negative and cover unused padding bits, excess/
+missing/interior padding, trailing garbage, truncation and valid 0/1/2 padding.
+Canonical standard alphabet and zero-pad-bit reference:
+https://www.rfc-editor.org/rfc/rfc4648.html#section-3.5

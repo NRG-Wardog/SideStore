@@ -44,7 +44,21 @@
     "legacy-character-whitespace-reproduces-lf",
     "xml-data-vt-rejected",
     "xml-data-ff-rejected",
-    "xml-data-line-separator-rejected"
+    "xml-data-line-separator-rejected",
+    "xml-data-canonical-no-padding-accepted",
+    "xml-data-canonical-one-padding-accepted",
+    "xml-data-canonical-two-padding-accepted",
+    "xml-data-nonzero-unused-bits-two-padding-rejected",
+    "xml-data-nonzero-unused-bits-one-padding-rejected",
+    "xml-data-excess-padding-rejected",
+    "xml-data-missing-padding-rejected",
+    "xml-data-trailing-garbage-rejected",
+    "xml-data-truncated-quartet-rejected",
+    "xml-data-interior-padding-rejected",
+    "xml-data-canonical-empty-accepted",
+    "xml-data-canonical-padded-whitespace-accepted",
+    "xml-data-standard-plus-slash-accepted",
+    "xml-data-url-safe-alphabet-rejected"
   ],
   "public": [
     "public-0-outer-role-authenticated",

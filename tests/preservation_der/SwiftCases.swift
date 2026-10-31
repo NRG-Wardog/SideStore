@@ -3,7 +3,7 @@ import Foundation
 struct Case: Decodable { let name: String; let outer: String; let inner: String; let accept: Bool; let group: String?; let differentFrom: String? }
 struct Cases: Decodable { let schema: String; let cases: [Case] }
 let input = try JSONDecoder().decode(Cases.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])))
-precondition(input.schema == "scratch-parser-only-v1" && input.cases.count == 45)
+precondition(input.schema == "scratch-parser-only-v1" && input.cases.count == 59)
 var groups: [String: [String: Data]] = [:]
 var names = Set<String>()
 for test in input.cases {
