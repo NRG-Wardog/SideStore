@@ -94,6 +94,13 @@
     "authenticated-byte-boundary-32mib",
     "authenticated-byte-boundary-over32mib",
     "authenticated-record-boundary-over1mib",
-    "raw-equal-admission-unchanged-by-semantic-budget"
+    "raw-equal-admission-unchanged-by-semantic-budget",
+    "unknown-cms-signer-diagnostic-installed-no-mutation",
+    "unknown-cms-signer-diagnostic-candidate-no-mutation",
+    "unknown-cms-signer-diagnostic-freshInstalled-no-mutation",
+    "unknown-cms-signer-diagnostic-freshCandidate-no-mutation",
+    "unknown-cms-signer-unverified-no-fingerprint-or-role",
+    "unknown-cms-signer-diagnostic-admission-revoked",
+    "unknown-cms-signer-diagnostic-producer-finite-scope"
   ]
 }

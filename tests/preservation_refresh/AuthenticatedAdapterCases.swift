@@ -151,6 +151,75 @@ enum AuthenticatedAdapterCases {
    precondition(!prepared.usesAuthenticatedDER && FixtureCMSBoundary.calls==0)
    passed.append("raw-equal-admission-unchanged-by-semantic-budget")
   }
+  // Diagnostic observations must never turn an unknown signer into authority.
+  for phase in ["installed", "candidate", "freshInstalled", "freshCandidate"] {
+   let c=makeContext();FixtureCMSBoundary.reset()
+   let a=register(30,1000),b=register(31,1200),candidate=register(32,2000)
+   let old = phase == "candidate" ? [a] : [a,b]
+   var reads=0
+   PortalProbe.shared.candidate=candidate
+   c.readInstalledProvisioningProfiles={
+    reads += 1;PortalProbe.shared.calls.append("read")
+    if reads==3 && phase.hasPrefix("fresh") {
+     let id = phase == "freshInstalled" ? 30 : 32
+     FixtureCMSBoundary.innerFailures[Data("synthetic-inner-\(id)".utf8)] = .unsupportedSigner
+    }
+    return old.map(\.data)
+   }
+   if !phase.hasPrefix("fresh") {
+    let id = phase == "installed" ? 30 : 32
+    FixtureCMSBoundary.innerFailures[Data("synthetic-inner-\(id)".utf8)] = .unsupportedSigner
+   }
+   FixtureCMSBoundary.diagnostic=ProfileCMSSignerEvidence(algorithmAndAttributes:.passed,pin:.failed,
+    chain:.passed,temporal:.passed,signature:.passed,profileSubjectMarker:true,profileIssuerMarker:true,
+    profileExtensionMarker:true,appDeveloperMarker:false,signerSHA256:String(repeating:"a",count:64))
+   let beforeMain=c.installedApp!.expirationDate,beforeExtension=c.installedApp!.appExtensions[0].expirationDate
+   do { try await execute(c);fatalError("Diagnostic accepted unknown signer") }
+   catch let e as V3RefreshSelectionFailure {
+    precondition(e.reason == .preservationAuthorityConflict && e.preservationConflict == "embeddedDERUnsupportedSigner")
+    precondition(e.facts["cms_signer_diagnostic"] == "cs1|\(phase)|passed|passed|passed|passed|failed|1110|"+String(repeating:"a",count:64))
+   }
+   precondition(Injection.shared.count==0 && c.refreshVerification==nil && FixtureCMSBoundary.diagnosticCalls==1)
+   precondition(c.installedApp!.expirationDate==beforeMain && c.installedApp!.appExtensions[0].expirationDate==beforeExtension)
+   if phase == "installed" { precondition(!PortalProbe.shared.calls.contains("lookup-existing-id")) }
+   passed.append("unknown-cms-signer-diagnostic-"+phase+"-no-mutation")
+  }
+  do {
+   let c=makeContext();FixtureCMSBoundary.reset();let a=register(30,1000),b=register(31,1200),candidate=register(32,2000)
+   configure(c,[a,b],candidate)
+   FixtureCMSBoundary.innerFailures[Data("synthetic-inner-30".utf8)] = .unsupportedSigner
+   FixtureCMSBoundary.diagnostic=ProfileCMSSignerEvidence(algorithmAndAttributes:.passed,pin:.failed,
+    chain:.failed,temporal:.unchecked,signature:.unchecked,profileSubjectMarker:true,profileIssuerMarker:true,
+    profileExtensionMarker:true,appDeveloperMarker:true,signerSHA256:"CANARY-OWNER-CERTIFICATE")
+   do { try await execute(c);fatalError("Unverified diagnostic accepted") }
+   catch let e as V3RefreshSelectionFailure {
+    precondition(e.facts["cms_signer_diagnostic"] == "cs1|installed|passed|failed|unchecked|unchecked|failed|unchecked|unknown")
+    precondition(!e.facts.description.contains("CANARY"))
+   }
+   precondition(Injection.shared.count==0 && !PortalProbe.shared.calls.contains("lookup-existing-id"))
+   passed.append("unknown-cms-signer-unverified-no-fingerprint-or-role")
+  }
+  do {
+   let c=makeContext();FixtureCMSBoundary.reset();let a=register(30,1000),b=register(31,1200),candidate=register(32,2000)
+   configure(c,[a,b],candidate)
+   FixtureCMSBoundary.innerFailures[Data("synthetic-inner-30".utf8)] = .unsupportedSigner
+   var allowed=true;c.profileMutationAdmission={if !allowed {throw CancellationError()} }
+   FixtureCMSBoundary.duringDiagnostic={allowed=false}
+   do { try await execute(c);fatalError("Diagnostic admission revocation ignored") } catch is CancellationError {}
+   precondition(FixtureCMSBoundary.diagnosticCalls==1 && Injection.shared.count==0 && !PortalProbe.shared.calls.contains("lookup-existing-id"))
+   passed.append("unknown-cms-signer-diagnostic-admission-revoked")
+  }
+  do {
+   let valid="cs1|installed|passed|passed|passed|passed|failed|1110|"+String(repeating:"a",count:64)
+   for bad in ["CANARY-OWNER-PROFILE",valid+"|extra",valid.replacingOccurrences(of:"installed",with:"CANARY"),
+    valid.replacingOccurrences(of:"failed",with:"passed"),valid.replacingOccurrences(of:"1110",with:"00000"),
+    valid.replacingOccurrences(of:String(repeating:"a",count:64),with:String(repeating:"G",count:64))] {
+    precondition(V3RefreshSelectionFailure(reason:.preservationAuthorityConflict,scope:.nonHost,preservationConflict:"embeddedDERUnsupportedSigner",cmsSignerDiagnostic:bad).facts["cms_signer_diagnostic"] == nil)
+   }
+   precondition(V3RefreshSelectionFailure(reason:.preservationAuthorityConflict,scope:.host,preservationConflict:"embeddedDERUnsupportedSigner",cmsSignerDiagnostic:valid).facts["cms_signer_diagnostic"] == nil)
+   precondition(V3RefreshSelectionFailure(reason:.preservationAuthorityConflict,scope:.nonHost,preservationConflict:"embeddedDERDiffer",cmsSignerDiagnostic:valid).facts["cms_signer_diagnostic"] == nil)
+   passed.append("unknown-cms-signer-diagnostic-producer-finite-scope")
+  }
   FixtureCMSBoundary.reset();return passed
  }
 }

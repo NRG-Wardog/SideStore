@@ -26,7 +26,7 @@ The format is changeable; this deliberately supports a strict bounded subset.
 `run_public.sh --openssl-root <same-run OpenSSL 3.5.9 install> --python <absolute harness interpreter>` compiles the
 actual C verifier, actual gateway Swift module, actual public Minimuxer facade
 and this decoder. It checks compile-header and linked-library versions, uses no
-synthetic-anchor define and validates a 16-case structured result. Public cases
+synthetic-anchor define and validates an 18-case structured result. Public cases
 cover both role signatures and complete binding for two profiles, corrupted
 signatures, role confusion and cross-profile binding rejection. Downloaded
 public bytes never leave the runner's temporary directory; the trap cleans it.
@@ -47,3 +47,8 @@ Canonical standard alphabet and zero-pad-bit reference:
 https://www.rfc-editor.org/rfc/rfc4648.html#section-3.5
 
 The required `--python` is the same existing `sys.executable` used by the harness and C test lane, including a valid invocation symlink. Both public-fixture acquisition and final JSON validation use that path; there is no PATH-based Python fallback. This preserves interpreter continuity, not a separate cryptographic Python-version pin or a new installation.
+
+Two diagnostic facade cases additionally exercise actual C/Gateway/Minimuxer
+finite evidence and compare public signer hashes to reviewed certificate provenance.
+Tampered and empty input withhold hashes. This does not approve unknown signers,
+change preservation acceptance, or establish device-specific signer coverage.

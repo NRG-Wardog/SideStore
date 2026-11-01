@@ -7,7 +7,7 @@ class Contract(unittest.TestCase):
   cases=f['cases'];self.assertEqual(len(cases),59);self.assertEqual(len({c['name'] for c in cases}),59)
   self.assertEqual(sum(c['accept'] for c in cases),25)
   expected=json.loads((HERE/'expected-cases.json').read_text())
-  self.assertEqual([c['name'] for c in cases],expected['parser']);self.assertEqual(len(expected['public']),16)
+  self.assertEqual([c['name'] for c in cases],expected['parser']);self.assertEqual(len(expected['public']),18)
   for c in cases:
    self.assertIs(type(c['accept']),bool)
    for k in ['outer','inner']:self.assertTrue(base64.b64decode(c[k],validate=True))
@@ -47,7 +47,7 @@ class Contract(unittest.TestCase):
    self.assertIn(token,s)
   self.assertNotIn('-DV3_CMS_TESTING',s)
   f=(HERE/'PublicCases.swift').read_text()
-  for token in ['ProfileCMSVerifier.authenticateOuter(cms)','ProfileCMSVerifier.authenticateInner(nested)','PreservedProfileDecoder.decode(verifiedOuterXML: outer, verifiedInnerDER: inner)','cases.count == 16','cross-profile-binding-rejected']:
+  for token in ['ProfileCMSVerifier.authenticateOuter(cms)','ProfileCMSVerifier.authenticateInner(nested)','PreservedProfileDecoder.decode(verifiedOuterXML: outer, verifiedInnerDER: inner)','cases.count == 18','cross-profile-binding-rejected','ProfileCMSVerifier.diagnoseInnerSigner(nested)','evidence.signerSHA256 == signerProvenance[index].leaf_sha256','failed.signature == .failed','unchecked.signature == .unchecked']:
    self.assertIn(token,f)
  def test_public_manifest_bounded_data_only(self):
   m=json.loads((HERE/'public-fixtures.json').read_text());self.assertEqual(m['schema'],'preservation-der-public-fixtures-v1')

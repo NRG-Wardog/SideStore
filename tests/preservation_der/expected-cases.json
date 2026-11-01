@@ -63,6 +63,7 @@
   "public": [
     "public-0-outer-role-authenticated",
     "public-0-inner-pinned-role-authenticated",
+    "public-0-signer-diagnostic-facade",
     "public-0-complete-authority-bound",
     "public-0-outer-tamper-rejected",
     "public-0-inner-tamper-rejected",
@@ -70,6 +71,7 @@
     "public-0-outer-cannot-be-inner-role",
     "public-1-outer-role-authenticated",
     "public-1-inner-pinned-role-authenticated",
+    "public-1-signer-diagnostic-facade",
     "public-1-complete-authority-bound",
     "public-1-outer-tamper-rejected",
     "public-1-inner-tamper-rejected",

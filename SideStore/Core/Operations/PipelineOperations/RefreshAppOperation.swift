@@ -28,8 +28,24 @@ struct V3RefreshSelectionFailure: Error, Sendable {
     let reason: Reason
     let scope: Scope
     let preservationConflict: String?
-    init(reason: Reason, scope: Scope, preservationConflict: String? = nil) {
+    let cmsSignerDiagnostic: String?
+    init(reason: Reason, scope: Scope, preservationConflict: String? = nil, cmsSignerDiagnostic: String? = nil) {
         self.reason = reason; self.scope = scope; self.preservationConflict = preservationConflict
+        self.cmsSignerDiagnostic = cmsSignerDiagnostic
+    }
+    // This producer is also extracted independently of the wire model. Validate
+    // here AND at the receiving boundary; never forward arbitrary error text.
+    static func validCMSSignerDiagnostic(_ value: String) -> Bool {
+        guard value.utf8.count <= 200 else { return false }
+        let fields = value.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard fields.count == 9, fields[0] == "cs1",
+              ["installed", "candidate", "freshInstalled", "freshCandidate"].contains(fields[1]),
+              fields[2...6].allSatisfy({ ["unchecked", "passed", "failed"].contains($0) }),
+              fields[6] == "failed" else { return false }
+        let verified = fields[2...5].allSatisfy { $0 == "passed" }
+        if !verified { return fields[7] == "unchecked" && fields[8] == "unknown" }
+        guard fields[7].utf8.count == 4, fields[7].utf8.allSatisfy({ $0 == 48 || $0 == 49 }) else { return false }
+        return fields[8] == "unknown" || (fields[8].utf8.count == 64 && fields[8].utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) })
     }
     var facts: [String: String] {
         var result = ["refresh_failure_kind": "invalidParameters", "local_precondition": reason.rawValue,
@@ -42,6 +58,10 @@ struct V3RefreshSelectionFailure: Error, Sendable {
             "embeddedDERUnsupportedSigner", "embeddedDERSignerTimeInvalid", "embeddedDERVerificationFailed",
             "embeddedDERUnsupportedRepresentation", "embeddedDERBindingMismatch"].contains(detail) {
             result["preservation_conflict"] = detail
+            if detail == "embeddedDERUnsupportedSigner", let diagnostic = cmsSignerDiagnostic,
+               Self.validCMSSignerDiagnostic(diagnostic) {
+                result["cms_signer_diagnostic"] = diagnostic
+            }
         }
         return result
     }
@@ -803,7 +823,7 @@ struct V3PreservationRefreshState: Sendable {
             }
         }
         try checkWork(admission, started: started)
-        let candidate = try authenticatedInput(candidateData)
+        let candidate = try authenticatedInput(candidateData, phase: "candidate", admission: admission, started: started)
         try checkWork(admission, started: started)
         _ = try PreservedProfilePolicy.validate(input: candidate, baseline: effective.baseline, now: now)
         try checkWork(admission, started: started)
@@ -821,7 +841,7 @@ struct V3PreservationRefreshState: Sendable {
                 throw Self.failure(.preservationSnapshotChanged)
             }
             let inputs = try Self.authenticatedTargetInputs(inventory: inventory, raw: raw,
-                resignedBundleID: baseline.binding.resignedBundleID, admission: admission, started: started)
+                resignedBundleID: baseline.binding.resignedBundleID, admission: admission, started: started, phase: "freshInstalled")
             fresh = try PreservedProfilePolicy.snapshot(binding: baseline.binding, inputs: inputs, now: now)
         } else {
             fresh = try PreservedProfilePolicy.snapshot(binding: baseline.binding, installed: raw, now: now)
@@ -829,7 +849,7 @@ struct V3PreservationRefreshState: Sendable {
         guard fresh.hasSameTarget(as: baseline) else { throw Self.failure(.preservationSnapshotChanged) }
         if usesAuthenticatedDER {
             try Self.checkWork(admission, started: started)
-            let candidate = try Self.authenticatedInput(candidateData)
+            let candidate = try Self.authenticatedInput(candidateData, phase: "freshCandidate", admission: admission, started: started)
             try Self.checkWork(admission, started: started)
             _ = try PreservedProfilePolicy.validate(input: candidate, baseline: fresh, now: now)
             try Self.checkWork(admission, started: started)
@@ -846,7 +866,7 @@ struct V3PreservationRefreshState: Sendable {
         }
     }
     private static func authenticatedTargetInputs(inventory: [Data], raw: [[String: Any]],
-        resignedBundleID: String, admission: (() throws -> Void)?, started: TimeInterval) throws -> [PreservedProfilePolicy.ProfileInput] {
+        resignedBundleID: String, admission: (() throws -> Void)?, started: TimeInterval, phase: String = "installed") throws -> [PreservedProfilePolicy.ProfileInput] {
         // A semantic alternative has an explicit bounded budget; raw-equal
         // legacy admission above is unchanged. Never truncate the inventory.
         guard inventory.count == raw.count, inventory.count <= 512 else { throw failure(.preservationEvidenceUnavailable) }
@@ -860,7 +880,7 @@ struct V3PreservationRefreshState: Sendable {
         let indices = try PreservedProfilePolicy.targetIndices(resignedBundleID: resignedBundleID, installed: raw)
         for index in indices {
             try checkWork(admission, started: started)
-            let verified = try authenticatedInput(inventory[index])
+            let verified = try authenticatedInput(inventory[index], phase: phase, admission: admission, started: started)
             // Authentication must decode exactly the same raw payload, never
             // replace a scanner-selected identity with a different CMS content.
             guard try PreservedProfilePolicy.Value(verified.raw) == PreservedProfilePolicy.Value(raw[index]) else {
@@ -871,14 +891,32 @@ struct V3PreservationRefreshState: Sendable {
         try checkWork(admission, started: started)
         return inputs
     }
-    private static func authenticatedInput(_ bytes: Data) throws -> PreservedProfilePolicy.ProfileInput {
+    private static func authenticatedInput(_ bytes: Data, phase: String, admission: (() throws -> Void)?, started: TimeInterval) throws -> PreservedProfilePolicy.ProfileInput {
         do {
             let outerXML = try ProfileCMSVerifier.authenticateOuter(bytes)
             let outer = try PreservedProfileDecoder.decodeOuter(verifiedOuterXML: outerXML)
             guard let nestedCMS = outer["DER-Encoded-Profile"] as? Data, !nestedCMS.isEmpty else {
                 throw PreservedProfilePolicy.Failure.embeddedDERUnsupportedRepresentation
             }
-            let innerDER = try ProfileCMSVerifier.authenticateInner(nestedCMS)
+            let innerDER: Data
+            do {
+                innerDER = try ProfileCMSVerifier.authenticateInner(nestedCMS)
+            } catch ProfileCMSVerificationError.unsupportedSigner {
+                // Read-only evidence is NOT an alternate authority path. Even a
+                // valid Apple chain/signature cannot admit an unapproved role.
+                try checkWork(admission, started: started)
+                let evidence = ProfileCMSVerifier.diagnoseInnerSigner(nestedCMS)
+                try checkWork(admission, started: started)
+                let verified = evidence.algorithmAndAttributes == .passed && evidence.chain == .passed &&
+                    evidence.signature == .passed && evidence.temporal == .passed
+                let role = verified ? [evidence.profileSubjectMarker, evidence.profileIssuerMarker,
+                    evidence.profileExtensionMarker, evidence.appDeveloperMarker].map { $0 ? "1" : "0" }.joined() : "unchecked"
+                let fingerprint = verified ? (evidence.signerSHA256 ?? "unknown") : "unknown"
+                let diagnostic = ["cs1", phase, evidence.algorithmAndAttributes.rawValue, evidence.chain.rawValue,
+                    evidence.signature.rawValue, evidence.temporal.rawValue, evidence.pin.rawValue, role, fingerprint].joined(separator: "|")
+                throw V3RefreshSelectionFailure(reason: .preservationAuthorityConflict, scope: .nonHost,
+                    preservationConflict: "embeddedDERUnsupportedSigner", cmsSignerDiagnostic: diagnostic)
+            }
             let decoded = try PreservedProfileDecoder.decode(verifiedOuterXML: outerXML, verifiedInnerDER: innerDER)
             // Includes candidates: model/selection metadata must describe the
             // exact authenticated payload, not a different scanner substring.

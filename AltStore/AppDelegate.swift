@@ -15098,6 +15098,40 @@ public enum CombinedVerification {
 
 
 // LC_STRUCTURED_FAILURE_V1: fixed vocabulary, no arbitrary userInfo/descriptions on the wire.
+/// Read-only CMS signer observations, never a profile authority or acceptance decision.
+/// Only verified public-certificate fingerprints are permitted; no certificate content/names.
+public struct V3CMSSignerDiagnostic {
+    public static let contextKey = "cms_signer_diagnostic"
+    public let encoded: String
+    private let fields: [String]
+    public init?(encoded: String) {
+        guard encoded.utf8.count <= 200 else { return nil }
+        let fields = encoded.components(separatedBy: "|")
+        guard fields.count == 9, fields[0] == "cs1",
+              ["installed", "candidate", "freshInstalled", "freshCandidate"].contains(fields[1]),
+              fields[2...6].allSatisfy({ ["unchecked", "passed", "failed"].contains($0) }),
+              fields[6] == "failed" else { return nil }
+        let verified = fields[2...5].allSatisfy { $0 == "passed" }
+        if verified {
+            guard fields[7].utf8.count == 4, fields[7].utf8.allSatisfy({ $0 == 48 || $0 == 49 }),
+                  fields[8] == "unknown" || (fields[8].utf8.count == 64 && fields[8].utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })) else { return nil }
+        } else {
+            guard fields[7] == "unchecked", fields[8] == "unknown" else { return nil }
+        }
+        self.encoded = encoded
+        self.fields = fields
+    }
+    public var technicalDetails: String {
+        var result = " cms_signer_input=\(fields[1]) cms_signer_algorithm=\(fields[2]) cms_signer_chain=\(fields[3]) cms_signer_signature=\(fields[4]) cms_signer_time=\(fields[5]) cms_signer_pin=\(fields[6])"
+        let names = ["leaf_name", "issuer_name", "profile_marker", "app_developer_marker"]
+        let bits = fields[7] == "unchecked" ? [] : fields[7].map(String.init)
+        for (index, name) in names.enumerated() {
+            result += " cms_signer_\(name)_observed=\(bits.isEmpty ? "unchecked" : (bits[index] == "1" ? "yes" : "no"))"
+        }
+        return result + " cms_signer_sha256=\(fields[8]) cms_signer_diagnostic_only=yes"
+    }
+}
+
 public struct CombinedFailure: Error, LocalizedError {
     public struct LaunchContext: Equatable {
         public static let bridgeErrorDomain = "io.sidestore.LiveContainer.ExtensionLaunch"
@@ -15522,6 +15556,10 @@ public struct CombinedFailure: Error, LocalizedError {
         if normalized != "refresh" || stage != .command || code != .failed || sourceStep != .refreshReadiness {
             context.removeValue(forKey: "refresh_readiness_reason")
         }
+        if !(selectionScope || preservationScope) || self.safeCause != nil ||
+            context["preservation_conflict"] != "embeddedDERUnsupportedSigner" {
+            context.removeValue(forKey: V3CMSSignerDiagnostic.contextKey)
+        }
         self.signingContext = context
         self.retryable = retryable ?? self.safeCause?.inferredRetryable
         let launchStages: Set<Stage> = [.extensionDiscovery, .extensionLaunch, .xpcConnection, .serviceReadiness]
@@ -15542,6 +15580,10 @@ public struct CombinedFailure: Error, LocalizedError {
     ]
     public static func validatedWireSigningContext(_ supplied: Any) -> [String: String]? {
         guard var fields = supplied as? [String: Any] else { return nil }
+        if fields[V3CMSSignerDiagnostic.contextKey] != nil &&
+            (!(fields[V3CMSSignerDiagnostic.contextKey] is String) || fields.count > 20) {
+            fields.removeValue(forKey: V3CMSSignerDiagnostic.contextKey)
+        }
         if fields["refresh_readiness_reason"] != nil && !(fields["refresh_readiness_reason"] is String) {
             fields.removeValue(forKey: "refresh_readiness_reason")
         }
@@ -15566,6 +15608,8 @@ public struct CombinedFailure: Error, LocalizedError {
     private static let refreshLocalPreconditions: Set<String> = refreshSelectionPreconditions.union(["unknownTeamType", "unresolvedAppGroupPlaceholder", "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"])
     public static func validatedSigningContext(_ value: [String: String]) -> [String: String]? {
         var supplied = value
+        // This read-only extension never evicts existing failure facts.
+        if supplied.count > 20 { supplied.removeValue(forKey: V3CMSSignerDiagnostic.contextKey) }
         // Drop this ancillary extension before other sanitizers can trim existing facts.
         if supplied.count > 20 { supplied.removeValue(forKey: "signing_certificate_source") }
         if supplied.count > 20 { supplied.removeValue(forKey: "preservation_conflict") }
@@ -15586,6 +15630,14 @@ public struct CombinedFailure: Error, LocalizedError {
            fields["local_precondition"] != "preservationAuthorityConflict" ||
            fields["refresh_failure_kind"] != "invalidParameters" || fields.count > 20 {
             fields.removeValue(forKey: "preservation_conflict")
+        }
+        if let raw = fields[V3CMSSignerDiagnostic.contextKey],
+           V3CMSSignerDiagnostic(encoded: raw) == nil ||
+           fields["refresh_target_scope"] != "nonHost" ||
+           fields["preservation_conflict"] != "embeddedDERUnsupportedSigner" ||
+           fields["local_precondition"] != "preservationAuthorityConflict" ||
+           fields["refresh_failure_kind"] != "invalidParameters" {
+            fields.removeValue(forKey: V3CMSSignerDiagnostic.contextKey)
         }
         // This optional observation must never replace or invalidate the primary
         // failure. Admit only the finite local guard vocabulary, with its kind.
@@ -15633,6 +15685,10 @@ public struct CombinedFailure: Error, LocalizedError {
                 guard ["recorded", "trimmed", "rejected", "notRecorded"].contains(text) else { return nil }; continue
             }
 
+            if key == V3CMSSignerDiagnostic.contextKey {
+                guard V3CMSSignerDiagnostic(encoded: text) != nil else { return nil }
+                continue
+            }
             if key == V3ConstructorFaultDiagnostic.contextKey {
                 guard V3ConstructorFaultDiagnostic(encoded: text) != nil else { return nil }
                 continue
@@ -16399,8 +16455,8 @@ public struct CombinedFailure: Error, LocalizedError {
            ["recorded", "trimmed", "rejected", "notRecorded"].contains(state) {
             authenticationState = " auth_diagnostic_state=\(state)"
         } else { authenticationState = "" }
-        let signingDetails = signingContext.filter { $0.key != V3TemporaryAnisetteTrace.contextKey && $0.key != V3TemporaryADIConsumption.contextKey && $0.key != V3LoginDiagnosticSnapshot.contextKey && $0.key != V3ConstructorFaultDiagnostic.contextKey && $0.key != V3AuthenticationRequestSnapshot.contextKey && $0.key != V3AuthenticationHeaderProvenance.contextKey && $0.key != V3AuthenticationProviderObservation.contextKey && $0.key != V3AuthenticationDiagnostics.stateKey && $0.key != V3ProvisioningCauseDiagnostic.contextKey }.sorted(by: { $0.key < $1.key }).map { " \($0.key)=\($0.value)" }.joined()
-        return "schema=1 diagnostic_code=\(diagnosticCode) builder_commit=\(V3DiagnosticBuild.commit) operation=\(operation) stage=\(stage.rawValue) code=\(code.rawValue) correlation=\(correlationID) underlying_domain=\(underlyingDomain) underlying_code=\(displayedUnderlyingCode) retryable=\(retryable.map(String.init) ?? "unknown") source_step=\(sourceStep?.rawValue ?? "unknown") safe_cause=\(safeCause?.rawValue ?? "unknown")" + signingDetails + authenticationState + (signingContext[V3ProvisioningCauseDiagnostic.contextKey].flatMap(V3ProvisioningCauseDiagnostic.init(encoded:))?.technicalDetails ?? "") + (signingContext[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") + installVerdict + requestContextSuffix + (launchContext?.technicalDetails ?? "") + (temporaryAnisetteTrace?.technicalDetails ?? "") + (signingContext[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") + (signingContext[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:))?.technicalDetails ?? "") + (operation == "signIn" ? V3AuthenticationDiagnostics.technicalDetails(signingContext) : "")
+        let signingDetails = signingContext.filter { $0.key != V3CMSSignerDiagnostic.contextKey && $0.key != V3TemporaryAnisetteTrace.contextKey && $0.key != V3TemporaryADIConsumption.contextKey && $0.key != V3LoginDiagnosticSnapshot.contextKey && $0.key != V3ConstructorFaultDiagnostic.contextKey && $0.key != V3AuthenticationRequestSnapshot.contextKey && $0.key != V3AuthenticationHeaderProvenance.contextKey && $0.key != V3AuthenticationProviderObservation.contextKey && $0.key != V3AuthenticationDiagnostics.stateKey && $0.key != V3ProvisioningCauseDiagnostic.contextKey }.sorted(by: { $0.key < $1.key }).map { " \($0.key)=\($0.value)" }.joined()
+        return "schema=1 diagnostic_code=\(diagnosticCode) builder_commit=\(V3DiagnosticBuild.commit) operation=\(operation) stage=\(stage.rawValue) code=\(code.rawValue) correlation=\(correlationID) underlying_domain=\(underlyingDomain) underlying_code=\(displayedUnderlyingCode) retryable=\(retryable.map(String.init) ?? "unknown") source_step=\(sourceStep?.rawValue ?? "unknown") safe_cause=\(safeCause?.rawValue ?? "unknown")" + signingDetails + (signingContext[V3CMSSignerDiagnostic.contextKey].flatMap(V3CMSSignerDiagnostic.init(encoded:))?.technicalDetails ?? "") + authenticationState + (signingContext[V3ProvisioningCauseDiagnostic.contextKey].flatMap(V3ProvisioningCauseDiagnostic.init(encoded:))?.technicalDetails ?? "") + (signingContext[V3ConstructorFaultDiagnostic.contextKey].flatMap(V3ConstructorFaultDiagnostic.init(encoded:))?.technicalDetails ?? "") + installVerdict + requestContextSuffix + (launchContext?.technicalDetails ?? "") + (temporaryAnisetteTrace?.technicalDetails ?? "") + (signingContext[V3TemporaryADIConsumption.contextKey].flatMap(V3TemporaryADIConsumption.init(encoded:))?.technicalDetails ?? "") + (signingContext[V3LoginDiagnosticSnapshot.contextKey].flatMap(V3LoginDiagnosticSnapshot.init(encoded:))?.technicalDetails ?? "") + (operation == "signIn" ? V3AuthenticationDiagnostics.technicalDetails(signingContext) : "")
     }
     public var temporaryAnisetteTrace: V3TemporaryAnisetteTrace? {
         signingContext[V3TemporaryAnisetteTrace.contextKey].flatMap(V3TemporaryAnisetteTrace.init(encoded:))

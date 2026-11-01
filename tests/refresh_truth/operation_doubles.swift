@@ -136,13 +136,30 @@ extension ALTProvisioningProfile {
 // Raw-only fixtures have no admitted values and therefore fail closed if a new
 // semantic path is accidentally taken. No trust policy is simulated as proven.
 enum ProfileCMSVerificationError: Error { case unsupportedSigner, signerTimeInvalid, verificationFailed, unsupportedRepresentation }
+struct ProfileCMSSignerEvidence {
+ enum Check: String { case unchecked, passed, failed }
+ var algorithmAndAttributes: Check = .unchecked
+ var pin: Check = .failed
+ var chain: Check = .unchecked
+ var temporal: Check = .unchecked
+ var signature: Check = .unchecked
+ var profileSubjectMarker = false
+ var profileIssuerMarker = false
+ var profileExtensionMarker = false
+ var appDeveloperMarker = false
+ var signerSHA256: String? = nil
+}
 enum FixtureCMSBoundary {
  static var outer: [Data: Data] = [:]
  static var inner: [Data: Data] = [:]
  static var calls = 0
  static var failure: ProfileCMSVerificationError?
  static var duringCall: (() -> Void)?
- static func reset() { outer=[:];inner=[:];calls=0;failure=nil;duringCall=nil }
+ static var innerFailures: [Data: ProfileCMSVerificationError] = [:]
+ static var diagnostic = ProfileCMSSignerEvidence()
+ static var diagnosticCalls = 0
+ static var duringDiagnostic: (() -> Void)?
+ static func reset() { outer=[:];inner=[:];calls=0;failure=nil;duringCall=nil;innerFailures=[:];diagnostic=ProfileCMSSignerEvidence();diagnosticCalls=0;duringDiagnostic=nil }
 }
 enum ProfileCMSVerifier {
  static func authenticateOuter(_ data: Data) throws -> Data {
@@ -151,8 +168,13 @@ enum ProfileCMSVerifier {
   guard let result=FixtureCMSBoundary.outer[data] else { throw ProfileCMSVerificationError.unsupportedSigner }
   return result
  }
+ static func diagnoseInnerSigner(_ data: Data) -> ProfileCMSSignerEvidence {
+  FixtureCMSBoundary.diagnosticCalls += 1; FixtureCMSBoundary.duringDiagnostic?()
+  return FixtureCMSBoundary.diagnostic
+ }
  static func authenticateInner(_ data: Data) throws -> Data {
   FixtureCMSBoundary.calls += 1;FixtureCMSBoundary.duringCall?()
+  if let error=FixtureCMSBoundary.innerFailures[data] { throw error }
   if let error=FixtureCMSBoundary.failure { throw error }
   guard let result=FixtureCMSBoundary.inner[data] else { throw ProfileCMSVerificationError.unsupportedSigner }
   return result

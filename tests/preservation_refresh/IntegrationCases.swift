@@ -213,7 +213,7 @@
    passed.append(label)
   }
   passed += try await AuthenticatedAdapterCases.run(now:now,makeContext:{ setup() },execute:run)
-  precondition(passed.count==38)
+  precondition(passed.count==45)
   print(String(data:try JSONSerialization.data(withJSONObject:["schema":"preservation-refresh-integration-v1","status":"PASS","cases":passed,"device_executed":false],options:[.sortedKeys]),encoding:.utf8)!)
  }
 }
