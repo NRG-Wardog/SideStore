@@ -29,7 +29,12 @@ def declaration(source, signature):
 def common(source):
     start = source.index('public struct CombinedRefreshTargetPlan:')
     last = declaration(source, 'public enum V3DiagnosticPresentation {')
-    return 'import Foundation\nimport CoreFoundation\n' + source[start:source.index(last, start) + len(last)]
+    model = source[start:source.index(last, start) + len(last)]
+    # V3AuthDiagnosticExport in the shared model calls this real renderer, whose
+    # declaration lives earlier in AppDelegate outside the contiguous model.
+    # Append only for the standalone fixture; composed wire fixtures own it.
+    policy = declaration(source, 'enum V3AuthFailureDiagnosticsPolicy {')
+    return 'import Foundation\nimport CoreFoundation\n' + model + '\n' + policy + '\n'
 
 
 def generate_source(root):
@@ -154,6 +159,17 @@ class RefreshFailureContract(unittest.TestCase):
         self.assertNotIn('enum V3HeadlessPairingFailure {', source)
         self.assertNotIn('@main', source)
         self.assertIn('func refreshBoundaryFixtureCases()', source)
+        standalone = common(self.shared)
+        policy = declaration(self.shared, 'enum V3AuthFailureDiagnosticsPolicy {')
+        self.assertEqual(standalone.count(policy), 1)
+        self.assertIn('V3AuthFailureDiagnosticsPolicy.render(wire,', standalone)
+        for dependency in ['CombinedFailure', 'V3DiagnosticBuild', 'V3TemporaryAnisetteTrace',
+                           'V3ProvisioningCauseDiagnostic', 'V3ConstructorFaultDiagnostic',
+                           'V3TemporaryADIConsumption', 'V3LoginDiagnosticSnapshot',
+                           'V3AuthenticationDiagnostics']:
+            self.assertRegex(standalone, r"(?:struct|enum) " + dependency + r"(?:\s*[:{])")
+        self.assertNotIn(policy, source)  # Avoid duplicate declarations in composed consumers.
+
         for required in ['lcRefreshFailureFacts(cmsSelection, sourceStep: "provisioningProfileFetch")',
                          'lcStructuredSigningFailure(cmsSelection, stage: "signing"',
                          'getMappedError(for: .refresh(InstalledApp(bundleIdentifier: "com.fixture.cms"',
