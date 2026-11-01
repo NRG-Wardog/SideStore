@@ -142,6 +142,29 @@ struct RefreshFailureBoundaryHarness {
             precondition(lcPreservationCertificateFacts(verifiedSerial:serial,verifiedDER:der) ==
                 ["signing_certificate_present":"false","signing_certificate_source":"unavailable"])
         }
+        // Real signing wrapper/capture regression: unknownSigningCause is a
+        // placeholder, not a reason to drop the bounded CMS signer observation.
+        let cmsKey = V3CMSSignerDiagnostic.contextKey
+        let cmsDiagnostic = "cs1|installed|passed|passed|passed|passed|failed|1110|" + String(repeating: "f", count: 64)
+        let cmsSelection = V3RefreshSelectionFailure(reason: .preservationAuthorityConflict,
+            scope: .nonHost, preservationConflict: "embeddedDERUnsupportedSigner", cmsSignerDiagnostic: cmsDiagnostic)
+        var cmsFacts = lcRefreshFailureFacts(cmsSelection, sourceStep: "provisioningProfileFetch")
+        cmsFacts.merge(verifiedFacts) { _, observed in observed }
+        cmsFacts["extension_count"] = "5"
+        precondition(cmsFacts.count == 9)
+        let cmsMarked = lcStructuredSigningFailure(cmsSelection, stage: "signing", sourceStep: "provisioningProfileFetch", facts: cmsFacts)
+        precondition(cmsMarked.userInfo["LCStructuredFailureCauseV1"] as? String == "unknownSigningCause")
+        let cmsMapped = getMappedError(for: .refresh(InstalledApp(bundleIdentifier: "com.fixture.cms", name: "Fixture")), error: cmsMarked)
+        let cmsRestored = try roundtrip(cmsMapped)
+        precondition(cmsRestored.safeCause == .unknownSigningCause && cmsRestored.signingContext == cmsFacts)
+        precondition(cmsRestored.stage == .signing && cmsRestored.sourceStep == .provisioningProfileFetch && cmsRestored.code == .failed)
+        precondition(cmsRestored.technicalDetails.contains("cms_signer_signature=passed"))
+        precondition(cmsRestored.technicalDetails.contains("cms_signer_sha256=" + String(repeating: "f", count: 64)))
+        precondition(cmsRestored.technicalDetails.contains("signing_certificate_source=verifiedRefreshCache"))
+        precondition(!cmsRestored.technicalDetails.contains("cs1|"))
+        var cmsWrongCauseWire = cmsRestored.wire; cmsWrongCauseWire["safeCause"] = "certificateUnavailable"
+        precondition(CombinedFailure.decode(cmsWrongCauseWire, expectedID: id)?.signingContext[cmsKey] == nil)
+        print("CMS_SIGNER_REAL_SIGNING_BRIDGE_PASS")
         precondition(lcRefreshFailureFacts(privateNative).isEmpty)
         var injected = known.wire
         injected["signingContext"] = ["refresh_failure_kind": secret]

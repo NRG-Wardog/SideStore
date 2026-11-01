@@ -154,6 +154,14 @@ class RefreshFailureContract(unittest.TestCase):
         self.assertNotIn('enum V3HeadlessPairingFailure {', source)
         self.assertNotIn('@main', source)
         self.assertIn('func refreshBoundaryFixtureCases()', source)
+        for required in ['lcRefreshFailureFacts(cmsSelection, sourceStep: "provisioningProfileFetch")',
+                         'lcStructuredSigningFailure(cmsSelection, stage: "signing"',
+                         'getMappedError(for: .refresh(InstalledApp(bundleIdentifier: "com.fixture.cms"',
+                         'let cmsRestored = try roundtrip(cmsMapped)',
+                         'cmsRestored.safeCause == .unknownSigningCause && cmsRestored.signingContext == cmsFacts',
+                         'CMS_SIGNER_REAL_SIGNING_BRIDGE_PASS']:
+            self.assertIn(required, source)
+
         self.assertIn('func certificatePortalBoundaryFixtureCases()', source)
         self.assertTrue(all(path.is_file() for path in inputs.values()))
         portal = declaration(self.shared, '    static func portalCertificates()')
@@ -189,6 +197,8 @@ class RefreshFailureContract(unittest.TestCase):
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('REFRESH_FAILURE_BOUNDARY_PASS', result.stdout)
+            self.assertIn('CMS_SIGNER_REAL_SIGNING_BRIDGE_PASS', result.stdout)
+            print('CMS_SIGNER_REAL_SIGNING_BRIDGE_PASS')
 
 
 if __name__ == '__main__':

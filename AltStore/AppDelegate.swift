@@ -15556,7 +15556,10 @@ public struct CombinedFailure: Error, LocalizedError {
         if normalized != "refresh" || stage != .command || code != .failed || sourceStep != .refreshReadiness {
             context.removeValue(forKey: "refresh_readiness_reason")
         }
-        if !(selectionScope || preservationScope) || self.safeCause != nil ||
+        // The real signing NSError wrapper records unknownSigningCause even for
+        // typed preservation refusals. It is not a competing concrete diagnosis.
+        if !(selectionScope || preservationScope) ||
+            (self.safeCause != nil && self.safeCause != .unknownSigningCause) ||
             context["preservation_conflict"] != "embeddedDERUnsupportedSigner" {
             context.removeValue(forKey: V3CMSSignerDiagnostic.contextKey)
         }
