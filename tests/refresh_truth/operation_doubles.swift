@@ -42,12 +42,13 @@ typealias NSManagedObjectContext = DatabaseContext
 final class DatabaseContext {
  var app = InstalledApp(); var performCount = 0; var failUpdate = false
  var hasChanges = true; var failSave = false
+ var afterPerform: (() -> Void)?
  func save() throws { if failSave { throw ProbeError.databaseFailed } }
  func object(with id: Int) -> Any { app }
  func perform<T>(_ body: () throws -> T) async throws -> T {
   performCount += 1
   if failUpdate && performCount == 2 { throw ProbeError.databaseFailed }
-  return try body()
+  let value=try body();afterPerform?();return value
  }
 }
 struct PendingProfileBatch { var bundleID: String; var profiles:[Data]; var app:InstalledApp?; var certStatus:String? }
@@ -149,6 +150,13 @@ struct ProfileCMSSignerEvidence {
  var appDeveloperMarker = false
  var signerSHA256: String? = nil
 }
+// Test-only SDK result; production inspection has no caller-visible initializer.
+// These bytes establish no cryptographic authority in this boundary fixture.
+struct ProfileCMSCryptographicInspection {
+ let untrustedContent: Data
+ let signerSHA256: String
+ let matchesApprovedSigner: Bool
+}
 enum FixtureCMSBoundary {
  static var outer: [Data: Data] = [:]
  static var inner: [Data: Data] = [:]
@@ -159,7 +167,10 @@ enum FixtureCMSBoundary {
  static var diagnostic = ProfileCMSSignerEvidence()
  static var diagnosticCalls = 0
  static var duringDiagnostic: (() -> Void)?
- static func reset() { outer=[:];inner=[:];calls=0;failure=nil;duringCall=nil;innerFailures=[:];diagnostic=ProfileCMSSignerEvidence();diagnosticCalls=0;duringDiagnostic=nil }
+ static var inspectionFailures: [Data: ProfileCMSVerificationError] = [:]
+ static var inspectionCalls = 0
+ static var duringInspection: (() -> Void)?
+ static func reset() { outer=[:];inner=[:];calls=0;failure=nil;duringCall=nil;innerFailures=[:];diagnostic=ProfileCMSSignerEvidence();diagnosticCalls=0;duringDiagnostic=nil;inspectionFailures=[:];inspectionCalls=0;duringInspection=nil }
 }
 enum ProfileCMSVerifier {
  static func authenticateOuter(_ data: Data) throws -> Data {
@@ -172,11 +183,43 @@ enum ProfileCMSVerifier {
   FixtureCMSBoundary.diagnosticCalls += 1; FixtureCMSBoundary.duringDiagnostic?()
   return FixtureCMSBoundary.diagnostic
  }
+ static func inspectInnerCryptography(_ data: Data) throws -> ProfileCMSCryptographicInspection {
+  FixtureCMSBoundary.inspectionCalls += 1;FixtureCMSBoundary.duringInspection?()
+  if let error=FixtureCMSBoundary.inspectionFailures[data] { throw error }
+  if let error=FixtureCMSBoundary.failure { throw error }
+  guard let content=FixtureCMSBoundary.inner[data] else { throw ProfileCMSVerificationError.verificationFailed }
+  return ProfileCMSCryptographicInspection(untrustedContent:content,signerSHA256:String(repeating:"a",count:64),matchesApprovedSigner:false)
+ }
  static func authenticateInner(_ data: Data) throws -> Data {
   FixtureCMSBoundary.calls += 1;FixtureCMSBoundary.duringCall?()
   if let error=FixtureCMSBoundary.innerFailures[data] { throw error }
   if let error=FixtureCMSBoundary.failure { throw error }
   guard let result=FixtureCMSBoundary.inner[data] else { throw ProfileCMSVerificationError.unsupportedSigner }
   return result
+ }
+}
+
+// Shared test-only SDK capability shapes; actual mint is tested separately.
+enum AppleProfileEvidenceError: String, Error, Sendable { case unavailable, invalidResponse, responseTooLarge, identityMismatch, ambiguousProfile, recordNotFound, cancelled, expiredOperation, ownershipChanged }
+final class AppleProfileEvidence: @unchecked Sendable {
+ enum Role { case existing, candidate }
+ let profile: ALTProvisioningProfile
+ let role: Role
+ let operationID: UUID
+ var cmsData: Data { profile.data }
+ init(profile:ALTProvisioningProfile,role:Role,operationID:UUID) {
+  self.profile=profile;self.role=role;self.operationID=operationID
+ }
+}
+final class AppleProfileOperation: @unchecked Sendable {
+ let id=UUID(); let target:String; let admission:() throws->Void
+ var active=true
+ init(target:String,admission:@escaping () throws->Void) { self.target=target;self.admission=admission }
+ var onInvalidate:(()->Void)?
+ func invalidate() { if active {onInvalidate?()};active=false }
+ func authorize(_ evidence:AppleProfileEvidence,exactCMS:Data) throws {
+  try admission()
+  guard active else { throw AppleProfileEvidenceError.expiredOperation }
+  guard evidence.operationID==id,evidence.cmsData==exactCMS,evidence.profile.bundleIdentifier==target else { throw AppleProfileEvidenceError.identityMismatch }
  }
 }

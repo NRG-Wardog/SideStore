@@ -165,6 +165,23 @@ struct RefreshFailureBoundaryHarness {
         var cmsWrongCauseWire = cmsRestored.wire; cmsWrongCauseWire["safeCause"] = "certificateUnavailable"
         precondition(CombinedFailure.decode(cmsWrongCauseWire, expectedID: id)?.signingContext[cmsKey] == nil)
         print("CMS_SIGNER_REAL_SIGNING_BRIDGE_PASS")
+        for kind in CombinedFailure.appleProfileOriginKinds.sorted() {
+            let origin = V3RefreshSelectionFailure(reason: .preservationEvidenceUnavailable,
+                scope: .nonHost, appleProfileOrigin: kind)
+            var originFacts = lcRefreshFailureFacts(origin, sourceStep: "provisioningProfileFetch")
+            originFacts.merge(verifiedFacts) { _, observed in observed }
+            originFacts["extension_count"] = "5"
+            precondition(originFacts.count == 8 && originFacts["apple_profile_origin"] == kind)
+            let marked = lcStructuredSigningFailure(origin, stage: "signing", sourceStep: "provisioningProfileFetch", facts: originFacts)
+            precondition(marked.userInfo["LCStructuredFailureCauseV1"] as? String == "unknownSigningCause")
+            let mapped = getMappedError(for: .refresh(InstalledApp(bundleIdentifier: "com.fixture.origin", name: "Fixture")), error: marked)
+            let restored = try roundtrip(mapped)
+            precondition(restored.safeCause == .unknownSigningCause && restored.signingContext == originFacts)
+            precondition(restored.code == .failed && restored.technicalDetails.contains("apple_profile_origin=" + kind))
+            precondition(!restored.technicalDetails.contains("cms_signer_signature="))
+        }
+        print("APPLE_PROFILE_ORIGIN_REAL_SIGNING_BRIDGE_PASS")
+
         precondition(lcRefreshFailureFacts(privateNative).isEmpty)
         var injected = known.wire
         injected["signingContext"] = ["refresh_failure_kind": secret]

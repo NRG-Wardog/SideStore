@@ -175,7 +175,9 @@ class RefreshFailureContract(unittest.TestCase):
                          'getMappedError(for: .refresh(InstalledApp(bundleIdentifier: "com.fixture.cms"',
                          'let cmsRestored = try roundtrip(cmsMapped)',
                          'cmsRestored.safeCause == .unknownSigningCause && cmsRestored.signingContext == cmsFacts',
-                         'CMS_SIGNER_REAL_SIGNING_BRIDGE_PASS']:
+                         'CMS_SIGNER_REAL_SIGNING_BRIDGE_PASS',
+                         'lcRefreshFailureFacts(origin, sourceStep: "provisioningProfileFetch")',
+                         'APPLE_PROFILE_ORIGIN_REAL_SIGNING_BRIDGE_PASS']:
             self.assertIn(required, source)
 
         self.assertIn('func certificatePortalBoundaryFixtureCases()', source)
@@ -215,6 +217,8 @@ class RefreshFailureContract(unittest.TestCase):
             self.assertIn('REFRESH_FAILURE_BOUNDARY_PASS', result.stdout)
             self.assertIn('CMS_SIGNER_REAL_SIGNING_BRIDGE_PASS', result.stdout)
             print('CMS_SIGNER_REAL_SIGNING_BRIDGE_PASS')
+            self.assertIn('APPLE_PROFILE_ORIGIN_REAL_SIGNING_BRIDGE_PASS', result.stdout)
+            print('APPLE_PROFILE_ORIGIN_REAL_SIGNING_BRIDGE_PASS')
 
 
 if __name__ == '__main__':

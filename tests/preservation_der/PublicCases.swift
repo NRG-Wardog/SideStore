@@ -10,7 +10,7 @@ let signerProvenance = try JSONDecoder().decode([PublicSignerProvenance].self,
     from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])))
 precondition(signerProvenance.count == 2)
 
-let caseSuffixes = ["outer-role-authenticated", "inner-pinned-role-authenticated", "signer-diagnostic-facade", "complete-authority-bound", "outer-tamper-rejected", "inner-tamper-rejected", "inner-cannot-be-outer-role", "outer-cannot-be-inner-role", "cross-profile-binding-rejected"]
+let caseSuffixes = ["outer-role-authenticated", "inner-pinned-role-authenticated", "signer-diagnostic-facade", "cryptographic-inspection-facade", "inspection-tamper-rejected", "inspection-malformed-rejected", "complete-authority-bound", "outer-tamper-rejected", "inner-tamper-rejected", "inner-cannot-be-outer-role", "outer-cannot-be-inner-role", "cross-profile-binding-rejected"]
 let allowedCaseNames = Set((0..<2).flatMap { index in caseSuffixes.map { "public-\(index)-\($0)" } })
 func beginCase(_ name: String) {
     precondition(allowedCaseNames.contains(name))
@@ -51,6 +51,34 @@ for index in 0..<2 {
     precondition(unchecked.algorithmAndAttributes == .unchecked && unchecked.pin == .unchecked && unchecked.chain == .unchecked && unchecked.temporal == .unchecked && unchecked.signature == .unchecked)
     precondition(unchecked.signerSHA256 == nil)
     cases.append("public-\(index)-signer-diagnostic-facade")
+    beginCase("public-\(index)-cryptographic-inspection-facade")
+    // Actual production C and both wrappers. A distinct untrusted result is
+    // never promoted to profile authority here; pinned authentication is separate.
+    let inspection: ProfileCMSCryptographicInspection = try ProfileCMSVerifier.inspectInnerCryptography(nested)
+    precondition(inspection.untrustedContent == inner && !inspection.untrustedContent.isEmpty)
+    precondition(inspection.matchesApprovedSigner)
+    precondition(inspection.signerSHA256 == signerProvenance[index].leaf_sha256)
+    precondition(inspection.signerSHA256.count == 64)
+    let stillPinned = try ProfileCMSVerifier.authenticateInner(nested)
+    precondition(stillPinned == inner)
+    cases.append("public-\(index)-cryptographic-inspection-facade")
+    beginCase("public-\(index)-inspection-tamper-rejected")
+    do {
+        _ = try ProfileCMSVerifier.inspectInnerCryptography(diagnosticTamper)
+        fatalError("inspection accepted signature tamper")
+    } catch ProfileCMSVerificationError.verificationFailed {
+        cases.append("public-\(index)-inspection-tamper-rejected")
+    } catch { fatalError("inspection tamper error category") }
+    beginCase("public-\(index)-inspection-malformed-rejected")
+    // Both inputs must throw without exposing a result/content or provider text.
+    for malformed in [Data(), Data([0x30, 0x01, 0x00])] {
+        do {
+            _ = try ProfileCMSVerifier.inspectInnerCryptography(malformed)
+            fatalError("inspection accepted malformed input")
+        } catch ProfileCMSVerificationError.unsupportedRepresentation { }
+          catch { fatalError("inspection malformed error category") }
+    }
+    cases.append("public-\(index)-inspection-malformed-rejected")
     beginCase("public-\(index)-complete-authority-bound")
     let result = try PreservedProfileDecoder.decode(verifiedOuterXML: outer, verifiedInnerDER: inner)
     precondition(result.rawInner == inner && !result.normalizedInnerAuthority.isEmpty)
@@ -68,6 +96,6 @@ for index in 0..<2 {
         _ = try PreservedProfileDecoder.decode(verifiedOuterXML: outerContents[index], verifiedInnerDER: innerContents[1-index])
     }
 }
-precondition(cases.count == 18 && Set(cases).count == 18)
+precondition(cases.count == 24 && Set(cases).count == 24)
 let report: [String: Any] = ["schema":"preservation-der-public-v1", "status":"PASS", "cases":cases, "cms_verified":true, "device_executed":false]
 print(String(data: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), encoding: .utf8)!)

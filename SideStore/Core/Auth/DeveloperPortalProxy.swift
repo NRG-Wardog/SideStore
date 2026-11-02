@@ -422,6 +422,21 @@ public class DeveloperPortalProxy {
         return try await self.awaitBound(context) { try await ALTAppleAPI.shared.listProvisioningProfiles(includeTeamProfiles: includeTeamProfiles, for: team, session: session) }
     }
 
+    // Only this bound factory can lend current app-account ownership to the
+    // dedicated Apple-origin transport. It never substitutes a caller session.
+    func makePreservationProfileOperation(team: ALTTeam, bundleIdentifier: String,
+        admission: @escaping () throws -> Void) async throws -> AppleProfileOperation {
+        let bound = try await getBoundSession()
+        let selected = try await getBoundTeam(team, context: bound)
+        try verifyCurrent(bound)
+        try admission()
+        return try ALTAppleAPI.shared.makePreservationProfileOperation(team: selected,
+            session: bound.session, bundleIdentifier: bundleIdentifier) { [self] in
+                try verifyCurrent(bound)
+                try admission()
+        }
+    }
+
     public func downloadProvisioningProfile(for appID: ALTAppID, isTeamProfile: Bool = true, deviceType: ALTDeviceType = DeveloperPortalProxy.currentDeviceType, team: ALTTeam? = nil) async throws -> ALTProvisioningProfile {
         let context = try await self.getBoundSession()
         let session = context.session

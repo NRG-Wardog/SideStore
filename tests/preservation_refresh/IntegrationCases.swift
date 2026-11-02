@@ -11,6 +11,7 @@
   func setup(changedAtFreshRead:Bool=false, missing:Bool=false, rebindAtFreshRead:Bool=false, postread:String="matched") -> InstallAppOperationContext {
    Injection.shared.count=0;Injection.shared.failAt=0;Injection.shared.after=nil
    CellularRefreshManager.shared.duringOff=nil
+   PortalProbe.shared.resetOrigin()
    PortalProbe.shared.calls=[];PortalProbe.shared.appIDs=[FixtureAppID(bundleIdentifier:"app")];PortalProbe.shared.candidate=fresh;PortalProbe.shared.failDownload=false
    let c=InstallAppOperationContext();c.isPreservationRefresh=true;c.useMainProfile=true;c.installedApp!.useMainProfile=true;c.targetAppBundle=nil
    c.verifiedRefreshCertificate=("S",der,now.addingTimeInterval(5000))
@@ -43,7 +44,7 @@
    let c=setup();let expiry=c.installedApp!.appExtensions[0].expirationDate
    try await run(c)
    precondition(Injection.shared.count==1)
-   precondition(PortalProbe.shared.calls==["read","team","lookup-existing-id","generate-existing-id-profile","read","read","read"])
+   precondition(PortalProbe.shared.calls==["read","team","lookup-existing-id","origin-operation","generate-existing-id-profile","read","read","read"])
    precondition(c.refreshVerification?.installAcknowledged==true)
    precondition(c.refreshVerification?.profileStore == .matched)
    precondition(c.refreshVerification?.renewal == .extended)
@@ -213,7 +214,7 @@
    passed.append(label)
   }
   passed += try await AuthenticatedAdapterCases.run(now:now,makeContext:{ setup() },execute:run)
-  precondition(passed.count==45)
+  precondition(passed.count==64)
   print(String(data:try JSONSerialization.data(withJSONObject:["schema":"preservation-refresh-integration-v1","status":"PASS","cases":passed,"device_executed":false],options:[.sortedKeys]),encoding:.utf8)!)
  }
 }

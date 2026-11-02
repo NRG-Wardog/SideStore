@@ -29,9 +29,12 @@ struct V3RefreshSelectionFailure: Error, Sendable {
     let scope: Scope
     let preservationConflict: String?
     let cmsSignerDiagnostic: String?
-    init(reason: Reason, scope: Scope, preservationConflict: String? = nil, cmsSignerDiagnostic: String? = nil) {
+    let appleProfileOrigin: String?
+    init(reason: Reason, scope: Scope, preservationConflict: String? = nil, cmsSignerDiagnostic: String? = nil,
+         appleProfileOrigin: String? = nil) {
         self.reason = reason; self.scope = scope; self.preservationConflict = preservationConflict
         self.cmsSignerDiagnostic = cmsSignerDiagnostic
+        self.appleProfileOrigin = appleProfileOrigin
     }
     // This producer is also extracted independently of the wire model. Validate
     // here AND at the receiving boundary; never forward arbitrary error text.
@@ -47,9 +50,15 @@ struct V3RefreshSelectionFailure: Error, Sendable {
         guard fields[7].utf8.count == 4, fields[7].utf8.allSatisfy({ $0 == 48 || $0 == 49 }) else { return false }
         return fields[8] == "unknown" || (fields[8].utf8.count == 64 && fields[8].utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) })
     }
+    static let appleProfileOriginKinds: Set<String> = ["requestUnavailable", "recordNotFound", "ambiguousRecord",
+        "responseMismatch", "invalidResponse", "responseTooLarge", "operationCancelled", "operationExpired", "ownershipChanged"]
     var facts: [String: String] {
         var result = ["refresh_failure_kind": "invalidParameters", "local_precondition": reason.rawValue,
                       "refresh_target_scope": scope.rawValue]
+        if reason == .preservationEvidenceUnavailable, scope == .nonHost,
+           let origin = appleProfileOrigin, origin.utf8.count <= 32, Self.appleProfileOriginKinds.contains(origin) {
+            result["apple_profile_origin"] = origin
+        }
         if reason == .preservationAuthorityConflict, scope == .nonHost,
            let detail = preservationConflict,
            ["multipleIdentities", "alternateIdentity", "teamMismatch", "prefixMismatch", "signerMissing",
@@ -75,6 +84,7 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
 
     override func execute(parentProgress: Progress?) async throws -> InstalledApp {
         let startTime = CFAbsoluteTimeGetCurrent()
+        defer { context.preservationRefreshState?.origin?.operation.invalidate() }
         debugLog("[RefreshAppOperation] execute() started")
         defer {
             let elapsed = CFAbsoluteTimeGetCurrent() - startTime
@@ -122,6 +132,8 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
                 // Rebind the database target after readback suspension as well.
                 _ = try await dbContext.perform { try self.selectProfiles(profiles, in: dbContext) }
                 try refreshAdmission?()
+                // Recheck provenance lifetime after the final database await.
+                try context.preservationRefreshState?.validateOriginAdmission()
             }
             let admissionDate = verificationNow()
             guard selection.certificateExpiry > admissionDate,
@@ -762,42 +774,72 @@ enum PreservedProfilePolicy {
     }
 }
 
+// A receipt is created only by SideSign's private Apple HTTPS transport. This
+// adapter never constructs evidence from a fingerprint, signer, cache or caller bytes.
+struct V3AppleProfileOriginEvidence: Sendable {
+    let operation: AppleProfileOperation
+    let installed: [AppleProfileEvidence]
+    let candidate: AppleProfileEvidence?
+
+    func authorize(_ bytes: Data, installedPhase: Bool) throws {
+        let receipts = installedPhase ? installed : candidate.map { [$0] } ?? []
+        guard let exact = receipts.first(where: { $0.cmsData == bytes }) else {
+            throw V3PreservationRefreshState.failure(.preservationEvidenceUnavailable)
+        }
+        try operation.authorize(exact, exactCMS: bytes)
+    }
+
+    func validateInstalledBytes(_ inventory: [Data]) throws {
+        for evidence in installed {
+            guard inventory.contains(evidence.cmsData) else {
+                throw V3PreservationRefreshState.failure(.preservationSnapshotChanged)
+            }
+            try operation.authorize(evidence, exactCMS: evidence.cmsData)
+        }
+    }
+}
+
 // Snapshot and candidate remain internal; raw profile bytes never enter wire facts.
 struct V3PreservationRefreshState: Sendable {
     let baseline: PreservedProfilePolicy.Evidence
     let candidateData: Data
     let originalInventory: [Data]
     let usesAuthenticatedDER: Bool
+    let origin: V3AppleProfileOriginEvidence?
 
     struct Prepared: Sendable {
         let baseline: PreservedProfilePolicy.Evidence
         let originalInventory: [Data]
         let usesAuthenticatedDER: Bool
+        let origin: V3AppleProfileOriginEvidence?
     }
 
     static func prepare(resignedBundleID: String, teamID: String, signerDER: Data,
                         certificateExpiration: Date, inventory: [Data], now: Date,
-                        admission: (() throws -> Void)?) throws -> Prepared {
+                        admission: (() throws -> Void)?, origin: V3AppleProfileOriginEvidence? = nil) throws -> Prepared {
         let raw = try payloads(inventory)
+        try origin?.validateInstalledBytes(inventory)
         do {
+            if origin?.installed.isEmpty == false { throw PreservedProfilePolicy.Failure.embeddedDERDiffer }
             let baseline = try PreservedProfilePolicy.selectSnapshot(resignedBundleID: resignedBundleID,
                 teamID: teamID, historicalSignerDER: signerDER, certificateExpiration: certificateExpiration,
                 useMainProfile: true, installed: raw, now: now)
-            return Prepared(baseline: baseline, originalInventory: inventory, usesAuthenticatedDER: false)
+            return Prepared(baseline: baseline, originalInventory: inventory, usesAuthenticatedDER: false, origin: origin)
         } catch PreservedProfilePolicy.Failure.embeddedDERDiffer {
             let started = ProcessInfo.processInfo.systemUptime
             let inputs = try authenticatedTargetInputs(inventory: inventory, raw: raw,
-                resignedBundleID: resignedBundleID, admission: admission, started: started)
+                resignedBundleID: resignedBundleID, admission: admission, started: started, origin: origin)
             let baseline = try PreservedProfilePolicy.selectSnapshot(resignedBundleID: resignedBundleID,
                 teamID: teamID, historicalSignerDER: signerDER, certificateExpiration: certificateExpiration,
                 useMainProfile: true, inputs: inputs, now: now)
             try checkWork(admission, started: started)
-            return Prepared(baseline: baseline, originalInventory: inventory, usesAuthenticatedDER: true)
+            return Prepared(baseline: baseline, originalInventory: inventory, usesAuthenticatedDER: true, origin: origin)
         }
     }
 
     static func finish(prepared: Prepared, candidateData: Data, now: Date,
-                       admission: (() throws -> Void)?) throws -> Self {
+                       admission: (() throws -> Void)?, origin suppliedOrigin: V3AppleProfileOriginEvidence? = nil) throws -> Self {
+        let origin = suppliedOrigin ?? prepared.origin
         let started = ProcessInfo.processInfo.systemUptime
         var effective = prepared
         if !prepared.usesAuthenticatedDER {
@@ -805,7 +847,7 @@ struct V3PreservationRefreshState: Sendable {
                 _ = try PreservedProfilePolicy.validate(candidate: payloads([candidateData])[0],
                     baseline: prepared.baseline, now: now)
                 return Self(baseline: prepared.baseline, candidateData: candidateData,
-                    originalInventory: prepared.originalInventory, usesAuthenticatedDER: false)
+                    originalInventory: prepared.originalInventory, usesAuthenticatedDER: false, origin: origin)
             } catch PreservedProfilePolicy.Failure.changedAuthorization {
                 guard try PreservedProfilePolicy.hasOnlyEmbeddedDERDifference(
                     candidate: payloads([candidateData])[0], baseline: prepared.baseline) else {
@@ -815,25 +857,26 @@ struct V3PreservationRefreshState: Sendable {
                 // stronger alternative. Every original target participates.
                 let inputs = try authenticatedTargetInputs(inventory: prepared.originalInventory,
                     raw: payloads(prepared.originalInventory),
-                    resignedBundleID: prepared.baseline.binding.resignedBundleID, admission: admission, started: started)
+                    resignedBundleID: prepared.baseline.binding.resignedBundleID, admission: admission, started: started, origin: origin)
                 let baseline = try PreservedProfilePolicy.snapshot(binding: prepared.baseline.binding,
                     inputs: inputs, now: now)
                 effective = Prepared(baseline: baseline, originalInventory: prepared.originalInventory,
-                    usesAuthenticatedDER: true)
+                    usesAuthenticatedDER: true, origin: origin)
             }
         }
         try checkWork(admission, started: started)
-        let candidate = try authenticatedInput(candidateData, phase: "candidate", admission: admission, started: started)
+        let candidate = try authenticatedInput(candidateData, phase: "candidate", admission: admission, started: started, origin: origin)
         try checkWork(admission, started: started)
         _ = try PreservedProfilePolicy.validate(input: candidate, baseline: effective.baseline, now: now)
         try checkWork(admission, started: started)
         return Self(baseline: effective.baseline, candidateData: candidateData,
-            originalInventory: effective.originalInventory, usesAuthenticatedDER: true)
+            originalInventory: effective.originalInventory, usesAuthenticatedDER: true, origin: origin)
     }
 
     func validateFresh(_ inventory: [Data], now: Date, admission: (() throws -> Void)?) throws {
         let started = ProcessInfo.processInfo.systemUptime
         let raw = try Self.payloads(inventory)
+        try origin?.validateInstalledBytes(inventory)
         let fresh: PreservedProfilePolicy.Evidence
         if usesAuthenticatedDER {
             // Never repair raw target drift by upgrading semantic comparison.
@@ -841,7 +884,7 @@ struct V3PreservationRefreshState: Sendable {
                 throw Self.failure(.preservationSnapshotChanged)
             }
             let inputs = try Self.authenticatedTargetInputs(inventory: inventory, raw: raw,
-                resignedBundleID: baseline.binding.resignedBundleID, admission: admission, started: started, phase: "freshInstalled")
+                resignedBundleID: baseline.binding.resignedBundleID, admission: admission, started: started, phase: "freshInstalled", origin: origin)
             fresh = try PreservedProfilePolicy.snapshot(binding: baseline.binding, inputs: inputs, now: now)
         } else {
             fresh = try PreservedProfilePolicy.snapshot(binding: baseline.binding, installed: raw, now: now)
@@ -849,13 +892,22 @@ struct V3PreservationRefreshState: Sendable {
         guard fresh.hasSameTarget(as: baseline) else { throw Self.failure(.preservationSnapshotChanged) }
         if usesAuthenticatedDER {
             try Self.checkWork(admission, started: started)
-            let candidate = try Self.authenticatedInput(candidateData, phase: "freshCandidate", admission: admission, started: started)
+            let candidate = try Self.authenticatedInput(candidateData, phase: "freshCandidate", admission: admission, started: started, origin: origin)
             try Self.checkWork(admission, started: started)
             _ = try PreservedProfilePolicy.validate(input: candidate, baseline: fresh, now: now)
             try Self.checkWork(admission, started: started)
         } else {
             _ = try PreservedProfilePolicy.validate(candidate: Self.payloads([candidateData])[0], baseline: fresh, now: now)
         }
+    }
+
+    func validateOriginAdmission() throws {
+        guard let origin else { return }
+        do {
+            try origin.validateInstalledBytes(originalInventory)
+            if origin.candidate != nil { try origin.authorize(candidateData, installedPhase: false) }
+        } catch is CancellationError { throw CancellationError() }
+        catch { throw Self.originFailure(error) }
     }
 
     private static func checkWork(_ admission: (() throws -> Void)?, started: TimeInterval) throws {
@@ -865,8 +917,38 @@ struct V3PreservationRefreshState: Sendable {
             throw failure(.preservationEvidenceUnavailable)
         }
     }
+    static func requiredOriginProfiles(inventory: [Data], resignedBundleID: String,
+        admission: (() throws -> Void)?) throws -> [(bytes: Data, uuid: UUID)] {
+        guard inventory.count <= 512 else { throw failure(.preservationEvidenceUnavailable) }
+        var total = 0
+        for bytes in inventory {
+            let (next, overflow) = total.addingReportingOverflow(bytes.count)
+            guard !overflow, !bytes.isEmpty, bytes.count <= 1_048_576, next <= 32 * 1024 * 1024 else {
+                throw failure(.preservationEvidenceUnavailable)
+            }
+            total = next
+        }
+        let raw = try payloads(inventory)
+        let indices = try PreservedProfilePolicy.targetIndices(resignedBundleID: resignedBundleID, installed: raw)
+        let started = ProcessInfo.processInfo.systemUptime
+        var missing: [(bytes: Data, uuid: UUID)] = []
+        for index in indices {
+            try checkWork(admission, started: started)
+            guard raw[index]["DER-Encoded-Profile"] != nil else { continue }
+            do {
+                _ = try authenticatedInput(inventory[index], phase: "installed", admission: admission, started: started)
+            } catch let selection as V3RefreshSelectionFailure where selection.preservationConflict == "embeddedDERUnsupportedSigner" {
+                guard let value = raw[index]["UUID"] as? String, let uuid = UUID(uuidString: value) else {
+                    throw failure(.preservationMalformedProfile)
+                }
+                missing.append((inventory[index], uuid))
+            }
+        }
+        return missing
+    }
+
     private static func authenticatedTargetInputs(inventory: [Data], raw: [[String: Any]],
-        resignedBundleID: String, admission: (() throws -> Void)?, started: TimeInterval, phase: String = "installed") throws -> [PreservedProfilePolicy.ProfileInput] {
+        resignedBundleID: String, admission: (() throws -> Void)?, started: TimeInterval, phase: String = "installed", origin: V3AppleProfileOriginEvidence? = nil) throws -> [PreservedProfilePolicy.ProfileInput] {
         // A semantic alternative has an explicit bounded budget; raw-equal
         // legacy admission above is unchanged. Never truncate the inventory.
         guard inventory.count == raw.count, inventory.count <= 512 else { throw failure(.preservationEvidenceUnavailable) }
@@ -880,7 +962,7 @@ struct V3PreservationRefreshState: Sendable {
         let indices = try PreservedProfilePolicy.targetIndices(resignedBundleID: resignedBundleID, installed: raw)
         for index in indices {
             try checkWork(admission, started: started)
-            let verified = try authenticatedInput(inventory[index], phase: phase, admission: admission, started: started)
+            let verified = try authenticatedInput(inventory[index], phase: phase, admission: admission, started: started, origin: origin)
             // Authentication must decode exactly the same raw payload, never
             // replace a scanner-selected identity with a different CMS content.
             guard try PreservedProfilePolicy.Value(verified.raw) == PreservedProfilePolicy.Value(raw[index]) else {
@@ -891,7 +973,7 @@ struct V3PreservationRefreshState: Sendable {
         try checkWork(admission, started: started)
         return inputs
     }
-    private static func authenticatedInput(_ bytes: Data, phase: String, admission: (() throws -> Void)?, started: TimeInterval) throws -> PreservedProfilePolicy.ProfileInput {
+    private static func authenticatedInput(_ bytes: Data, phase: String, admission: (() throws -> Void)?, started: TimeInterval, origin: V3AppleProfileOriginEvidence? = nil) throws -> PreservedProfilePolicy.ProfileInput {
         do {
             let outerXML = try ProfileCMSVerifier.authenticateOuter(bytes)
             let outer = try PreservedProfileDecoder.decodeOuter(verifiedOuterXML: outerXML)
@@ -899,9 +981,19 @@ struct V3PreservationRefreshState: Sendable {
                 throw PreservedProfilePolicy.Failure.embeddedDERUnsupportedRepresentation
             }
             let innerDER: Data
+            var usedOrigin = false
             do {
                 innerDER = try ProfileCMSVerifier.authenticateInner(nestedCMS)
             } catch ProfileCMSVerificationError.unsupportedSigner {
+                if let origin {
+                    try checkWork(admission, started: started)
+                    try origin.authorize(bytes, installedPhase: phase == "installed" || phase == "freshInstalled")
+                    // Inspection is explicitly UNTRUSTED by itself. Only the exact
+                    // full outer CMS receipt above establishes Apple-origin authority.
+                    innerDER = try ProfileCMSVerifier.inspectInnerCryptography(nestedCMS).untrustedContent
+                    usedOrigin = true
+                    try checkWork(admission, started: started)
+                } else {
                 // Read-only evidence is NOT an alternate authority path. Even a
                 // valid Apple chain/signature cannot admit an unapproved role.
                 try checkWork(admission, started: started)
@@ -916,12 +1008,17 @@ struct V3PreservationRefreshState: Sendable {
                     evidence.signature.rawValue, evidence.temporal.rawValue, evidence.pin.rawValue, role, fingerprint].joined(separator: "|")
                 throw V3RefreshSelectionFailure(reason: .preservationAuthorityConflict, scope: .nonHost,
                     preservationConflict: "embeddedDERUnsupportedSigner", cmsSignerDiagnostic: diagnostic)
+                }
             }
             let decoded = try PreservedProfileDecoder.decode(verifiedOuterXML: outerXML, verifiedInnerDER: innerDER)
             // Includes candidates: model/selection metadata must describe the
             // exact authenticated payload, not a different scanner substring.
             guard try PreservedProfilePolicy.Value(decoded.rawOuter) == PreservedProfilePolicy.Value(payloads([bytes])[0]) else {
                 throw PreservedProfilePolicy.Failure.embeddedDERBindingMismatch
+            }
+            if usedOrigin {
+                try origin?.authorize(bytes, installedPhase: phase == "installed" || phase == "freshInstalled")
+                try checkWork(admission, started: started)
             }
             return PreservedProfilePolicy.ProfileInput(raw: decoded.rawOuter,
                 authenticatedInner: decoded.normalizedInnerAuthority)
@@ -950,8 +1047,26 @@ struct V3PreservationRefreshState: Sendable {
         V3RefreshSelectionFailure(reason: reason, scope: .nonHost)
     }
 
+    static func originFailure(_ error: Error) -> V3RefreshSelectionFailure {
+        let token: String
+        switch error as? AppleProfileEvidenceError {
+        case .recordNotFound: token = "recordNotFound"
+        case .ambiguousProfile: token = "ambiguousRecord"
+        case .identityMismatch: token = "responseMismatch"
+        case .invalidResponse: token = "invalidResponse"
+        case .responseTooLarge: token = "responseTooLarge"
+        case .cancelled: token = "operationCancelled"
+        case .expiredOperation: token = "operationExpired"
+        case .ownershipChanged: token = "ownershipChanged"
+        case .unavailable, nil: token = "requestUnavailable"
+        }
+        return V3RefreshSelectionFailure(reason: .preservationEvidenceUnavailable, scope: .nonHost,
+            appleProfileOrigin: token)
+    }
+
     static func map(_ error: Error) -> V3RefreshSelectionFailure {
         if let existing = error as? V3RefreshSelectionFailure { return existing }
+        if error is AppleProfileEvidenceError { return originFailure(error) }
         let reason: V3RefreshSelectionFailure.Reason
         switch error as? PreservedProfilePolicy.Failure {
         case .missingHistoricalBinding: reason = .preservationIdentityUnavailable

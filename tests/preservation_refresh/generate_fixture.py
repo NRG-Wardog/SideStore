@@ -36,12 +36,12 @@ def generate(out):
     registry=extract(contexts.read_text(),'enum V3ValidatedReuseMainRegistry {')
     integration='\n'.join([decoder.read_text(),binding,registry,doubles.read_text(),operation,metadataHarness,(here/'BoundaryDoubles.swift').read_text(),
       'final class FetchHarness: BasePipelineOperation<InstallAppOperationContext, [String: ALTProvisioningProfile]> {\n'+helper+'\nfunc run() async throws -> [String: ALTProvisioningProfile] { try await fetchPreservingInstalledAuthorization() }\n}',
-      (here/'AuthenticatedAdapterCases.swift').read_text(),(here/'IntegrationCases.swift').read_text()])
+      (here/'OriginAdapterCases.swift').read_text(),(here/'AuthenticatedAdapterCases.swift').read_text(),(here/'IntegrationCases.swift').read_text()])
     out.mkdir(parents=True,exist_ok=True)
     (out/'Policy.swift').write_text('import Foundation\nimport CoreFoundation\n'+policy+'\n')
     (out/'main.swift').write_text((here/'PolicyCases.swift').read_text())
     (out/'Integration.swift').write_text(integration)
-    inputs=[refresh,fetch,metadataPath,service,contexts,doubles,decoder,here/'BoundaryDoubles.swift',here/'IntegrationCases.swift',here/'AuthenticatedAdapterCases.swift',here/'PolicyCases.swift',here/'run.sh',here/'test_contract.py',here/'expected-cases.json',Path(__file__)]
+    inputs=[refresh,fetch,metadataPath,service,contexts,doubles,decoder,here/'BoundaryDoubles.swift',here/'IntegrationCases.swift',here/'AuthenticatedAdapterCases.swift',here/'OriginAdapterCases.swift',here/'PolicyCases.swift',here/'run.sh',here/'test_contract.py',here/'expected-cases.json',Path(__file__)]
     report={'schema':'preservation-refresh-source-v1','inputs':{str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in inputs},'swift_executed':False,'device_executed':False,'portal_executed':False}
     (out/'sources.json').write_text(json.dumps(report,indent=2)+'\n'); print(json.dumps(report))
 if __name__=='__main__':

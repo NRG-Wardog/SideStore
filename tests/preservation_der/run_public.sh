@@ -46,7 +46,7 @@ swiftc "$mini/Sources/ProfileCMSVerifier.swift" \
 "$work/public" "$work/public-inputs" "$mini/TestsCMS/approved-inner-provenance.json" | tee "$work/result.json"
 "$python" - "$work/result.json" <<'PY'
 import json,pathlib,sys
-suffixes=['outer-role-authenticated','inner-pinned-role-authenticated','signer-diagnostic-facade','complete-authority-bound','outer-tamper-rejected','inner-tamper-rejected','inner-cannot-be-outer-role','outer-cannot-be-inner-role']
+suffixes=['outer-role-authenticated','inner-pinned-role-authenticated','signer-diagnostic-facade','cryptographic-inspection-facade','inspection-tamper-rejected','inspection-malformed-rejected','complete-authority-bound','outer-tamper-rejected','inner-tamper-rejected','inner-cannot-be-outer-role','outer-cannot-be-inner-role']
 expected=[f'public-{i}-{s}' for i in range(2) for s in suffixes]+[f'public-{i}-cross-profile-binding-rejected' for i in range(2)]
 lines=pathlib.Path(sys.argv[1]).read_text().splitlines();assert len(lines)==1
 r=json.loads(lines[0]);assert set(r)=={'schema','status','cases','cms_verified','device_executed'}

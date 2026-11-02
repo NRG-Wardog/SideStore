@@ -33,15 +33,25 @@ class Contract(unittest.TestCase):
   adapter=s[s.index('struct V3PreservationRefreshState:'):]
   for required in ['inventory.count <= 512','addingReportingOverflow','bytes.count <= 1_048_576','next <= 32 * 1024 * 1024','systemUptime - started <= 20','try Task.checkCancellation()']:
    self.assertIn(required,adapter)
-  self.assertIn('let candidate = try authenticatedInput(candidateData, phase: "candidate", admission: admission, started: started)\n        try checkWork(admission, started: started)',adapter)
-  self.assertIn('let candidate = try Self.authenticatedInput(candidateData, phase: "freshCandidate", admission: admission, started: started)\n            try Self.checkWork(admission, started: started)',adapter)
+  self.assertIn('let candidate = try authenticatedInput(candidateData, phase: "candidate", admission: admission, started: started, origin: origin)\n        try checkWork(admission, started: started)',adapter)
+  self.assertIn('let candidate = try Self.authenticatedInput(candidateData, phase: "freshCandidate", admission: admission, started: started, origin: origin)\n            try Self.checkWork(admission, started: started)',adapter)
   self.assertNotIn('Task.detached',adapter)
   self.assertNotIn('raw["verified"]',s)
   self.assertIn('fileprivate init(raw: [String: Any], authenticatedInner:',s)
  def test_unknown_signer_diagnostic_never_becomes_authority(self):
   source=(ROOT/'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text()
   diagnostic=generator.extract(source,'catch ProfileCMSVerificationError.unsupportedSigner {')
+  originBranch,diagnostic=diagnostic.split('} else {',1)
   self.assertEqual(diagnostic.count('try checkWork(admission, started: started)'),2)
+  self.assertIn('try origin.authorize(bytes, installedPhase:',originBranch)
+  self.assertLess(originBranch.index('try origin.authorize'),originBranch.index('inspectInnerCryptography'))
+  self.assertIn('inspectInnerCryptography(nestedCMS).untrustedContent',originBranch)
+  self.assertIn('if origin?.installed.isEmpty == false { throw PreservedProfilePolicy.Failure.embeddedDERDiffer }',source)
+  self.assertIn('if usedOrigin {\n                try origin?.authorize(bytes, installedPhase:',source)
+  self.assertIn('defer { context.preservationRefreshState?.origin?.operation.invalidate() }',source)
+  final=source[source.index('before = try await validateFreshPreservationSnapshot(profiles)'):source.index('preservationMutationDispatched = true')]
+  self.assertLess(final.index('try await dbContext.perform'),final.index('validateOriginAdmission()'))
+  self.assertNotIn('inspectInnerCryptography',diagnostic)
   self.assertIn('ProfileCMSVerifier.diagnoseInnerSigner(nestedCMS)',diagnostic)
   self.assertIn('throw V3RefreshSelectionFailure(reason: .preservationAuthorityConflict',diagnostic)
   self.assertNotIn('return ',diagnostic)

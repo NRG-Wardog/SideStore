@@ -210,18 +210,64 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
                 throw V3PreservationRefreshState.failure(.preservationIdentityUnavailable)
             }
         }
+        // Corroboration is read-only and finishes before ANY candidate generation.
+        // Keep the admission closure, not the context itself, to avoid a state cycle.
+        let admission = context.profileMutationAdmission
+        var originOperation: AppleProfileOperation?
+        var installedEvidence: [AppleProfileEvidence] = []
+        var retainedByState = false
+        defer { if !retainedByState { originOperation?.invalidate() } }
+        do {
+            let missing = try V3PreservationRefreshState.requiredOriginProfiles(inventory: bytes,
+                resignedBundleID: identity.resigned, admission: admission)
+            if !missing.isEmpty {
+                let operation = try await DeveloperPortalProxy.shared.makePreservationProfileOperation(
+                    team: team, bundleIdentifier: identity.resigned, admission: { try admission?() })
+                originOperation = operation
+                for item in missing {
+                    try admission?()
+                    installedEvidence.append(try await operation.corroborateExisting(installedCMS: item.bytes,
+                        uuid: item.uuid, bundleIdentifier: identity.resigned))
+                    try admission?()
+                }
+            }
+        } catch is CancellationError { throw CancellationError() }
+        catch let selection as V3RefreshSelectionFailure { throw selection }
+        catch let failure as PreservedProfilePolicy.Failure { throw V3PreservationRefreshState.map(failure) }
+        catch { throw V3PreservationRefreshState.originFailure(error) }
+        let installedOrigin = originOperation.map {
+            V3AppleProfileOriginEvidence(operation: $0, installed: installedEvidence, candidate: nil)
+        }
         let prepared: V3PreservationRefreshState.Prepared
         do {
             prepared = try V3PreservationRefreshState.prepare(resignedBundleID: identity.resigned,
                 teamID: team.identifier, signerDER: certificate.data,
                 certificateExpiration: certificate.expiry, inventory: bytes, now: Date(),
-                admission: context.profileMutationAdmission)
+                admission: context.profileMutationAdmission, origin: installedOrigin)
         } catch is CancellationError { throw CancellationError() }
         catch { throw V3PreservationRefreshState.map(error) }
 
         let candidate: ALTProvisioningProfile
+        var candidateEvidence: AppleProfileEvidence?
         if let supplied = context.overrideProvisioningProfile {
             candidate = supplied
+            do {
+                // Supplied bytes are never provenance. An unknown signer requires a
+                // separate exact existing-record read, not the baseline receipt.
+                let missing = try V3PreservationRefreshState.requiredOriginProfiles(inventory: [supplied.data],
+                    resignedBundleID: identity.resigned, admission: admission)
+                if let item = missing.first {
+                    if originOperation == nil {
+                        originOperation = try await DeveloperPortalProxy.shared.makePreservationProfileOperation(
+                            team: team, bundleIdentifier: identity.resigned, admission: { try admission?() })
+                    }
+                    candidateEvidence = try await originOperation!.corroborateExisting(installedCMS: item.bytes,
+                        uuid: item.uuid, bundleIdentifier: identity.resigned)
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch let failure as PreservedProfilePolicy.Failure { throw V3PreservationRefreshState.map(failure) }
+            catch let failure as V3RefreshSelectionFailure { throw failure }
+            catch { throw V3PreservationRefreshState.originFailure(error) }
         } else {
             // Lookup the existing ID, then request a generated team profile.
             // No addAppID, updateFeatures, updateAppGroups, certificate
@@ -232,15 +278,29 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
             guard matching.count == 1, let existing = matching.first else {
                 throw V3PreservationRefreshState.failure(.preservationPortalIdentityUnavailable)
             }
-            candidate = try await DeveloperPortalProxy.shared.downloadProvisioningProfile(
-                for: existing, deviceType: DeveloperPortalProxy.currentDeviceType, team: team)
+            if originOperation == nil {
+                originOperation = try await DeveloperPortalProxy.shared.makePreservationProfileOperation(
+                    team: team, bundleIdentifier: identity.resigned, admission: { try admission?() })
+            }
+            // This is the existing authorized generation step, not a read-only
+            // fallback. Its own authenticated response mints a distinct receipt.
+            do {
+                let evidence = try await originOperation!.generateCandidate(for: existing,
+                    deviceType: DeveloperPortalProxy.currentDeviceType)
+                candidateEvidence = evidence
+                candidate = evidence.profile
+            } catch is CancellationError { throw CancellationError() }
+            catch { throw V3PreservationRefreshState.originFailure(error) }
         }
         try context.profileMutationAdmission?()
         do {
             context.preservationRefreshState = try V3PreservationRefreshState.finish(prepared: prepared,
-                candidateData: candidate.data, now: Date(), admission: context.profileMutationAdmission)
+                candidateData: candidate.data, now: Date(), admission: context.profileMutationAdmission,
+                origin: originOperation.map { V3AppleProfileOriginEvidence(operation: $0,
+                    installed: installedEvidence, candidate: candidateEvidence) })
         } catch is CancellationError { throw CancellationError() }
         catch { throw V3PreservationRefreshState.map(error) }
+        retainedByState = true
         self.setProgress(100)
         return [context.targetBundleIdentifier: candidate]
     }

@@ -56,6 +56,9 @@ enum AuthenticatedAdapterCases {
    FixtureCMSBoundary.outer[bytes]=try! PropertyListSerialization.data(fromPropertyList:payload,format:.xml,options:0)
    fixturePayloads[bytes]=payload;fixtureProfiles[bytes]=p;return p
   }
+  func prepareProfiles(_ profiles:[ALTProvisioningProfile],admission:(() throws->Void)?=nil,origin:V3AppleProfileOriginEvidence?=nil) throws->V3PreservationRefreshState.Prepared {
+   try V3PreservationRefreshState.prepare(resignedBundleID:"app",teamID:"T",signerDER:Data([7]),certificateExpiration:instant.addingTimeInterval(5000),inventory:profiles.map(\.data),now:now,admission:admission,origin:origin)
+  }
   func configure(_ c:InstallAppOperationContext,_ old:[ALTProvisioningProfile],_ candidate:ALTProvisioningProfile,drift:ALTProvisioningProfile?=nil) {
    PortalProbe.shared.candidate=candidate;var reads=0
    c.readInstalledProvisioningProfiles={
@@ -79,8 +82,9 @@ enum AuthenticatedAdapterCases {
   do {
    let c=makeContext();FixtureCMSBoundary.reset();let a=register(30,1000),candidate=register(32,2000,group:"group.changed")
    configure(c,[a],candidate)
-   do { try await execute(c);fatalError("outer authority accepted") }
-   catch let e as V3RefreshSelectionFailure { precondition(e.reason == .preservationAuthorizationChanged) }
+   let prepared=try prepareProfiles([a])
+   do { _ = try V3PreservationRefreshState.finish(prepared:prepared,candidateData:candidate.data,now:now,admission:nil);fatalError("outer authority accepted") }
+   catch let e as PreservedProfilePolicy.Failure { precondition(e == .changedAuthorization) }
    precondition(FixtureCMSBoundary.calls==0 && Injection.shared.count==0)
    passed.append("non-der-authority-rejection-never-authenticates")
   }
@@ -110,7 +114,7 @@ enum AuthenticatedAdapterCases {
    catch let e as V3RefreshSelectionFailure { precondition(e.reason == .preservationSnapshotChanged) }
    precondition(Injection.shared.count==0 && c.refreshVerification==nil)
    precondition(c.installedApp!.expirationDate==oldMain && c.installedApp!.appExtensions[0].expirationDate==oldExtension)
-   precondition(FixtureCMSBoundary.calls==6) // initial two + candidate; no fresh reauthentication of changed target.
+   precondition(FixtureCMSBoundary.calls==10) // 4 static preflight + 4 initial + 2 candidate; no changed-target fresh reauthentication.
    passed.append("authenticated-fresh-raw-drift-no-repair")
   }
   do {
@@ -156,16 +160,6 @@ enum AuthenticatedAdapterCases {
    let c=makeContext();FixtureCMSBoundary.reset()
    let a=register(30,1000),b=register(31,1200),candidate=register(32,2000)
    let old = phase == "candidate" ? [a] : [a,b]
-   var reads=0
-   PortalProbe.shared.candidate=candidate
-   c.readInstalledProvisioningProfiles={
-    reads += 1;PortalProbe.shared.calls.append("read")
-    if reads==3 && phase.hasPrefix("fresh") {
-     let id = phase == "freshInstalled" ? 30 : 32
-     FixtureCMSBoundary.innerFailures[Data("synthetic-inner-\(id)".utf8)] = .unsupportedSigner
-    }
-    return old.map(\.data)
-   }
    if !phase.hasPrefix("fresh") {
     let id = phase == "installed" ? 30 : 32
     FixtureCMSBoundary.innerFailures[Data("synthetic-inner-\(id)".utf8)] = .unsupportedSigner
@@ -174,7 +168,16 @@ enum AuthenticatedAdapterCases {
     chain:.passed,temporal:.passed,signature:.passed,profileSubjectMarker:true,profileIssuerMarker:true,
     profileExtensionMarker:true,appDeveloperMarker:false,signerSHA256:String(repeating:"a",count:64))
    let beforeMain=c.installedApp!.expirationDate,beforeExtension=c.installedApp!.appExtensions[0].expirationDate
-   do { try await execute(c);fatalError("Diagnostic accepted unknown signer") }
+   do {
+    let prepared=try prepareProfiles(old)
+    let state=try V3PreservationRefreshState.finish(prepared:prepared,candidateData:candidate.data,now:now,admission:nil)
+    if phase.hasPrefix("fresh") {
+     let id=phase == "freshInstalled" ? 30:32
+     FixtureCMSBoundary.innerFailures[Data("synthetic-inner-\(id)".utf8)] = .unsupportedSigner
+     try state.validateFresh(old.map(\.data),now:now,admission:nil)
+    }
+    fatalError("Diagnostic accepted unknown signer")
+   }
    catch let e as V3RefreshSelectionFailure {
     precondition(e.reason == .preservationAuthorityConflict && e.preservationConflict == "embeddedDERUnsupportedSigner")
     precondition(e.facts["cms_signer_diagnostic"] == "cs1|\(phase)|passed|passed|passed|passed|failed|1110|"+String(repeating:"a",count:64))
@@ -191,7 +194,7 @@ enum AuthenticatedAdapterCases {
    FixtureCMSBoundary.diagnostic=ProfileCMSSignerEvidence(algorithmAndAttributes:.passed,pin:.failed,
     chain:.failed,temporal:.unchecked,signature:.unchecked,profileSubjectMarker:true,profileIssuerMarker:true,
     profileExtensionMarker:true,appDeveloperMarker:true,signerSHA256:"CANARY-OWNER-CERTIFICATE")
-   do { try await execute(c);fatalError("Unverified diagnostic accepted") }
+   do { _ = try prepareProfiles([a,b]);fatalError("Unverified diagnostic accepted") }
    catch let e as V3RefreshSelectionFailure {
     precondition(e.facts["cms_signer_diagnostic"] == "cs1|installed|passed|failed|unchecked|unchecked|failed|unchecked|unknown")
     precondition(!e.facts.description.contains("CANARY"))
@@ -205,7 +208,7 @@ enum AuthenticatedAdapterCases {
    FixtureCMSBoundary.innerFailures[Data("synthetic-inner-30".utf8)] = .unsupportedSigner
    var allowed=true;c.profileMutationAdmission={if !allowed {throw CancellationError()} }
    FixtureCMSBoundary.duringDiagnostic={allowed=false}
-   do { try await execute(c);fatalError("Diagnostic admission revocation ignored") } catch is CancellationError {}
+   do { _ = try prepareProfiles([a,b],admission:c.profileMutationAdmission);fatalError("Diagnostic admission revocation ignored") } catch is CancellationError {}
    precondition(FixtureCMSBoundary.diagnosticCalls==1 && Injection.shared.count==0 && !PortalProbe.shared.calls.contains("lookup-existing-id"))
    passed.append("unknown-cms-signer-diagnostic-admission-revoked")
   }
@@ -220,6 +223,7 @@ enum AuthenticatedAdapterCases {
    precondition(V3RefreshSelectionFailure(reason:.preservationAuthorityConflict,scope:.nonHost,preservationConflict:"embeddedDERDiffer",cmsSignerDiagnostic:valid).facts["cms_signer_diagnostic"] == nil)
    passed.append("unknown-cms-signer-diagnostic-producer-finite-scope")
   }
+  passed += try await OriginAdapterCases.run(now:now,makeContext:makeContext,execute:execute,register:register,configure:configure)
   FixtureCMSBoundary.reset();return passed
  }
 }
