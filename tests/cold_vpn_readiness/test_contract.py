@@ -118,6 +118,12 @@ class ColdVPNReadinessTests(unittest.TestCase):
         doubles = (ROOT / 'tests/cold_vpn_readiness/boundary_doubles.swift').read_text()
         self.assertNotIn('struct V3RefreshSelectionFailure', doubles)
         self.assertNotIn('preservationMutationDispatched', doubles)
+        self.assertIn('let isPreservationRefresh = false', doubles)
+        self.assertIn('let preservationRefreshState: InertPreservationRefreshState? = nil', doubles)
+        self.assertIn('fatalError("Preservation origin admission requires its actual-source fixture")', doubles)
+        self.assertIn('try context.preservationRefreshState?.validateOriginAdmission()', fragment)
+        self.assertLess(fragment.index('try await dbContext.perform'), fragment.index('validateOriginAdmission()'))
+        self.assertLess(fragment.index('validateOriginAdmission()'), fragment.index('preservationMutationDispatched = true'))
 
     def test_native_production_wait_and_expiry(self):
         compiler = shutil.which('swiftc')

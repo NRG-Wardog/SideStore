@@ -40,8 +40,17 @@ typealias InstalledApp = Int
 final class DatabaseContext {
     func perform(_ body: () throws -> InstalledApp) async throws -> InstalledApp { try body() }
 }
+// This readiness fixture exercises non-preservation injection only. Preserve
+// the actual optional dependency without manufacturing origin authorization.
+// Preservation admission is exercised by the separate actual-source suite.
+struct InertPreservationRefreshState {
+    func validateOriginAdmission() throws {
+        fatalError("Preservation origin admission requires its actual-source fixture")
+    }
+}
 final class InjectionContext {
  let isPreservationRefresh = false
+ let preservationRefreshState: InertPreservationRefreshState? = nil
  let dbBackgroundContext = DatabaseContext()
  var refreshVerification: V3RefreshVerification?
  var recordRefreshVerification: ((V3RefreshVerification) -> Void)?
