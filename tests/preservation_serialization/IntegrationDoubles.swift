@@ -32,12 +32,16 @@ final class FixtureRunner: @unchecked Sendable {
     let entered = FixtureSignal()
     let resume = FixtureSignal()
     let mutations = FixtureState()
+    let pipelineEntries = FixtureOrder()
+    var expectedPipelineProgress: Progress?
     func performPipeline(for operation: AppOperation, handler: PipelineExecutionHandler,
-                         group: RefreshGroup, operationsCount: Int,
+                         group: RefreshGroup, operationProgress: Progress, operationsCount: Int,
                          refreshAdmission: (() throws -> Void)?,
                          readProfiles: (() async throws -> [Data])?) async throws -> Int {
         // Simulate native/portal read suspension before the existing production
         // pre-dispatch admission point. No profile/device operation is performed.
+        pipelineEntries.append(1)
+        if let expectedPipelineProgress { precondition(operationProgress === expectedPipelineProgress) }
         await entered.release()
         await resume.wait()
         try refreshAdmission?()

@@ -3,11 +3,12 @@ final class FixtureGroup: @unchecked Sendable {
     func setVerification(_ verification: V3RefreshVerification, for identifier: String) {}
 }
 final class FixtureProgress: @unchecked Sendable {
-    let value = Progress(totalUnitCount: 100)
     private let lock = NSLock()
-    private var present = true
-    func removeCancelledEntry() { lock.withLock { present = false } }
-    func progress(for operation: String) -> Progress? { lock.withLock { present ? value : nil } }
+    private var entries: [String: Progress] = [:]
+    func set(_ value: Progress?, for operation: AppOperation) {
+        lock.withLock { entries[operation.bundleIdentifier] = value }
+    }
+    func progress(for operation: String) -> Progress? { lock.withLock { entries[operation] } }
     func progress(for operation: AppOperation) -> Progress? { progress(for: operation.bundleIdentifier) }
 }
 final class FixtureAdmission { func check() throws {} }
@@ -108,17 +109,17 @@ func waitForQueue(_ lane: V3ProfileTransactionLane, _ count: Int) async {
 
         for cancelGroup in [true, false] {
             let group = FixtureGroup()
-            let progress = FixtureProgress()
+            let progress = Progress(totalUnitCount: 100)
             // This closure is extracted verbatim from performOperation, not a
             // fixture reimplementation of the production cancellation guard.
-            let check = makeAdmission(group: group, progress: progress, operation: "app")
+            let check = makeAdmission(group: group, operationProgress: progress)
             try check()
             let ticket = try await lane.acquire()
             do {
                 defer { lane.release(ticket) }
                 try check()
                 await Task.yield() // e.g. portal/profile read awaiting completion
-                if cancelGroup { group.progress.cancel() } else { progress.value.cancel() }
+                if cancelGroup { group.progress.cancel() } else { progress.cancel() }
                 do { try check(); preconditionFailure("Cancelled progress reached mutation") }
                 catch is CancellationError {} catch { throw error }
             }
@@ -127,13 +128,14 @@ func waitForQueue(_ lane: V3ProfileTransactionLane, _ count: Int) async {
 
         let composedRunner = FixtureRunner()
         let composedGroup = RefreshGroup()
+        let composedEntry = composedRunner.makeOperationEntries(operations: [AppOperation(bundleIdentifier: "com.fixture.app")], group: composedGroup)[0]
         let composed = Task {
-            try await composedRunner.performOperation(for: AppOperation(bundleIdentifier: "com.fixture.app"),
-                handler: PipelineExecutionHandler(), group: composedGroup)
+            try await composedRunner.performOperation(for: composedEntry.operation,
+                handler: PipelineExecutionHandler(), group: composedGroup, operationProgress: composedEntry.progress)
         }
         await composedRunner.entered.wait()
-        composedRunner.progress.value.cancel()
-        composedRunner.progress.removeCancelledEntry()
+        composedEntry.progress.cancel()
+        composedRunner.progress.set(nil, for: composedEntry.operation)
         precondition(composedRunner.progress.progress(for: "com.fixture.app") == nil)
         await composedRunner.resume.release()
         do { try await composed.value; preconditionFailure("Removed cancelled progress reached mutation") }
@@ -142,6 +144,32 @@ func waitForQueue(_ lane: V3ProfileTransactionLane, _ count: Int) async {
         let afterComposedCancellation = try await lane.acquire()
         lane.release(afterComposedCancellation)
         print("PASS_composed_production_entry_retains_cancelled_progress_after_removal")
+
+        // Run the exact producer before the simulated preflight suspension.
+        for replace in [false, true] {
+            let runner = FixtureRunner()
+            let group = RefreshGroup()
+            let entries = runner.makeOperationEntries(operations: [
+                AppOperation(bundleIdentifier: "cancelled"), AppOperation(bundleIdentifier: "active")], group: group)
+            let cancelledEntry = entries[0], activeEntry = entries[1]
+            await Task.yield()
+            cancelledEntry.progress.cancel()
+            runner.progress.set(replace ? Progress(totalUnitCount: 100) : nil, for: cancelledEntry.operation)
+            precondition(runner.progress.progress(for: cancelledEntry.operation) !== cancelledEntry.progress)
+            do {
+                try await runner.performOperation(for: cancelledEntry.operation, handler: PipelineExecutionHandler(), group: group, operationProgress: cancelledEntry.progress)
+                preconditionFailure("Pre-entry cancelled original owner reached pipeline")
+            } catch is CancellationError {} catch { throw error }
+            precondition(runner.pipelineEntries.read().isEmpty && runner.mutations.count() == 0)
+            // An uncancelled independent tuple still runs even when evicted.
+            runner.progress.set(nil, for: activeEntry.operation)
+            runner.expectedPipelineProgress = activeEntry.progress
+            await runner.resume.release()
+            try await runner.performOperation(for: activeEntry.operation, handler: PipelineExecutionHandler(), group: group, operationProgress: activeEntry.progress)
+            precondition(runner.pipelineEntries.read() == [1] && runner.mutations.count() == 1)
+            print(replace ? "PASS_composed_preentry_cancelled_replaced_original_progress" : "PASS_composed_preentry_cancelled_evicted_original_progress")
+        }
+        print("PASS_composed_preentry_active_tuple_removed_registry_preserves_identity")
 
         let held = try await lane.acquire()
         let cancelled = Task {

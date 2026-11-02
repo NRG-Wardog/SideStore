@@ -11,7 +11,7 @@ def validate(root):
                 'var profileTransaction: V3ProfileTransactionLane.Ticket?',
                 'defer {\n            if let profileTransaction { V3ProfileTransactionLane.shared.release(profileTransaction) }',
                 'try transactionAdmission?.check()', 'try refreshAdmission?()',
-                '!group.progress.isCancelled', 'transactionProgress?.isCancelled != true', 'let transactionProgress = progress.progress(for: operation)',
+                '!group.progress.isCancelled', '!transactionProgress.isCancelled', 'let transactionProgress = operationProgress',
                 'try checkTransactionAdmission()\n            profileTransaction = try await V3ProfileTransactionLane.shared.acquire()',
                 'try checkTransactionAdmission()\n            group.setVerification']
     for item in expected:
@@ -31,14 +31,30 @@ def validate(root):
     assert 'withTaskCancellationHandler' in lane and 'queue.removeAll { $0 === ticket }' in lane
     assert 'catch { release(ticket); throw error }' in lane
     assert 'guard owner === ticket, ticket.state == .granted else' in lane
-    scheduler = text.split('let normalOperations = operations.filter')[1].split('// Outer entry wrappers')[0]
-    assert scheduler.index('while let _ = try await taskGroup.next() {}') < scheduler.index('for operation in hostOperations')
+    scheduler = text.split('let normalOperations = ownedOperations.filter')[1].split('// Outer entry wrappers')[0]
+    assert scheduler.index('while let _ = try await taskGroup.next() {}') < scheduler.index('for owned in hostOperations')
     assert scheduler.count('self.performOperation(') == 2
     # No pipeline step may recursively acquire the non-reentrant lane.
     for path in (root / 'SideStore/Core/Operations').rglob('*.swift'):
         if path.name != 'PipelineRunner.swift':
             assert 'performOperation(for:' not in path.read_text(), str(path)
-    return len(expected) + 15
+    producer = text.split('// V3_OWNED_OPERATION_PROGRESS_BEGIN\n')[1].split('// V3_OWNED_OPERATION_PROGRESS_END')[0]
+    ownership_checks = {
+        'tuple retains concrete progress': 'let ownedOperations = operations.map { operation -> (operation: AppOperation, progress: Progress)' in producer,
+        'producer returns original object': 'return (operation, progress)' in producer,
+        'registry receives same object': 'self.progress.set(progress, for: operation)' in producer,
+        'group receives same object': 'group.progress.addChild(progress, withPendingUnitCount: 100)' in producer,
+        'producer precedes preflight await': text.index('// V3_OWNED_OPERATION_PROGRESS_END') < text.index('try await validateOp.execute()'),
+        'both scheduler routes forward owner': scheduler.count('operationProgress: owned.progress') == 2,
+        'entry requires nonoptional progress': 'operationProgress: Progress, operationsCount:' in body,
+        'pipeline requires nonoptional progress': 'operationProgress: Progress, operationsCount:' in pipeline,
+        'entry never reacquires registry owner': 'progress.progress(for:' not in body,
+        'pipeline never reacquires registry owner': 'progress.progress(for:' not in pipeline,
+        'entry forwards exact owner': 'operationProgress: operationProgress, operationsCount:' in body,
+        'executor receives exact owner': 'operationProgress: operationProgress,' in pipeline,
+    }
+    for name, valid in ownership_checks.items(): assert valid, name
+    return len(expected) + 15 + len(ownership_checks)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

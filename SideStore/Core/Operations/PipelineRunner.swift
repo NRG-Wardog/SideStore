@@ -475,12 +475,17 @@ final class PipelineRunner: Sendable
         // V3_PROGRESS_BASELINE_FIX_V1: child weights already span the full total.
         group.progress.completedUnitCount = 0
         
-        for operation in operations
-        {
+        // V3_OWNED_OPERATION_PROGRESS_BEGIN
+        // Retain ownership at creation, before preflight can suspend. UI reads
+        // may remove or replace cancelled registry entries; they cannot transfer
+        // this transaction to a different Progress object.
+        let ownedOperations = operations.map { operation -> (operation: AppOperation, progress: Progress) in
             let progress = Progress.discreteProgress(totalUnitCount: 100)
             self.progress.set(progress, for: operation)
             group.progress.addChild(progress, withPendingUnitCount: 100)
+            return (operation, progress)
         }
+        // V3_OWNED_OPERATION_PROGRESS_END
         
         
         /* Preflight SideStore specific validations */
@@ -519,14 +524,15 @@ final class PipelineRunner: Sendable
         group.isCellularRefreshGroup = false
 
         // Finish standalone apps before a host replacement can terminate us.
-        let hostOperations = operations.filter {
-            ($0.app as? ALTApplication)?.isAltStoreApp == true || $0.bundleIdentifier.isAltStoreAppID
+        let hostOperations = ownedOperations.filter {
+            ($0.operation.app as? ALTApplication)?.isAltStoreApp == true || $0.operation.bundleIdentifier.isAltStoreAppID
         }
-        let normalOperations = operations.filter {
-            !(($0.app as? ALTApplication)?.isAltStoreApp == true || $0.bundleIdentifier.isAltStoreAppID)
+        let normalOperations = ownedOperations.filter {
+            !(($0.operation.app as? ALTApplication)?.isAltStoreApp == true || $0.operation.bundleIdentifier.isAltStoreAppID)
         }
         try await withThrowingTaskGroup(of: Void.self) { taskGroup in
-            for operation in normalOperations {
+            for owned in normalOperations {
+                let operation = owned.operation
                 taskGroup.addTask {
                     try Task.checkCancellation()
                     try V3RemoteRequestLeases.admitted?.check()
@@ -534,7 +540,7 @@ final class PipelineRunner: Sendable
                     guard ObjectIdentifier(minimuxer.core) == transportCoreIdentity else {
                         throw OperationError.invalidOperationContext("The owned readiness transport changed.")
                     }
-                    try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: checkReadinessOwnership, readProfiles: {
+                    try await self.performOperation(for: operation, handler: handler, group: group, operationProgress: owned.progress, operationsCount: operationsCount, refreshAdmission: checkReadinessOwnership, readProfiles: {
                         try checkReadinessOwnership()
                         let result = try await transportCore.readInstalledProvisioningProfiles()
                         try checkReadinessOwnership()
@@ -544,9 +550,10 @@ final class PipelineRunner: Sendable
             }
             while let _ = try await taskGroup.next() {}
         }
-        for operation in hostOperations {
+        for owned in hostOperations {
+            let operation = owned.operation
             try checkReadinessOwnership()
-            try await self.performOperation(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: checkReadinessOwnership, readProfiles: {
+            try await self.performOperation(for: operation, handler: handler, group: group, operationProgress: owned.progress, operationsCount: operationsCount, refreshAdmission: checkReadinessOwnership, readProfiles: {
                         try checkReadinessOwnership()
                         let result = try await transportCore.readInstalledProvisioningProfiles()
                         try checkReadinessOwnership()
@@ -562,14 +569,14 @@ final class PipelineRunner: Sendable
         }
     }
 
-    func performOperation(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1, refreshAdmission: (() throws -> Void)? = nil, readProfiles: (() async throws -> [Data])? = nil) async throws {
+    func performOperation(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationProgress: Progress, operationsCount: Int = 1, refreshAdmission: (() throws -> Void)? = nil, readProfiles: (() async throws -> [Data])? = nil) async throws {
         // V3_PROFILE_TRANSACTION_OWNERSHIP_V1: includes direct entry and other
         // batches. Hold through readback, durable save and terminal accounting;
         // serialize app transactions only, not readiness/authentication services.
         let transactionAdmission = V3RemoteRequestLeases.admitted
-        // Retain the original progress owner: UI lookups may remove cancelled
-        // entries from the manager dictionary while this transaction is queued.
-        let transactionProgress = progress.progress(for: operation)
+        // The producer owns this exact reference across preflight and queueing.
+        // Never reacquire it from a UI-maintained registry after suspension.
+        let transactionProgress = operationProgress
         var profileTransaction: V3ProfileTransactionLane.Ticket?
         defer {
             if let profileTransaction { V3ProfileTransactionLane.shared.release(profileTransaction) }
@@ -579,7 +586,7 @@ final class PipelineRunner: Sendable
             try transactionAdmission?.check()
             try refreshAdmission?()
             guard !group.progress.isCancelled,
-                  transactionProgress?.isCancelled != true else {
+                  !transactionProgress.isCancelled else {
                 throw CancellationError()
             }
         }
@@ -597,7 +604,7 @@ final class PipelineRunner: Sendable
             try checkTransactionAdmission()
             group.setVerification(V3RefreshVerification(installAcknowledged: false, mutationDispatched: false),
                                   for: operation.bundleIdentifier)
-            let result = try await self.performPipeline(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: checkTransactionAdmission, readProfiles: readProfiles)
+            let result = try await self.performPipeline(for: operation, handler: handler, group: group, operationProgress: operationProgress, operationsCount: operationsCount, refreshAdmission: checkTransactionAdmission, readProfiles: readProfiles)
             if operationsCount <= 1 {
                 progress.set(nil, for: operation)
                 debugLog("[AppManager] performOperation: completed successfully; progress was reset.")
@@ -664,7 +671,7 @@ final class PipelineRunner: Sendable
         }
     }
     
-    private func performPipeline(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1, refreshAdmission: (() throws -> Void)? = nil, readProfiles: (() async throws -> [Data])? = nil) async throws -> InstalledApp
+    private func performPipeline(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationProgress: Progress, operationsCount: Int = 1, refreshAdmission: (() throws -> Void)? = nil, readProfiles: (() async throws -> [Data])? = nil) async throws -> InstalledApp
     {
         let pipelineSteps = PipelineStepDefinition.steps(for: operation)
         let context = InstallAppOperationContext(
@@ -800,7 +807,6 @@ final class PipelineRunner: Sendable
         }
         
         let permissionsMode = UserDefaults.standard.permissionCheckingDisabled ? .none : permissionReviewMode
-        let operationProgress = progress.progress(for: operation)
         let completedApp = try await PipelineExecutor.shared.executePipeline(
             steps: pipelineSteps,
             context: context,

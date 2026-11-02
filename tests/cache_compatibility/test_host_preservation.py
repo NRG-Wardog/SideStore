@@ -13,7 +13,9 @@ spec.loader.exec_module(generator)
 
 class HostPreservationTests(unittest.TestCase):
     def setUp(self):
-        self.production = (HERE.parents[1] / generator.PRODUCTION['host']).read_text()
+        self.progress_owner = (HERE.parents[1] / generator.PRODUCTION['host']).read_text()
+        self.production, applied = generator.project_reviewed_progress_owner(self.progress_owner)
+        self.assertTrue(applied)
         self.preservation, applied = generator.project_reviewed_profile_transaction(self.production)
         self.assertTrue(applied)
         self.latest, applied = generator.project_reviewed_preservation_registry(self.preservation)
@@ -22,6 +24,32 @@ class HostPreservationTests(unittest.TestCase):
         self.assertTrue(applied)
         self.host, applied = generator.project_reviewed_transport_observation(self.current)
         self.assertTrue(applied)
+
+    def test_progress_owner_exact_reverse_retains_all_prior_proofs(self):
+        receipt = json.loads((HERE / 'reviewed-progress-owner-host-delta.json').read_text())
+        rebuilt = self.production
+        for hunk in receipt['hunks']:
+            self.assertEqual(rebuilt.count(hunk['before']), 1)
+            rebuilt = rebuilt.replace(hunk['before'], hunk['after'], 1)
+        self.assertEqual(rebuilt, self.progress_owner)
+        proof = generator.verify_host_preservation(self.progress_owner)
+        self.assertEqual(proof.pop('reviewed_progress_owner_delta_sha256'), generator.REVIEWED_PROGRESS_OWNER_DELTA_SHA256)
+        self.assertEqual(proof, generator.verify_host_preservation(self.production))
+        self.assertEqual(generator.project_reviewed_progress_owner(self.production), (self.production, False))
+
+    def test_progress_owner_missing_duplicate_changed_or_unrelated_rejected(self):
+        receipt = json.loads((HERE / 'reviewed-progress-owner-host-delta.json').read_text())
+        changed_sources = [self.progress_owner + '// unrelated', self.progress_owner.replace('operationProgress: owned.progress', 'operationProgress: Progress()', 1)]
+        for hunk in receipt['hunks']:
+            changed_sources += [self.progress_owner.replace(hunk['after'], '', 1), self.progress_owner + hunk['after']]
+        for changed in changed_sources:
+            with self.assertRaises(AssertionError): generator.verify_host_preservation(changed)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(generator, 'HERE', root):
+                with self.assertRaises(FileNotFoundError): generator.verify_host_preservation(self.progress_owner)
+                (root / 'reviewed-progress-owner-host-delta.json').write_text('{}')
+                with self.assertRaisesRegex(AssertionError, 'Progress owner receipt changed'): generator.verify_host_preservation(self.progress_owner)
 
     def test_profile_transaction_exact_reverse_retains_all_prior_proofs(self):
         receipt = json.loads((HERE / 'reviewed-profile-transaction-host-delta.json').read_text())

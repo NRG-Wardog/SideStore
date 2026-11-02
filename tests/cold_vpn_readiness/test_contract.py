@@ -61,7 +61,7 @@ class ColdVPNReadinessTests(unittest.TestCase):
         self.assertIn('readinessLifetime.check()', normal)
         self.assertIn('V3RemoteRequestLeases.admitted?.check()', normal)
         self.assertIn('ObjectIdentifier(minimuxer.core)', normal)
-        host = b.split('for operation in hostOperations {', 1)[1]
+        host = b.split('for owned in hostOperations {', 1)[1]
         self.assertLess(host.index('checkReadinessOwnership()'), host.index('performOperation('))
 
     def test_expiry_and_diagnostics_are_finite_and_owned(self):
