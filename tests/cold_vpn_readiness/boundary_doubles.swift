@@ -35,6 +35,9 @@ func installProvisioningProfiles(_ data: Data) async throws {
     InjectionEvidence.shared.count += 1
     InjectionEvidence.shared.afterInjection()
 }
+func installPreservationProvisioningProfile(_ data: Data) async throws {
+    fatalError("Preservation injection requires its actual-source fixture")
+}
 
 typealias InstalledApp = Int
 final class DatabaseContext {
@@ -47,6 +50,9 @@ struct InertPreservationRefreshState {
     func validateOriginAdmission() throws {
         fatalError("Preservation origin admission requires its actual-source fixture")
     }
+    func validatePostReadback(_ after: [Profile]?) -> Bool {
+        fatalError("Preservation post-readback requires its actual-source fixture")
+    }
 }
 final class InjectionContext {
  let isPreservationRefresh = false
@@ -56,9 +62,9 @@ final class InjectionContext {
  var recordRefreshVerification: ((V3RefreshVerification) -> Void)?
 }
 struct Selection { let profiles: [Profile]; let certificateSerial = "fixture"; let certificateExpiry = Date.distantFuture; let certificateData = Data() }
-struct V3RefreshVerification {
- var installAcknowledged = true
- var preservation: String?
+// Stored fields and enum types are extracted from production by test_contract.py.
+// Only evaluation is inert: these cases exercise non-preservation readiness.
+extension V3RefreshVerification {
  static func evaluate(expected: [Profile], before: [Profile]?, after: [Profile]?, certificateSerial: String, certificateExpiry: Date, certificateData: Data, now: Date) -> Self { Self() }
 }
 final class InjectionHarness {

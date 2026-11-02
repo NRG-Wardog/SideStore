@@ -67,7 +67,7 @@ enum AuthenticatedAdapterCases {
                  execute:(InstallAppOperationContext) async throws->Void) async throws->[String] {
   var passed:[String]=[]
   func configure(_ c:InstallAppOperationContext,_ old:[ALTProvisioningProfile],_ candidate:ALTProvisioningProfile,
-                 fresh:([Data])->[Data] = {$0},after:([Data])->[Data] = {$0}) {
+                 fresh:@escaping ([Data])->[Data] = {$0},after:@escaping ([Data])->[Data] = {$0}) {
    PortalProbe.shared.candidate=candidate;var reads=0
    c.readInstalledProvisioningProfiles={
     reads += 1;PortalProbe.shared.calls.append("read")

@@ -27,6 +27,13 @@ def actual_selection_failure(refresh):
     return refresh[refresh.index('struct V3RefreshSelectionFailure:'):
                    refresh.index('final class RefreshAppOperation:')]
 
+def actual_verification_fields(refresh):
+    # Use the actual finite enum cases, default fields and wire representation.
+    # Only the evaluator is replaced with an inert non-preservation double.
+    start = refresh.index('struct V3RefreshVerification:')
+    end = refresh.index('    static func readProfiles(', start)
+    return refresh[start:end] + '}\n'
+
 
 class ColdVPNReadinessTests(unittest.TestCase):
     def test_owned_probe_precedes_every_mutation_boundary(self):
@@ -76,7 +83,12 @@ class ColdVPNReadinessTests(unittest.TestCase):
         executor = (ROOT / 'SideStore/Core/Operations/PipelineExecutor.swift').read_text()
         refresh = (ROOT / 'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text()
         self.assertEqual(runner.count('refreshAdmission: checkReadinessOwnership'), 2)
-        self.assertEqual(runner.count('refreshAdmission: refreshAdmission'), 2)
+        self.assertEqual(runner.count('refreshAdmission: refreshAdmission'), 1)
+        self.assertEqual(runner.count('refreshAdmission: checkTransactionAdmission'), 1)
+        operation = runner.split('    func performOperation(for operation:', 1)[1].split('    private func performPipeline(', 1)[0]
+        self.assertIn('try transactionAdmission?.check()', operation)
+        self.assertIn('try refreshAdmission?()', operation)
+        self.assertIn('refreshAdmission: checkTransactionAdmission', operation)
         step = executor.split('private func executeStep(', 1)[1]
         self.assertLess(step.index('await headlessHandler.recordPipelinePhase'), step.index('try refreshAdmission?()'))
         self.assertLess(step.index('try refreshAdmission?()'), step.index('switch step'))
@@ -117,6 +129,14 @@ class ColdVPNReadinessTests(unittest.TestCase):
         self.assertIn(fragment[fragment.index('        var preservationMutationDispatched = false'):], refresh)
         doubles = (ROOT / 'tests/cold_vpn_readiness/boundary_doubles.swift').read_text()
         self.assertNotIn('struct V3RefreshSelectionFailure', doubles)
+        self.assertNotIn('struct V3RefreshVerification', doubles)
+        fields = actual_verification_fields(refresh)
+        self.assertIn('enum ProfileStore: String, Sendable { case matched, mismatch, unavailable }', fields)
+        self.assertIn('enum Renewal: String, Sendable { case extended, unchanged, shortened, unknown }', fields)
+        self.assertIn('var certificate = "unknown"', fields)
+        self.assertIn('var mutationDispatched = true', fields)
+        self.assertIn('fatalError("Preservation injection requires its actual-source fixture")', doubles)
+        self.assertIn('fatalError("Preservation post-readback requires its actual-source fixture")', doubles)
         self.assertNotIn('preservationMutationDispatched', doubles)
         self.assertIn('let isPreservationRefresh = false', doubles)
         self.assertIn('let preservationRefreshState: InertPreservationRefreshState? = nil', doubles)
@@ -153,6 +173,7 @@ final class V3RefreshReadinessLifetime:''' + production
         refresh = (ROOT / 'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text()
         injection = actual_injection_fragment(refresh)
         source += '\n' + actual_selection_failure(refresh)
+        source += '\n' + actual_verification_fields(refresh)
         source += (ROOT / 'tests/cold_vpn_readiness/boundary_doubles.swift').read_text()
         source += '\nfunc extractedPhase(context: PhaseContext, downloadingApp: DownloadingApp, step: Int, appOperation: FakeOperation, refreshAdmission: (() throws -> Void)?) async throws {\n' + phase + '\n}\n'
         source += '\nfunc extractedNative(transportCore: NativeCore, checkReadinessOwnership: () throws -> Void) async throws {\nlet group = NativeObservationGroup(); let transportObservationConfiguration = V3TransportObservationConfiguration.capture()\n' + native + '\n}\n'

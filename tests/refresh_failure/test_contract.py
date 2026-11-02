@@ -37,7 +37,7 @@ def common(source):
     return 'import Foundation\nimport CoreFoundation\n' + model + '\n' + policy + '\n'
 
 
-def generate_source(root):
+def generate_source(root, *, include_verification_support=True):
     """Return production boundary/mapper source and exact input paths, no model/doubles.
 
     Consumers provide CombinedFailure, V3HeadlessPairingFailure, and inert SDK/model
@@ -61,8 +61,9 @@ def generate_source(root):
     source += '\n' + declaration(refresh, 'enum V3PreservationPostDispatchFailure:')
     # Exact production stored fields/wire support only; profile SDK methods are
     # unused by error mapping and deliberately excluded from this fixture.
-    verification = declaration(refresh, 'struct V3RefreshVerification:')
-    source += '\n' + verification[:verification.index('    static func readProfiles(')] + '}\n'
+    if include_verification_support:
+        verification = declaration(refresh, 'struct V3RefreshVerification:')
+        source += '\n' + verification[:verification.index('    static func readProfiles(')] + '}\n'
     for signature in ['func lcSigningHash(', 'func lcPreservationCertificateFacts(', 'enum V3RefreshFailureBoundary:', 'func lcRefreshFailureFacts(', 'func lcSafeSigningCause(', 'func lcStructuredSigningFailure(', 'private final class LCSigningHTTPObservation:', 'func lcPortalSigningRequest<T>']:
         source += '\n' + declaration(pipeline, signature)
     app_operation = read('SideStore/Core/Operations/AppOperation.swift')
@@ -168,6 +169,10 @@ class RefreshFailureContract(unittest.TestCase):
         self.assertNotIn('@main', source)
         self.assertIn('func refreshBoundaryFixtureCases()', source)
         self.assertIn('func preservationPostDispatchFixtureCases()', source)
+        self.assertEqual(source.count('struct V3RefreshVerification:'), 1)
+        composed, _ = generate_source(ROOT, include_verification_support=False)
+        self.assertNotIn('struct V3RefreshVerification:', composed)
+        self.assertIn(declaration(self.refresh, 'enum V3PreservationPostDispatchFailure:'), composed)
         self.assertIn(declaration(self.refresh, 'enum V3PreservationPostDispatchFailure:'), source)
         self.assertIn('PRESERVATION_POSTDISPATCH_REAL_BRIDGE_PASS', source)
         self.assertIn('failure.stage == .command && failure.code == .failed', source)
