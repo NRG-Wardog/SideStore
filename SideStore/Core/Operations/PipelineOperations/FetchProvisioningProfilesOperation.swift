@@ -210,94 +210,70 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
                 throw V3PreservationRefreshState.failure(.preservationIdentityUnavailable)
             }
         }
-        // Corroboration is read-only and finishes before ANY candidate generation.
-        // Keep the admission closure, not the context itself, to avoid a state cycle.
+        // Historical device profiles are restrictive observations only. Prepare
+        // all constraints before portal work; never list/download their old UUIDs.
         let admission = context.profileMutationAdmission
-        var originOperation: AppleProfileOperation?
-        var installedEvidence: [AppleProfileEvidence] = []
-        var retainedByState = false
-        defer { if !retainedByState { originOperation?.invalidate() } }
-        do {
-            let missing = try V3PreservationRefreshState.requiredOriginProfiles(inventory: bytes,
-                resignedBundleID: identity.resigned, admission: admission)
-            if !missing.isEmpty {
-                let operation = try await DeveloperPortalProxy.shared.makePreservationProfileOperation(
-                    team: team, bundleIdentifier: identity.resigned, admission: { try admission?() })
-                originOperation = operation
-                for item in missing {
-                    try admission?()
-                    installedEvidence.append(try await operation.corroborateExisting(installedCMS: item.bytes,
-                        uuid: item.uuid, bundleIdentifier: identity.resigned))
-                    try admission?()
-                }
-            }
-        } catch is CancellationError { throw CancellationError() }
-        catch let selection as V3RefreshSelectionFailure { throw selection }
-        catch let failure as PreservedProfilePolicy.Failure { throw V3PreservationRefreshState.map(failure) }
-        catch { throw V3PreservationRefreshState.originFailure(error) }
-        let installedOrigin = originOperation.map {
-            V3AppleProfileOriginEvidence(operation: $0, installed: installedEvidence, candidate: nil)
-        }
         let prepared: V3PreservationRefreshState.Prepared
         do {
             prepared = try V3PreservationRefreshState.prepare(resignedBundleID: identity.resigned,
                 teamID: team.identifier, signerDER: certificate.data,
                 certificateExpiration: certificate.expiry, inventory: bytes, now: Date(),
-                admission: context.profileMutationAdmission, origin: installedOrigin)
+                admission: admission)
         } catch is CancellationError { throw CancellationError() }
         catch { throw V3PreservationRefreshState.map(error) }
 
+        var originOperation: AppleProfileOperation?
+        var retainedByState = false
+        defer { if !retainedByState { originOperation?.invalidate() } }
         let candidate: ALTProvisioningProfile
-        var candidateEvidence: AppleProfileEvidence?
+        let candidateEvidence: AppleProfileEvidence
         if let supplied = context.overrideProvisioningProfile {
-            candidate = supplied
+            // An override never authorizes generation or inherits old signer trust.
+            // Independently corroborate ONLY its exact candidate bytes, or stop.
+            guard prepared.historical.profilesByUUID[supplied.uuid] == nil else {
+                throw V3PreservationRefreshState.map(PreservedProfilePolicy.Failure.duplicateUUIDConflict)
+            }
+            try V3PreservationRefreshState.checkInventoryBounds([supplied.data])
             do {
-                // Supplied bytes are never provenance. An unknown signer requires a
-                // separate exact existing-record read, not the baseline receipt.
-                let missing = try V3PreservationRefreshState.requiredOriginProfiles(inventory: [supplied.data],
-                    resignedBundleID: identity.resigned, admission: admission)
-                if let item = missing.first {
-                    if originOperation == nil {
-                        originOperation = try await DeveloperPortalProxy.shared.makePreservationProfileOperation(
-                            team: team, bundleIdentifier: identity.resigned, admission: { try admission?() })
-                    }
-                    candidateEvidence = try await originOperation!.corroborateExisting(installedCMS: item.bytes,
-                        uuid: item.uuid, bundleIdentifier: identity.resigned)
-                }
+                let operation = try await DeveloperPortalProxy.shared.makePreservationProfileOperation(
+                    team: team, bundleIdentifier: identity.resigned, admission: { try admission?() })
+                originOperation = operation
+                try admission?()
+                candidateEvidence = try await operation.corroborateExisting(installedCMS: supplied.data,
+                    uuid: supplied.uuid, bundleIdentifier: identity.resigned)
+                try admission?()
+                candidate = candidateEvidence.profile
             } catch is CancellationError { throw CancellationError() }
-            catch let failure as PreservedProfilePolicy.Failure { throw V3PreservationRefreshState.map(failure) }
-            catch let failure as V3RefreshSelectionFailure { throw failure }
             catch { throw V3PreservationRefreshState.originFailure(error) }
         } else {
-            // Lookup the existing ID, then request a generated team profile.
-            // No addAppID, updateFeatures, updateAppGroups, certificate
-            // replacement, or fallback to the signing pipeline is requested.
+            // Lookup only the existing App ID. No app/certificate/group/feature
+            // registration, removal, re-sign or alternate install path exists here.
             let appIDs = try await DeveloperPortalProxy.shared.fetchAppIDs(for: team)
-            try context.profileMutationAdmission?()
+            try admission?()
             let matching = appIDs.filter { $0.bundleIdentifier == identity.resigned }
             guard matching.count == 1, let existing = matching.first else {
                 throw V3PreservationRefreshState.failure(.preservationPortalIdentityUnavailable)
             }
-            if originOperation == nil {
-                originOperation = try await DeveloperPortalProxy.shared.makePreservationProfileOperation(
-                    team: team, bundleIdentifier: identity.resigned, admission: { try admission?() })
-            }
-            // This is the existing authorized generation step, not a read-only
-            // fallback. Its own authenticated response mints a distinct receipt.
             do {
-                let evidence = try await originOperation!.generateCandidate(for: existing,
+                let operation = try await DeveloperPortalProxy.shared.makePreservationProfileOperation(
+                    team: team, bundleIdentifier: identity.resigned, admission: { try admission?() })
+                originOperation = operation
+                try admission?()
+                candidateEvidence = try await operation.generateCandidate(for: existing,
                     deviceType: DeveloperPortalProxy.currentDeviceType)
-                candidateEvidence = evidence
-                candidate = evidence.profile
+                try admission?()
+                candidate = candidateEvidence.profile
             } catch is CancellationError { throw CancellationError() }
             catch { throw V3PreservationRefreshState.originFailure(error) }
         }
-        try context.profileMutationAdmission?()
+        try admission?()
+        guard let operation = originOperation else {
+            throw V3PreservationRefreshState.failure(.preservationEvidenceUnavailable)
+        }
         do {
             context.preservationRefreshState = try V3PreservationRefreshState.finish(prepared: prepared,
-                candidateData: candidate.data, now: Date(), admission: context.profileMutationAdmission,
-                origin: originOperation.map { V3AppleProfileOriginEvidence(operation: $0,
-                    installed: installedEvidence, candidate: candidateEvidence) })
+                candidateData: candidate.data, now: Date(), admission: admission,
+                origin: V3AppleProfileOriginEvidence(operation: operation, candidate: candidateEvidence))
         } catch is CancellationError { throw CancellationError() }
         catch { throw V3PreservationRefreshState.map(error) }
         retainedByState = true

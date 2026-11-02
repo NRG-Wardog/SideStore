@@ -110,15 +110,18 @@ final class OriginURLProtocol:URLProtocol,@unchecked Sendable {
   let generated=try await op.generateCandidate(for:AppID(identifier:"APP1",bundleIdentifier:"app"))
   precondition(OriginWire.shared.calls==[generationPath] && generated.role == .candidate)
   try op.authorize(generated,exactCMS:candidate);passed.append("origin-candidate-own-response-mints")
-  let origin=V3AppleProfileOriginEvidence(operation:op,installed:[existing],candidate:generated)
-  try origin.authorize(old,installedPhase:true);try origin.authorize(candidate,installedPhase:false);try origin.validateInstalledBytes([old])
-  passed.append("origin-actual-consumer-phase-exact-bytes")
-  await expectReject{try origin.authorize(candidate,installedPhase:true)};passed.append("origin-candidate-receipt-not-installed-authority")
-  await expectReject{try origin.authorize(old,installedPhase:false)};passed.append("origin-installed-receipt-not-candidate-authority")
-  await expectReject{try origin.validateInstalledBytes([candidate])};passed.append("origin-fresh-readback-missing-installed-rejected")
-  let noCandidate=V3AppleProfileOriginEvidence(operation:op,installed:[existing],candidate:nil)
-  await expectReject{try noCandidate.authorize(candidate,installedPhase:false)};passed.append("origin-candidate-own-receipt-required")
-  op.invalidate();await expectReject{try origin.authorize(old,installedPhase:true)};passed.append("origin-invalidated-operation-rejected")
+  let origin=V3AppleProfileOriginEvidence(operation:op,candidate:generated)
+  try origin.authorizeCandidate(candidate)
+  passed.append("origin-candidate-consumer-own-bytes")
+  await expectReject{try origin.authorizeCandidate(old)};passed.append("origin-candidate-consumer-historical-bytes-rejected")
+  let wrongOperation=V3AppleProfileOriginEvidence(operation:other,candidate:generated)
+  await expectReject{try wrongOperation.authorizeCandidate(candidate)};passed.append("origin-candidate-consumer-other-operation-rejected")
+  await expectReject{try origin.authorizeCandidate(profile(2,suffix:"changed"))};passed.append("origin-candidate-consumer-sameuuid-changedbody-rejected")
+  // Explicit override candidates may be downloaded from an existing portal
+  // record, but still need their own exact operation-owned response receipt.
+  let overrideOrigin=V3AppleProfileOriginEvidence(operation:op,candidate:existing)
+  try overrideOrigin.authorizeCandidate(old);passed.append("origin-candidate-consumer-exact-override-receipt")
+  op.invalidate();await expectReject{try origin.authorizeCandidate(candidate)};passed.append("origin-invalidated-operation-rejected")
 
   let listFailures:[(String,OriginStep)]=[
    ("origin-free-endpoint-denial-no-generation",OriginStep(body:list([1],result:1200))),

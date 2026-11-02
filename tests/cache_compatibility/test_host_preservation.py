@@ -13,13 +13,41 @@ spec.loader.exec_module(generator)
 
 class HostPreservationTests(unittest.TestCase):
     def setUp(self):
-        self.preservation = (HERE.parents[1] / generator.PRODUCTION['host']).read_text()
+        self.production = (HERE.parents[1] / generator.PRODUCTION['host']).read_text()
+        self.preservation, applied = generator.project_reviewed_profile_transaction(self.production)
+        self.assertTrue(applied)
         self.latest, applied = generator.project_reviewed_preservation_registry(self.preservation)
         self.assertTrue(applied)
         self.current, applied = generator.project_reviewed_legacy_replacement(self.latest)
         self.assertTrue(applied)
         self.host, applied = generator.project_reviewed_transport_observation(self.current)
         self.assertTrue(applied)
+
+    def test_profile_transaction_exact_reverse_retains_all_prior_proofs(self):
+        receipt = json.loads((HERE / 'reviewed-profile-transaction-host-delta.json').read_text())
+        rebuilt = self.preservation
+        for hunk in receipt['hunks']:
+            self.assertEqual(rebuilt.count(hunk['before']), 1)
+            rebuilt = rebuilt.replace(hunk['before'], hunk['after'], 1)
+        self.assertEqual(rebuilt, self.production)
+        proof = generator.verify_host_preservation(self.production)
+        self.assertEqual(proof.pop('reviewed_profile_transaction_delta_sha256'), generator.REVIEWED_PROFILE_TRANSACTION_DELTA_SHA256)
+        self.assertEqual(proof, generator.verify_host_preservation(self.preservation))
+        self.assertEqual(generator.project_reviewed_profile_transaction(self.preservation), (self.preservation, False))
+
+    def test_profile_transaction_missing_duplicate_changed_or_unrelated_rejected(self):
+        receipt = json.loads((HERE / 'reviewed-profile-transaction-host-delta.json').read_text())
+        changed_sources = [self.production + '// unrelated', self.production.replace('try checkTransactionAdmission()', '// removed admission', 1)]
+        for hunk in receipt['hunks']:
+            changed_sources += [self.production.replace(hunk['after'], '', 1), self.production + hunk['after']]
+        for changed in changed_sources:
+            with self.assertRaises(AssertionError): generator.verify_host_preservation(changed)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(generator, 'HERE', root):
+                with self.assertRaises(FileNotFoundError): generator.verify_host_preservation(self.production)
+                (root / 'reviewed-profile-transaction-host-delta.json').write_text('{}')
+                with self.assertRaisesRegex(AssertionError, 'Profile transaction receipt changed'): generator.verify_host_preservation(self.production)
 
     def test_preservation_exact_hunks_and_tamper_rejected(self):
         receipt = generator.preservation_receipt()
@@ -69,7 +97,7 @@ class HostPreservationTests(unittest.TestCase):
         receipt = json.loads((HERE / 'reviewed-legacy-replacement-host-delta.json').read_text())
         root = HERE.parents[1]
         caller = receipt['cache_key_caller']
-        self.assertEqual(generator.verify_reviewed_cache_callers(root), {'SideStore/' + caller['path']: caller['sha256'], **{'SideStore/' + path: value for path, value in generator.preservation_receipt()['additional_cache_key_callers'].items()}})
+        self.assertEqual(generator.verify_reviewed_cache_callers(root), {'SideStore/' + caller['path']: caller['sha256'], **{'SideStore/' + path: generator.digest((root / path).read_bytes()) for path in generator.preservation_receipt()['additional_cache_key_callers']}})
         with tempfile.TemporaryDirectory() as temporary:
             tmp = Path(temporary).resolve()
             for relative in (generator.PRODUCTION['cache'], caller['path']):

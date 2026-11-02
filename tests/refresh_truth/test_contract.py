@@ -106,7 +106,8 @@ class Contract(unittest.TestCase):
   install=source('SideStore/Core/Operations/PipelineOperations/InstallAppOperation.swift')
   install=install[install.index('        // Read-only baseline on the same owned batch.'):install.index('        if !isDifferentSideStore && !isSelfReinstall && !isSideBackup {\n            // Capture what the signer actually installed, separately from the')]
   installGlue='\nextension InstallationHarness { func runInstall(resignedAppBundle:FixtureSignedBundle,certificate:FixtureSigningCertificate,isSelfReinstall:Bool=false,isSideBackup:Bool=false) async throws { let installedApp=context.dbBackgroundContext.app; let bundleID="synthetic";\n'+install+'\n} }\n'
-  fixture=source('SideStore/Core/Operations/PipelineOperations/PreservedProfileDecoder.swift')+'\n'+replacementBinding+'\n'+registry+'\n'+source('tests/refresh_truth/operation_doubles.swift')+'\n'+operation+'\n'+policy+glue+group+installGlue+source('tests/refresh_truth/operation_cases.swift')
+  singleAttempt=declaration(source('SideStore/Core/DeviceApi/MinimuxerWrapper.swift'),'func installPreservationProvisioningProfile(')
+  fixture=singleAttempt+'\n'+source('SideStore/Core/Operations/PipelineOperations/PreservedProfileDecoder.swift')+'\n'+replacementBinding+'\n'+registry+'\n'+source('tests/refresh_truth/operation_doubles.swift')+'\n'+operation+'\n'+policy+glue+group+installGlue+source('tests/refresh_truth/operation_cases.swift')
   with tempfile.TemporaryDirectory(prefix='refresh-truth-operation-') as temporary:
    root=pathlib.Path(temporary).resolve(); src=root/'Fixture.swift'; exe=root/'fixture'
    src.write_text(fixture)

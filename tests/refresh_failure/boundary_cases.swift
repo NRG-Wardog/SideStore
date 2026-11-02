@@ -10,3 +10,19 @@ func refreshBoundaryFixtureCases() -> [(name: String, error: Error, expectedStep
         return (name: "source_" + boundary.rawValue, error: mapped, expectedStep: boundary.sourceStep)
     }
 }
+
+// Exposed to composed SS-to-LC wire fixtures. These are actual typed errors,
+// never guessed NSError domains/codes or hand-authored failure dictionaries.
+func preservationPostDispatchFixtureCases() -> [(name: String, error: Error, expectedStep: CombinedFailure.SourceStep)] {
+    let app = InstalledApp(bundleIdentifier: "com.fixture.preservation", name: "Fixture App")
+    let cases: [(String, V3PreservationPostDispatchFailure)] = [
+        ("preservation-postdispatch-unavailable", .verificationUnavailable),
+        ("preservation-postdispatch-mismatch", .verificationMismatch)]
+    return cases.map { name, error in
+        let facts = lcRefreshFailureFacts(error, sourceStep: "refreshApplication")
+        precondition(facts["local_precondition"] == nil)
+        let marked = lcStructuredSigningFailure(error, stage: "command", sourceStep: "refreshApplication", facts: facts)
+        let mapped = getMappedError(for: .refresh(app), error: marked)
+        return (name: name, error: mapped, expectedStep: .refreshApplication)
+    }
+}

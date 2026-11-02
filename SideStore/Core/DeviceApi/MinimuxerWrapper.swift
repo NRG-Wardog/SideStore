@@ -335,6 +335,18 @@ func installProvisioningProfiles(_ profileData: Data) async throws {
     #endif
 }
 
+// Preservation refresh must never replay an install after an uncertain ACK.
+// Connection establishment may recover before dispatch inside the gateway, but
+// this mutating operation is invoked exactly once. Failed/uncertain ACK remains
+// unconfirmed; only acknowledged completion proceeds to normal readback.
+func installPreservationProvisioningProfile(_ profileData: Data) async throws {
+    #if targetEnvironment(simulator)
+    debugLog("[SideStore] preservation profile installation is no-op on simulator")
+    #else
+    try await minimuxer.core.installProvisioningProfile(profile: profileData)
+    #endif
+}
+
 func removeProvisioningProfile(_ id: String) async throws {
     defer { debugLog("[SideStore] removeProvisioningProfile(id) completed") }
     #if targetEnvironment(simulator)

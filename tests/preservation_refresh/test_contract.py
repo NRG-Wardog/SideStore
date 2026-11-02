@@ -1,65 +1,71 @@
-"""Conditional DER equivalence source closure; native cases are separate."""
-import importlib.util
+"""Actual-source historical constraints/candidate authority closure, not native proof."""
+import importlib.util,json,re
 from pathlib import Path
-import tempfile, unittest
-ROOT=Path(__file__).resolve().parents[2]
-HERE=Path(__file__).resolve().parent
+import tempfile,unittest
+ROOT=Path(__file__).resolve().parents[2];HERE=Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('fixture_generator',HERE/'generate_fixture.py')
 generator=importlib.util.module_from_spec(spec);spec.loader.exec_module(generator)
 class Contract(unittest.TestCase):
- def test_actual_policy_and_decoder_source_closure(self):
+ def source(self):return (ROOT/'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text()
+ def test_actual_policy_decoder_wrapper_and_consumer_source_closure(self):
   with tempfile.TemporaryDirectory() as directory:
    out=Path(directory);generator.generate(out);text=(out/'Integration.swift').read_text()
-   decoder=(ROOT/'SideStore/Core/Operations/PipelineOperations/PreservedProfileDecoder.swift').read_text()
-   self.assertIn(decoder,text)
-   for name in ['enum PreservedProfilePolicy {','struct V3PreservationRefreshState:','private func fetchPreservingInstalledAuthorization()']:
-    self.assertEqual(text.count(name),1)
+   self.assertIn((ROOT/'SideStore/Core/Operations/PipelineOperations/PreservedProfileDecoder.swift').read_text(),text)
+   for name in ['enum PreservedProfilePolicy {','struct HistoricalConstraintSnapshot:','struct V3PreservationRefreshState:',
+                'private func fetchPreservingInstalledAuthorization()','func installPreservationProvisioningProfile(',
+                'private func isRetriableRemotePairingError(']:self.assertEqual(text.count(name),1)
    self.assertIn('enum ProfileCMSVerifier {',text)
-   self.assertIn('throw ProfileCMSVerificationError.unsupportedSigner',text)
-   self.assertNotIn('struct PreservedProfileDecoder',text)
- def test_raw_first_strict_der_only_upgrade(self):
-  s=(ROOT/'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text()
-  adapter=s[s.index('struct V3PreservationRefreshState:'):]
-  self.assertIn('catch PreservedProfilePolicy.Failure.embeddedDERDiffer',adapter)
-  self.assertIn('catch PreservedProfilePolicy.Failure.changedAuthorization',adapter)
-  self.assertLess(adapter.index('hasOnlyEmbeddedDERDifference'),adapter.index('let inputs = try authenticatedTargetInputs',adapter.index('static func finish')))
-  self.assertIn('try PreservedProfilePolicy.sameRawTarget',adapter)
-  self.assertIn('decoded.normalizedInnerAuthority',adapter)
-  self.assertIn('ProfileCMSVerifier.authenticateOuter(bytes)',adapter)
-  self.assertIn('ProfileCMSVerifier.authenticateInner(nestedCMS)',adapter)
-  self.assertIn('guard try PreservedProfilePolicy.Value(verified.raw) == PreservedProfilePolicy.Value(raw[index])',adapter)
- def test_budget_deadline_and_no_dynamic_trust_marker(self):
-  s=(ROOT/'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text()
-  adapter=s[s.index('struct V3PreservationRefreshState:'):]
-  for required in ['inventory.count <= 512','addingReportingOverflow','bytes.count <= 1_048_576','next <= 32 * 1024 * 1024','systemUptime - started <= 20','try Task.checkCancellation()']:
-   self.assertIn(required,adapter)
-  self.assertIn('let candidate = try authenticatedInput(candidateData, phase: "candidate", admission: admission, started: started, origin: origin)\n        try checkWork(admission, started: started)',adapter)
-  self.assertIn('let candidate = try Self.authenticatedInput(candidateData, phase: "freshCandidate", admission: admission, started: started, origin: origin)\n            try Self.checkWork(admission, started: started)',adapter)
-  self.assertNotIn('Task.detached',adapter)
-  self.assertNotIn('raw["verified"]',s)
-  self.assertIn('fileprivate init(raw: [String: Any], authenticatedInner:',s)
- def test_unknown_signer_diagnostic_never_becomes_authority(self):
-  source=(ROOT/'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text()
-  diagnostic=generator.extract(source,'catch ProfileCMSVerificationError.unsupportedSigner {')
-  originBranch,diagnostic=diagnostic.split('} else {',1)
-  self.assertEqual(diagnostic.count('try checkWork(admission, started: started)'),2)
-  self.assertIn('try origin.authorize(bytes, installedPhase:',originBranch)
-  self.assertLess(originBranch.index('try origin.authorize'),originBranch.index('inspectInnerCryptography'))
-  self.assertIn('inspectInnerCryptography(nestedCMS).untrustedContent',originBranch)
-  self.assertIn('if origin?.installed.isEmpty == false { throw PreservedProfilePolicy.Failure.embeddedDERDiffer }',source)
-  self.assertIn('if usedOrigin {\n                try origin?.authorize(bytes, installedPhase:',source)
-  self.assertIn('defer { context.preservationRefreshState?.origin?.operation.invalidate() }',source)
+   self.assertIn('try await minimuxer.core.installProvisioningProfile(profile: profileData)',text)
+ def test_old_profiles_are_constraints_never_candidate_provenance(self):
+  source=self.source();prepare=generator.extract(source,'    static func prepare(')
+  self.assertIn('historicalConstraintInput',prepare)
+  self.assertNotIn('origin:',prepare);self.assertNotIn('authorizeCandidate',prepare)
+  adapter=generator.extract(source,'struct V3PreservationRefreshState:')
+  self.assertNotIn('authenticateInner(',adapter);self.assertNotIn('requiredOriginProfiles',adapter)
+  candidate=generator.extract(source,'    private static func authenticatedCandidateInput(')
+  self.assertEqual(candidate.count('try origin.authorizeCandidate(bytes)'),2)
+  self.assertLess(candidate.index('authorizeCandidate'),candidate.index('normalizedComparisonInput'))
+  finish=generator.extract(source,'    static func finish(')
+  self.assertIn('guard let origin else',finish)
+  self.assertIn('profilesByUUID[model.uuid] == nil',finish)
+  fetch=generator.extract((ROOT/'SideStore/Core/Operations/PipelineOperations/FetchProvisioningProfilesOperation.swift').read_text(),'private func fetchPreservingInstalledAuthorization()')
+  self.assertNotIn('requiredOriginProfiles',fetch);self.assertNotIn('installedEvidence',fetch)
+  self.assertEqual(fetch.count('corroborateExisting('),1)
+  self.assertIn('installedCMS: supplied.data',fetch)
+  self.assertIn('candidateEvidence = try await operation.generateCandidate',fetch)
+ def test_all_inventory_and_combined_budgets_no_replay(self):
+  source=self.source();adapter=generator.extract(source,'struct V3PreservationRefreshState:')
+  for required in ['inventory.count <= 512','addingReportingOverflow','bytes.count <= 1_048_576','next <= 32 * 1024 * 1024','systemUptime - started <= 20','try Task.checkCancellation()',
+   'multiset(inventory) == Self.multiset(originalInventory)','prepared.originalInventory + [candidateData]',
+   'historical.profilesByUUID.allSatisfy','byUUID[candidate.uuid] == candidateData']:self.assertIn(required,adapter)
+  self.assertNotIn('Task.detached',adapter);self.assertNotIn('raw["verified"]',source)
+  wrapper=(ROOT/'SideStore/Core/DeviceApi/MinimuxerWrapper.swift').read_text()
+  single=generator.extract(wrapper,'func installPreservationProvisioningProfile(')
+  self.assertNotIn('withRemotePairingRetry',single);self.assertNotIn('catch',single)
+  self.assertIn('try await installPreservationProvisioningProfile',source)
   final=source[source.index('before = try await validateFreshPreservationSnapshot(profiles)'):source.index('preservationMutationDispatched = true')]
   self.assertLess(final.index('try await dbContext.perform'),final.index('validateOriginAdmission()'))
-  self.assertNotIn('inspectInnerCryptography',diagnostic)
-  self.assertIn('ProfileCMSVerifier.diagnoseInnerSigner(nestedCMS)',diagnostic)
-  self.assertIn('throw V3RefreshSelectionFailure(reason: .preservationAuthorityConflict',diagnostic)
-  self.assertNotIn('return ',diagnostic)
-  self.assertIn('evidence.chain == .passed',diagnostic)
-  self.assertIn('evidence.signature == .passed',diagnostic)
-  self.assertIn('evidence.temporal == .passed',diagnostic)
-  selection=generator.extract(source,'struct V3RefreshSelectionFailure:')
-  self.assertIn('Self.validCMSSignerDiagnostic(diagnostic)',selection)
-  self.assertIn('value.utf8.count <= 200',selection)
-  self.assertIn('fields[6] == "failed"',selection)
+ def test_literal_native_case_markers_are_current(self):
+  expected=json.loads((HERE/'expected-cases.json').read_text())
+  # Catch stale literal emitters even on hosts without Swift. Dynamic loop
+  # expansion and exact ordering remain enforced by run.sh's native manifest.
+  for filename in ['IntegrationCases.swift','AuthenticatedAdapterCases.swift','OriginAdapterCases.swift']:
+   source=(HERE/filename).read_text()
+   literals=re.findall(r'passed\.append\("([^"\n]+)"\)',source)
+   self.assertTrue(literals,filename)
+   for label in literals:self.assertIn(label,expected['integration'],filename)
+  source=(HERE/'IntegrationCases.swift').read_text()
+  self.assertIn('passed.append("provided-profile-no-fresh-origin-rejected")',source)
+  self.assertNotIn('provided-profile-same-authority-no-portal',source)
+  self.assertIn('precondition(PortalProbe.shared.corroboratedUUIDs==[fresh.uuid])',source)
+ def test_manifest_reconciliation_and_honest_claims(self):
+  expected=json.loads((HERE/'expected-cases.json').read_text());reconciled=json.loads((HERE/'historical-case-reconciliation.json').read_text())
+  self.assertEqual(len(expected['policy']),55);self.assertEqual(len(set(expected['integration'])),len(expected['integration']))
+  self.assertEqual(reconciled['new_integration_cases'],expected['integration']);self.assertEqual(len(reconciled['previous_integration_cases']),64)
+  self.assertEqual(set(reconciled['retained']),set(expected['integration']) & set(reconciled['previous_integration_cases']))
+  self.assertEqual(set(reconciled['superseded']),set(reconciled['previous_integration_cases'])-set(reconciled['retained']))
+  for old,item in reconciled['superseded'].items():
+   self.assertTrue(item['reason']);self.assertTrue(item['covered_by']);self.assertTrue(set(item['covered_by']).issubset(expected['integration']))
+  integration=(HERE/'IntegrationCases.swift').read_text()
+  for key in ['device_executed','cms_verified','platform_tls_executed','portal_executed']:self.assertIn('"'+key+'":false',integration)
 if __name__=='__main__':unittest.main()

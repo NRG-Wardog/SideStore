@@ -1,0 +1,419 @@
+{
+  "schema": "historical-constraint-case-reconciliation-v1",
+  "previous_policy_count": 55,
+  "policy_cases_unchanged": true,
+  "previous_integration_cases": [
+    "actual-fetch-refresh-preserves-identity-and-extension-metadata",
+    "changed-snapshot-no-install",
+    "lost-ack-single-dispatch-no-replay-no-bookkeeping",
+    "missing-evidence-no-portal-generation",
+    "changed-app-groups-no-install",
+    "missing-existing-id-no-registration",
+    "ambiguous-existing-id-no-generation",
+    "provided-profile-same-authority-no-portal",
+    "cancelled-before-observation",
+    "reject-db-serial-before-portal",
+    "reject-missing-serial-before-portal",
+    "reject-db-team-before-portal",
+    "reject-history-der-before-portal",
+    "fresh-read-db-original-identity-drift-no-install",
+    "postread-unavailable-preserves-main-and-extension-expiry",
+    "postread-mismatch-preserves-main-and-extension-expiry",
+    "admission-revoked-after-preflight-before-injection",
+    "normal-install-nil-recorded-serial-preserved-refresh",
+    "conflict-detail-preflight-read-only-no-portal-no-install",
+    "conflict-detail-finite-map-and-scope",
+    "fresh-alternate-identity-detail-no-install",
+    "fresh-entitlements-detail-no-install",
+    "authenticated-candidate-der-equivalence-real-decoder",
+    "authenticated-initial-der-equivalence-real-decoder",
+    "non-der-authority-rejection-never-authenticates",
+    "authenticated-preflight-embeddedDERUnsupportedSigner",
+    "authenticated-preflight-embeddedDERSignerTimeInvalid",
+    "authenticated-preflight-embeddedDERVerificationFailed",
+    "authenticated-preflight-embeddedDERUnsupportedRepresentation",
+    "authenticated-hidden-inner-authority-rejected",
+    "authenticated-fresh-raw-drift-no-repair",
+    "authenticated-cancellation-before-portal-no-install",
+    "authenticated-count-boundary-512",
+    "authenticated-count-boundary-513",
+    "authenticated-byte-boundary-32mib",
+    "authenticated-byte-boundary-over32mib",
+    "authenticated-record-boundary-over1mib",
+    "raw-equal-admission-unchanged-by-semantic-budget",
+    "unknown-cms-signer-diagnostic-installed-no-mutation",
+    "unknown-cms-signer-diagnostic-candidate-no-mutation",
+    "unknown-cms-signer-diagnostic-freshInstalled-no-mutation",
+    "unknown-cms-signer-diagnostic-freshCandidate-no-mutation",
+    "unknown-cms-signer-unverified-no-fingerprint-or-role",
+    "unknown-cms-signer-diagnostic-admission-revoked",
+    "unknown-cms-signer-diagnostic-producer-finite-scope",
+    "origin-fullflow-exact-installed-and-candidate-receipts",
+    "origin-pinned-baseline-unknown-candidate-own-receipt",
+    "origin-unknown-baseline-pinned-candidate-preserved",
+    "origin-each-installed-profile-needs-own-receipt",
+    "origin-unsupported-existing-evidence-no-generation",
+    "origin-missing-existing-evidence-no-generation",
+    "origin-mismatched-existing-evidence-no-generation",
+    "origin-installed-expired-no-generation",
+    "origin-installed-body-bitflip-no-generation",
+    "origin-installed-malformed-no-generation",
+    "origin-installed-inner-binding-mismatch-no-generation",
+    "origin-admission-revoked-after-list-no-generation",
+    "origin-admission-revoked-after-download-no-generation",
+    "origin-candidate-other-operation-receipt-no-install",
+    "origin-candidate-authority-change-no-install",
+    "origin-candidate-expired-crypto-no-install",
+    "origin-same-leaf-unrelated-fresh-profile-no-install",
+    "origin-revoked-after-fresh-crypto-no-install",
+    "origin-revoked-after-fresh-database-no-install"
+  ],
+  "new_integration_cases": [
+    "actual-fetch-refresh-preserves-identity-and-extension-metadata",
+    "changed-snapshot-no-install",
+    "lost-ack-single-dispatch-no-replay-no-bookkeeping",
+    "missing-evidence-no-portal-generation",
+    "changed-app-groups-no-install",
+    "missing-existing-id-no-registration",
+    "ambiguous-existing-id-no-generation",
+    "provided-profile-no-fresh-origin-rejected",
+    "cancelled-before-observation",
+    "reject-db-serial-before-portal",
+    "reject-missing-serial-before-portal",
+    "reject-db-team-before-portal",
+    "reject-history-der-before-portal",
+    "fresh-read-db-original-identity-drift-no-install",
+    "postread-unavailable-preserves-main-and-extension-expiry",
+    "postread-mismatch-preserves-main-and-extension-expiry",
+    "admission-revoked-after-preflight-before-injection",
+    "normal-install-nil-recorded-serial-preserved-refresh",
+    "conflict-detail-preflight-read-only-no-portal-no-install",
+    "conflict-detail-finite-map-and-scope",
+    "fresh-alternate-identity-snapshot-drift-no-install",
+    "fresh-entitlements-snapshot-drift-no-install",
+    "preservation-actual-wrapper-lost-ack-single-attempt",
+    "preservation-actual-wrapper-port-change-eligible-single-attempt",
+    "authenticated-candidate-der-equivalence-real-decoder",
+    "authenticated-initial-der-equivalence-real-decoder",
+    "historical-expired-profile-current-cms-renews",
+    "historical-current-cms-time-invalid-no-generation",
+    "historical-bad-cms-math-no-generation",
+    "historical-malformed-cms-no-generation",
+    "authenticated-hidden-inner-authority-rejected",
+    "historical-malformed-constraints-fail-closed",
+    "historical-unknown-field-constraints-fail-closed",
+    "historical-contradictory-constraints-fail-closed",
+    "candidate-independent-team-mismatch-no-install",
+    "candidate-independent-app-mismatch-no-install",
+    "candidate-independent-certificate-mismatch-no-install",
+    "candidate-independent-entitlements-mismatch-no-install",
+    "candidate-independent-unknown-field-mismatch-no-install",
+    "candidate-crypto-time-invalid-no-install",
+    "candidate-crypto-signature-invalid-no-install",
+    "candidate-crypto-malformed-no-install",
+    "candidate-inner-outer-binding-mismatch-no-install",
+    "candidate-any-old-uuid-collision-target-no-install",
+    "candidate-any-old-uuid-collision-unrelated-no-install",
+    "candidate-static-pin-without-own-origin-rejected",
+    "historical-all-inventory-fresh-unrelated-addition-no-install",
+    "historical-all-inventory-fresh-old-pruned-no-install",
+    "historical-all-inventory-fresh-old-byte-drift-no-install",
+    "historical-all-inventory-fresh-multiplicity-no-install",
+    "historical-postack-old-target-pruned-not-green",
+    "historical-postack-unrelated-pruned-not-green",
+    "historical-postack-old-byte-replaced-not-green",
+    "historical-postack-candidate-missing-not-green",
+    "historical-postack-extra-target-not-green",
+    "historical-postack-extra-unrelated-not-green",
+    "authenticated-count-boundary-512",
+    "authenticated-count-boundary-513",
+    "authenticated-byte-boundary-32mib",
+    "authenticated-byte-boundary-over32mib",
+    "authenticated-record-boundary-over1mib",
+    "historical-plus-candidate-count-budget-no-install",
+    "historical-plus-candidate-bytes-budget-no-install",
+    "historical-xml-only-candidate-own-origin-success",
+    "historical-present-malformed-der-never-xml-fallback",
+    "historical-xml-authorization-change-no-install",
+    "historical-mixed-xml-der-format-no-install",
+    "origin-unknown-old-not-listed-candidate-own-receipt",
+    "origin-pinned-baseline-unknown-candidate-own-receipt",
+    "origin-unknown-baseline-pinned-candidate-preserved",
+    "origin-pinned-old-pinned-candidate-still-own-receipt",
+    "origin-pinned-candidate-other-operation-receipt-no-install",
+    "origin-candidate-other-operation-receipt-no-install",
+    "origin-candidate-response-unavailable-no-fallback",
+    "origin-candidate-expired-crypto-no-install",
+    "origin-admission-revoked-after-generation-no-install",
+    "origin-revoked-after-fresh-crypto-no-install",
+    "origin-revoked-after-fresh-database-no-install",
+    "origin-supplied-static-profile-without-fresh-receipt-rejected",
+    "origin-supplied-candidate-exact-own-receipt-no-old-lookup"
+  ],
+  "retained": [
+    "actual-fetch-refresh-preserves-identity-and-extension-metadata",
+    "changed-snapshot-no-install",
+    "lost-ack-single-dispatch-no-replay-no-bookkeeping",
+    "missing-evidence-no-portal-generation",
+    "changed-app-groups-no-install",
+    "missing-existing-id-no-registration",
+    "ambiguous-existing-id-no-generation",
+    "cancelled-before-observation",
+    "reject-db-serial-before-portal",
+    "reject-missing-serial-before-portal",
+    "reject-db-team-before-portal",
+    "reject-history-der-before-portal",
+    "fresh-read-db-original-identity-drift-no-install",
+    "postread-unavailable-preserves-main-and-extension-expiry",
+    "postread-mismatch-preserves-main-and-extension-expiry",
+    "admission-revoked-after-preflight-before-injection",
+    "normal-install-nil-recorded-serial-preserved-refresh",
+    "conflict-detail-preflight-read-only-no-portal-no-install",
+    "conflict-detail-finite-map-and-scope",
+    "authenticated-candidate-der-equivalence-real-decoder",
+    "authenticated-initial-der-equivalence-real-decoder",
+    "authenticated-hidden-inner-authority-rejected",
+    "authenticated-count-boundary-512",
+    "authenticated-count-boundary-513",
+    "authenticated-byte-boundary-32mib",
+    "authenticated-byte-boundary-over32mib",
+    "authenticated-record-boundary-over1mib",
+    "origin-pinned-baseline-unknown-candidate-own-receipt",
+    "origin-unknown-baseline-pinned-candidate-preserved",
+    "origin-candidate-other-operation-receipt-no-install",
+    "origin-candidate-expired-crypto-no-install",
+    "origin-revoked-after-fresh-crypto-no-install",
+    "origin-revoked-after-fresh-database-no-install"
+  ],
+  "superseded": {
+    "provided-profile-same-authority-no-portal": {
+      "covered_by": [
+        "provided-profile-no-fresh-origin-rejected"
+      ],
+      "reason": "Candidate always requires its own origin; all-inventory byte drift is rejected before semantic reclassification."
+    },
+    "fresh-alternate-identity-detail-no-install": {
+      "covered_by": [
+        "fresh-alternate-identity-snapshot-drift-no-install"
+      ],
+      "reason": "Candidate always requires its own origin; all-inventory byte drift is rejected before semantic reclassification."
+    },
+    "fresh-entitlements-detail-no-install": {
+      "covered_by": [
+        "fresh-entitlements-snapshot-drift-no-install"
+      ],
+      "reason": "Candidate always requires its own origin; all-inventory byte drift is rejected before semantic reclassification."
+    },
+    "non-der-authority-rejection-never-authenticates": {
+      "covered_by": [
+        "candidate-independent-entitlements-mismatch-no-install",
+        "candidate-independent-unknown-field-mismatch-no-install"
+      ],
+      "reason": "Independent candidate authentication is mandatory even when historical comparison will reject; old non-authentication shortcut intentionally removed."
+    },
+    "authenticated-preflight-embeddedDERUnsupportedSigner": {
+      "covered_by": [
+        "historical-current-cms-time-invalid-no-generation",
+        "historical-bad-cms-math-no-generation",
+        "historical-malformed-cms-no-generation"
+      ],
+      "reason": "Historical integrity still requires current outer/inner cryptographic checks, but not old leaf-role pin or old portal provenance."
+    },
+    "authenticated-preflight-embeddedDERSignerTimeInvalid": {
+      "covered_by": [
+        "historical-current-cms-time-invalid-no-generation",
+        "historical-bad-cms-math-no-generation",
+        "historical-malformed-cms-no-generation"
+      ],
+      "reason": "Historical integrity still requires current outer/inner cryptographic checks, but not old leaf-role pin or old portal provenance."
+    },
+    "authenticated-preflight-embeddedDERVerificationFailed": {
+      "covered_by": [
+        "historical-current-cms-time-invalid-no-generation",
+        "historical-bad-cms-math-no-generation",
+        "historical-malformed-cms-no-generation"
+      ],
+      "reason": "Historical integrity still requires current outer/inner cryptographic checks, but not old leaf-role pin or old portal provenance."
+    },
+    "authenticated-preflight-embeddedDERUnsupportedRepresentation": {
+      "covered_by": [
+        "historical-current-cms-time-invalid-no-generation",
+        "historical-bad-cms-math-no-generation",
+        "historical-malformed-cms-no-generation"
+      ],
+      "reason": "Historical integrity still requires current outer/inner cryptographic checks, but not old leaf-role pin or old portal provenance."
+    },
+    "authenticated-fresh-raw-drift-no-repair": {
+      "covered_by": [
+        "historical-all-inventory-fresh-unrelated-addition-no-install",
+        "historical-all-inventory-fresh-old-byte-drift-no-install"
+      ],
+      "reason": "All original inventory bytes/multiplicity must now remain unchanged, stricter than prior target-only comparison."
+    },
+    "authenticated-cancellation-before-portal-no-install": {
+      "covered_by": [
+        "cancelled-before-observation",
+        "origin-admission-revoked-after-generation-no-install",
+        "origin-revoked-after-fresh-crypto-no-install"
+      ],
+      "reason": "Old list/download awaits removed; cancellation/ownership is tested at remaining real generation/crypto/database boundaries."
+    },
+    "raw-equal-admission-unchanged-by-semantic-budget": {
+      "covered_by": [
+        "authenticated-count-boundary-513",
+        "historical-plus-candidate-count-budget-no-install"
+      ],
+      "reason": "Raw-equal admission no longer bypasses bounds or independent candidate authority."
+    },
+    "unknown-cms-signer-diagnostic-installed-no-mutation": {
+      "covered_by": [
+        "candidate-static-pin-without-own-origin-rejected",
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Static old leaf pin is no longer an authority gate; diagnostic formatting remains separately qualified by wire/CMS suites, while independent candidate provenance is mandatory."
+    },
+    "unknown-cms-signer-diagnostic-candidate-no-mutation": {
+      "covered_by": [
+        "candidate-static-pin-without-own-origin-rejected",
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Static old leaf pin is no longer an authority gate; diagnostic formatting remains separately qualified by wire/CMS suites, while independent candidate provenance is mandatory."
+    },
+    "unknown-cms-signer-diagnostic-freshInstalled-no-mutation": {
+      "covered_by": [
+        "candidate-static-pin-without-own-origin-rejected",
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Static old leaf pin is no longer an authority gate; diagnostic formatting remains separately qualified by wire/CMS suites, while independent candidate provenance is mandatory."
+    },
+    "unknown-cms-signer-diagnostic-freshCandidate-no-mutation": {
+      "covered_by": [
+        "candidate-static-pin-without-own-origin-rejected",
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Static old leaf pin is no longer an authority gate; diagnostic formatting remains separately qualified by wire/CMS suites, while independent candidate provenance is mandatory."
+    },
+    "unknown-cms-signer-unverified-no-fingerprint-or-role": {
+      "covered_by": [
+        "candidate-static-pin-without-own-origin-rejected",
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Static old leaf pin is no longer an authority gate; diagnostic formatting remains separately qualified by wire/CMS suites, while independent candidate provenance is mandatory."
+    },
+    "unknown-cms-signer-diagnostic-admission-revoked": {
+      "covered_by": [
+        "candidate-static-pin-without-own-origin-rejected",
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Static old leaf pin is no longer an authority gate; diagnostic formatting remains separately qualified by wire/CMS suites, while independent candidate provenance is mandatory."
+    },
+    "unknown-cms-signer-diagnostic-producer-finite-scope": {
+      "covered_by": [
+        "candidate-static-pin-without-own-origin-rejected",
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Static old leaf pin is no longer an authority gate; diagnostic formatting remains separately qualified by wire/CMS suites, while independent candidate provenance is mandatory."
+    },
+    "origin-fullflow-exact-installed-and-candidate-receipts": {
+      "covered_by": [
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Installed profiles are restrictive historical observations, not authority requiring old per-UUID portal receipts. Fresh candidate own origin is always mandatory."
+    },
+    "origin-each-installed-profile-needs-own-receipt": {
+      "covered_by": [
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Installed profiles are restrictive historical observations, not authority requiring old per-UUID portal receipts. Fresh candidate own origin is always mandatory."
+    },
+    "origin-unsupported-existing-evidence-no-generation": {
+      "covered_by": [
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Installed profiles are restrictive historical observations, not authority requiring old per-UUID portal receipts. Fresh candidate own origin is always mandatory."
+    },
+    "origin-missing-existing-evidence-no-generation": {
+      "covered_by": [
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Installed profiles are restrictive historical observations, not authority requiring old per-UUID portal receipts. Fresh candidate own origin is always mandatory."
+    },
+    "origin-mismatched-existing-evidence-no-generation": {
+      "covered_by": [
+        "origin-unknown-old-not-listed-candidate-own-receipt",
+        "origin-pinned-old-pinned-candidate-still-own-receipt"
+      ],
+      "reason": "Installed profiles are restrictive historical observations, not authority requiring old per-UUID portal receipts. Fresh candidate own origin is always mandatory."
+    },
+    "origin-installed-expired-no-generation": {
+      "covered_by": [
+        "historical-current-cms-time-invalid-no-generation",
+        "historical-bad-cms-math-no-generation",
+        "historical-malformed-cms-no-generation"
+      ],
+      "reason": "Historical integrity still requires current outer/inner cryptographic checks, but not old leaf-role pin or old portal provenance."
+    },
+    "origin-installed-body-bitflip-no-generation": {
+      "covered_by": [
+        "historical-current-cms-time-invalid-no-generation",
+        "historical-bad-cms-math-no-generation",
+        "historical-malformed-cms-no-generation"
+      ],
+      "reason": "Historical integrity still requires current outer/inner cryptographic checks, but not old leaf-role pin or old portal provenance."
+    },
+    "origin-installed-malformed-no-generation": {
+      "covered_by": [
+        "historical-current-cms-time-invalid-no-generation",
+        "historical-bad-cms-math-no-generation",
+        "historical-malformed-cms-no-generation"
+      ],
+      "reason": "Historical integrity still requires current outer/inner cryptographic checks, but not old leaf-role pin or old portal provenance."
+    },
+    "origin-installed-inner-binding-mismatch-no-generation": {
+      "covered_by": [
+        "authenticated-hidden-inner-authority-rejected"
+      ],
+      "reason": "Historical mixed inner/outer representations remain rejected by real decoder before candidate generation."
+    },
+    "origin-admission-revoked-after-list-no-generation": {
+      "covered_by": [
+        "cancelled-before-observation",
+        "origin-admission-revoked-after-generation-no-install",
+        "origin-revoked-after-fresh-crypto-no-install"
+      ],
+      "reason": "Old list/download awaits removed; cancellation/ownership is tested at remaining real generation/crypto/database boundaries."
+    },
+    "origin-admission-revoked-after-download-no-generation": {
+      "covered_by": [
+        "cancelled-before-observation",
+        "origin-admission-revoked-after-generation-no-install",
+        "origin-revoked-after-fresh-crypto-no-install"
+      ],
+      "reason": "Old list/download awaits removed; cancellation/ownership is tested at remaining real generation/crypto/database boundaries."
+    },
+    "origin-candidate-authority-change-no-install": {
+      "covered_by": [
+        "candidate-independent-entitlements-mismatch-no-install"
+      ],
+      "reason": "Candidate independently authenticated authority must match all historical restrictive constraints."
+    },
+    "origin-same-leaf-unrelated-fresh-profile-no-install": {
+      "covered_by": [
+        "historical-all-inventory-fresh-unrelated-addition-no-install",
+        "historical-all-inventory-fresh-old-byte-drift-no-install"
+      ],
+      "reason": "All original inventory bytes/multiplicity must now remain unchanged, stricter than prior target-only comparison."
+    }
+  }
+}

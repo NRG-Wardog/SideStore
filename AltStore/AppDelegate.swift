@@ -14896,6 +14896,8 @@ public struct V3RefreshProfileEvidence {
     public let renewal: String
     public let certificate: String
     public let reason: String?
+    // Legacy wire name: observed constraints retained; not historical-profile authenticity,
+    // installed-binary selection, future launch, or Keychain usability attestation.
     public let preservation: String?
 
     public init?(_ value: Any?) {
@@ -15965,8 +15967,8 @@ public struct CombinedFailure: Error, LocalizedError {
         case "extensionTeamMismatch": return "An extension profile belongs to a different team than the main profile."
         case "preservationIdentityUnavailable": return "Refresh stopped because the historical app identity and signing certificate could not be linked. The installed app was preserved."
         case "preservationMalformedProfile": return "Refresh stopped because a profile contains unsupported or incomplete authorization data. The installed app was preserved."
-        case "preservationEvidenceUnavailable": return "Refresh stopped because the existing matching profile could not be verified on the device. The installed app was preserved."
-        case "preservationAuthorityConflict": return "Refresh stopped because existing profile authorizations are ambiguous or conflicting. The installed app was preserved."
+        case "preservationEvidenceUnavailable": return "Refresh stopped because the profiles could not be read and matched safely. The installed app was preserved."
+        case "preservationAuthorityConflict": return "Refresh stopped because observed profile constraints are ambiguous or conflicting. The installed app was preserved."
         case "preservationUUIDConflict": return "Refresh stopped because one profile identifier refers to conflicting profile contents. The installed app was preserved."
         case "preservationAuthorizationChanged": return "Refresh stopped because the new profile would change existing authorization or signing certificates. The installed app was preserved."
         case "preservationExpiredCertificate": return "Refresh stopped because the existing signing certificate is no longer valid. Profile-only renewal cannot extend the certificate. The installed app was preserved."

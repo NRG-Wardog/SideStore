@@ -20,7 +20,7 @@ var fixtureCertificates: [URL:Cert] = [:]
 extension Bundle { enum Info { static var activeBundleURL = URL(fileURLWithPath: "/synthetic/Host.app"); static let activeBundleIdentifier = "app" } }
 enum StoreApp { static let altstoreAppID = "host.original" }
 final class CertificateManager { static let shared=CertificateManager(); func getSigningCertificate(at url:URL)->Cert? { fixtureCertificates[url] } }
-enum OperationError: Error { case invalidParameters(String) }
+enum OperationError: Error { case invalidParameters(String), noDevice, notReachable, unknownUDID }
 enum ProbeError: Error { case stopped, installFailed, databaseFailed }
 final class InstalledExtension {
  var bundleIdentifier = "app.ext"; var resignedBundleIdentifier = "app.ext"
@@ -222,4 +222,28 @@ final class AppleProfileOperation: @unchecked Sendable {
   guard active else { throw AppleProfileEvidenceError.expiredOperation }
   guard evidence.operationID==id,evidence.cmsData==exactCMS,evidence.profile.bundleIdentifier==target else { throw AppleProfileEvidenceError.identityMismatch }
  }
+}
+
+// Real preservation wrapper is extracted from MinimuxerWrapper.swift. Only its
+// core/device boundary is fake. Any accidental retry-helper entry is observed.
+enum MinimuxerError: Error { case noDevice, notReachable }
+enum FixturePreservationTransport {
+ static var coreCalls=0
+ static var retryEntries=0
+ static var portChanges=0
+ static var failure:Error?
+ static func reset(){coreCalls=0;retryEntries=0;portChanges=0;failure=nil}
+}
+struct FixturePreservationCore {
+ func installProvisioningProfile(profile:Data) async throws {
+  FixturePreservationTransport.coreCalls += 1
+  if let error=FixturePreservationTransport.failure {Injection.shared.count += 1;throw error}
+  try await installProvisioningProfiles(profile)
+ }
+}
+enum minimuxer { static let core=FixturePreservationCore() }
+func withRemotePairingRetry<T>(_ operation:() async throws->T) async throws->T {
+ FixturePreservationTransport.retryEntries += 1
+ FixturePreservationTransport.portChanges += 1
+ return try await operation()
 }

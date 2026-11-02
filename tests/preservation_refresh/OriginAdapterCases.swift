@@ -1,85 +1,56 @@
-// Actual fetch/state/decoder/refresh with explicit portal/CMS SDK doubles.
-// Actual transport/private receipt minting is separately covered by preservation_origin.
+// Real fetch/state/decoder/refresh; explicit portal and cryptography SDK doubles.
+// This establishes control flow only, not TLS/CMS/device execution.
 enum OriginAdapterCases {
  static func run(now:Date,makeContext:()->InstallAppOperationContext,
-  execute:(InstallAppOperationContext) async throws->Void,
-  register:(Int,Double,String,String?)->ALTProvisioningProfile,
-  configure:(InstallAppOperationContext,[ALTProvisioningProfile],ALTProvisioningProfile,ALTProvisioningProfile?)->Void) async throws->[String] {
+  execute:(InstallAppOperationContext) async throws->Void) async throws->[String] {
   var passed:[String]=[]
-  func unknown(_ p:ALTProvisioningProfile) { FixtureCMSBoundary.innerFailures[fixturePayloads[p.data]!["DER-Encoded-Profile"] as! Data] = .unsupportedSigner }
-  func setup(oldUnknown:Bool=true,candidateUnknown:Bool=true,hidden:String?=nil)->(InstallAppOperationContext,ALTProvisioningProfile,ALTProvisioningProfile) {
+  func setup(oldUnknown:Bool=true,candidateUnknown:Bool=true)->(InstallAppOperationContext,ALTProvisioningProfile,ALTProvisioningProfile) {
    let c=makeContext();FixtureCMSBoundary.reset()
-   let old=register(40,1000,"group.existing",hidden),candidate=register(41,2000,"group.existing",nil)
-   if oldUnknown {unknown(old)};if candidateUnknown {unknown(candidate)}
-   PortalProbe.shared.existingProfiles=[old.uuid:old]
-   configure(c,[old],candidate,nil);return(c,old,candidate)
+   let old=AuthenticatedAdapterCases.register(40,1000,now:now),candidate=AuthenticatedAdapterCases.register(41,2000,now:now)
+   if oldUnknown {FixtureCMSBoundary.innerFailures[fixturePayloads[old.data]!["DER-Encoded-Profile"] as! Data] = .unsupportedSigner}
+   if candidateUnknown {FixtureCMSBoundary.innerFailures[fixturePayloads[candidate.data]!["DER-Encoded-Profile"] as! Data] = .unsupportedSigner}
+   PortalProbe.shared.existingProfiles=[:];PortalProbe.shared.failCorroboration=true;PortalProbe.shared.candidate=candidate
+   c.readInstalledProvisioningProfiles={PortalProbe.shared.calls.append("read");return Injection.shared.count>0 ? [old.data,candidate.data]:[old.data]}
+   return(c,old,candidate)
   }
-  func rejected(_ c:InstallAppOperationContext,beforeGeneration:Bool) async {
+  func rejected(_ c:InstallAppOperationContext,allowCandidateLookup:Bool=false) async {
    let main=c.installedApp!.expirationDate,ext=c.installedApp!.appExtensions[0].expirationDate
-   do {try await execute(c);fatalError("unbound origin accepted")}catch{}
+   do {try await execute(c);fatalError("candidate without independent authority accepted")}catch{}
    precondition(Injection.shared.count==0 && c.installedApp!.expirationDate==main && c.installedApp!.appExtensions[0].expirationDate==ext)
-   precondition(PortalProbe.shared.calls.contains("generate-existing-id-profile") == !beforeGeneration)
+   if !allowCandidateLookup {precondition(!PortalProbe.shared.calls.contains("list-existing-profiles") && !PortalProbe.shared.calls.contains("download-exact-existing-profile"))}
    if let operation=PortalProbe.shared.lastOriginOperation {precondition(!operation.active)}
   }
   for (name,oldUnknown,candidateUnknown) in [
-   ("origin-fullflow-exact-installed-and-candidate-receipts",true,true),
+   ("origin-unknown-old-not-listed-candidate-own-receipt",true,true),
    ("origin-pinned-baseline-unknown-candidate-own-receipt",false,true),
-   ("origin-unknown-baseline-pinned-candidate-preserved",true,false)] {
+   ("origin-unknown-baseline-pinned-candidate-preserved",true,false),
+   ("origin-pinned-old-pinned-candidate-still-own-receipt",false,false)] {
    let(c,_,_)=setup(oldUnknown:oldUnknown,candidateUnknown:candidateUnknown)
    try await execute(c)
    precondition(Injection.shared.count==1 && c.refreshVerification?.installAcknowledged==true && c.refreshVerification?.profileStore == .matched)
+   precondition(PortalProbe.shared.calls.contains("origin-operation") && PortalProbe.shared.calls.filter{$0=="generate-existing-id-profile"}.count==1)
    precondition(FixtureCMSBoundary.inspectionCalls>0 && PortalProbe.shared.originInvalidations==1 && PortalProbe.shared.lastOriginOperation?.active==false)
-   if oldUnknown {
-    let list=PortalProbe.shared.calls.firstIndex(of:"list-existing-profiles")!,download=PortalProbe.shared.calls.firstIndex(of:"download-exact-existing-profile")!,generation=PortalProbe.shared.calls.firstIndex(of:"generate-existing-id-profile")!
-    precondition(list<download && download<generation)
-   } else {precondition(!PortalProbe.shared.calls.contains("list-existing-profiles"))}
+   precondition(!PortalProbe.shared.calls.contains("list-existing-profiles") && !PortalProbe.shared.calls.contains("download-exact-existing-profile"))
    passed.append(name)
   }
-  do {
-   let(c,old,candidate)=setup();let second=register(42,1200,"group.existing",nil);unknown(second)
-   PortalProbe.shared.existingProfiles[second.uuid]=second;configure(c,[old,second],candidate,nil)
-   try await execute(c);precondition(Injection.shared.count==1 && PortalProbe.shared.calls.filter{$0=="download-exact-existing-profile"}.count==2)
-   passed.append("origin-each-installed-profile-needs-own-receipt")
-  }
-  for mode in ["unsupported","missing","mismatched"] {
-   let(c,old,_)=setup()
-   if mode=="unsupported" {PortalProbe.shared.failCorroboration=true}
-   if mode=="missing" {PortalProbe.shared.existingProfiles=[:]}
-   if mode=="mismatched" {
-    PortalProbe.shared.existingProfiles[old.uuid]=ALTProvisioningProfile(uuid:old.uuid,data:Data([99]),bundleIdentifier:"app",teamIdentifier:"T",expirationDate:old.expirationDate,certificates:old.certificates)
-   }
-   await rejected(c,beforeGeneration:true);passed.append("origin-"+mode+"-existing-evidence-no-generation")
-  }
-  for(error,label) in [(ProfileCMSVerificationError.signerTimeInvalid,"expired"),(.verificationFailed,"body-bitflip"),(.unsupportedRepresentation,"malformed")] {
-   let(c,old,_)=setup();FixtureCMSBoundary.inspectionFailures[fixturePayloads[old.data]!["DER-Encoded-Profile"] as! Data]=error
-   await rejected(c,beforeGeneration:true);precondition(FixtureCMSBoundary.inspectionCalls>0)
-   passed.append("origin-installed-"+label+"-no-generation")
+  for oldUnknown in [false,true] {
+   let(c,_,_)=setup(oldUnknown:oldUnknown,candidateUnknown:false)
+   PortalProbe.shared.wrongCandidateOperation=true;await rejected(c)
+   passed.append(oldUnknown ? "origin-candidate-other-operation-receipt-no-install":"origin-pinned-candidate-other-operation-receipt-no-install")
   }
   do {
-   let(c,_,_)=setup(hidden:"group.hidden");await rejected(c,beforeGeneration:true)
-   passed.append("origin-installed-inner-binding-mismatch-no-generation")
-  }
-  for stage in ["list","download"] {
-   let(c,_,_)=setup();var allowed=true;c.profileMutationAdmission={if !allowed {throw CancellationError()} }
-   if stage=="list" {PortalProbe.shared.afterList={allowed=false}}else{PortalProbe.shared.afterExisting={allowed=false}}
-   await rejected(c,beforeGeneration:true);passed.append("origin-admission-revoked-after-"+stage+"-no-generation")
-  }
-  do {
-   let(c,_,_)=setup();PortalProbe.shared.wrongCandidateOperation=true;await rejected(c,beforeGeneration:false)
-   passed.append("origin-candidate-other-operation-receipt-no-install")
-  }
-  do {
-   let(c,old,_)=setup();let changed=register(43,2100,"group.changed",nil);unknown(changed);configure(c,[old],changed,nil)
-   await rejected(c,beforeGeneration:false);passed.append("origin-candidate-authority-change-no-install")
+   let(c,_,_)=setup();PortalProbe.shared.failDownload=true;await rejected(c)
+   precondition(PortalProbe.shared.calls.filter{$0=="generate-existing-id-profile"}.count==1)
+   passed.append("origin-candidate-response-unavailable-no-fallback")
   }
   do {
    let(c,_,candidate)=setup();FixtureCMSBoundary.inspectionFailures[fixturePayloads[candidate.data]!["DER-Encoded-Profile"] as! Data] = .signerTimeInvalid
-   await rejected(c,beforeGeneration:false);passed.append("origin-candidate-expired-crypto-no-install")
+   await rejected(c);passed.append("origin-candidate-expired-crypto-no-install")
   }
   do {
-   let(c,old,candidate)=setup();let unrelated=register(44,1300,"group.existing",nil);unknown(unrelated)
-   configure(c,[old],candidate,unrelated);await rejected(c,beforeGeneration:false)
-   passed.append("origin-same-leaf-unrelated-fresh-profile-no-install")
+   let(c,_,_)=setup();var allowed=true;c.profileMutationAdmission={if !allowed {throw CancellationError()}}
+   PortalProbe.shared.afterGeneration={allowed=false};await rejected(c)
+   passed.append("origin-admission-revoked-after-generation-no-install")
   }
   for stage in ["crypto","database"] {
    let(c,old,candidate)=setup();var reads=0;var hookDidRun=false
@@ -91,7 +62,22 @@ enum OriginAdapterCases {
     }
     return Injection.shared.count>0 ? [old.data,candidate.data]:[old.data]
    }
-   await rejected(c,beforeGeneration:false);precondition(reads>=3 && hookDidRun);passed.append("origin-revoked-after-fresh-"+stage+"-no-install")
+   await rejected(c);precondition(reads>=3 && hookDidRun)
+   passed.append("origin-revoked-after-fresh-"+stage+"-no-install")
+  }
+  // A supplied profile is not a fresh generation response, even if its signer
+  // has a known pin. No old profile listing may be used as a substitute.
+  do {
+   let(c,_,candidate)=setup(oldUnknown:false,candidateUnknown:false);c.overrideProvisioningProfile=candidate
+   await rejected(c,allowCandidateLookup:true);precondition(PortalProbe.shared.corroboratedUUIDs==[candidate.uuid]);passed.append("origin-supplied-static-profile-without-fresh-receipt-rejected")
+  }
+  do {
+   let(c,_,candidate)=setup(oldUnknown:true,candidateUnknown:true);c.overrideProvisioningProfile=candidate
+   PortalProbe.shared.failCorroboration=false;PortalProbe.shared.existingProfiles=[candidate.uuid:candidate]
+   try await execute(c)
+   precondition(Injection.shared.count==1 && PortalProbe.shared.corroboratedUUIDs==[candidate.uuid])
+   precondition(!PortalProbe.shared.calls.contains("generate-existing-id-profile") && c.refreshVerification?.profileStore == .matched)
+   passed.append("origin-supplied-candidate-exact-own-receipt-no-old-lookup")
   }
   FixtureCMSBoundary.reset();return passed
  }

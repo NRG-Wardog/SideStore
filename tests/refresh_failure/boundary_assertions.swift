@@ -44,6 +44,18 @@ struct RefreshFailureBoundaryHarness {
             precondition(failure.signingContext["refresh_target_scope"] == "nonHost")
         }
 
+        let postDispatchCases = preservationPostDispatchFixtureCases()
+        precondition(postDispatchCases.count == 2)
+        for entry in postDispatchCases {
+            let failure = try roundtrip(entry.error)
+            precondition(failure.stage == .command && failure.code == .failed)
+            precondition(failure.sourceStep == .refreshApplication && failure.sourceStep == entry.expectedStep)
+            precondition(failure.signingContext["local_precondition"] == nil)
+            precondition(failure.signingContext["preservation_conflict"] == nil)
+            precondition(!failure.technicalDetails.contains("local_precondition="))
+        }
+        print("PRESERVATION_POSTDISPATCH_REAL_BRIDGE_PASS")
+
         let privateNative = NSError(domain: secret, code: 42,
             userInfo: [NSLocalizedDescriptionKey: secret, "untrusted_payload": secret])
         for boundary in V3RefreshFailureBoundary.allCases {

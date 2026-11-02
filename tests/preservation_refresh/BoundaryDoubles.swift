@@ -14,9 +14,10 @@ final class PortalProbe {
  var afterExisting:(()->Void)?
  var afterGeneration:(()->Void)?
  var wrongCandidateOperation=false
+ var corroboratedUUIDs:[UUID]=[]
  var originInvalidations=0
  var lastOriginOperation:AppleProfileOperation?
- func resetOrigin() { existingProfiles=[:];failCorroboration=false;afterList=nil;afterExisting=nil;afterGeneration=nil;wrongCandidateOperation=false;originInvalidations=0;lastOriginOperation=nil }
+ func resetOrigin() { existingProfiles=[:];failCorroboration=false;afterList=nil;afterExisting=nil;afterGeneration=nil;wrongCandidateOperation=false;originInvalidations=0;lastOriginOperation=nil;corroboratedUUIDs=[] }
 }
 final class AuthManager {
  static let shared = AuthManager()
@@ -41,7 +42,7 @@ final class DeveloperPortalProxy {
 // run separately in preservation_origin; these are never production exports.
 extension AppleProfileOperation {
  func corroborateExisting(installedCMS:Data,uuid:UUID,bundleIdentifier:String) async throws->AppleProfileEvidence {
-  try admission();PortalProbe.shared.calls.append("list-existing-profiles")
+  try admission();PortalProbe.shared.corroboratedUUIDs.append(uuid);PortalProbe.shared.calls.append("list-existing-profiles")
   if PortalProbe.shared.failCorroboration { throw AppleProfileEvidenceError.unavailable }
   await Task.yield();PortalProbe.shared.afterList?();try admission()
   guard active, bundleIdentifier==target,let p=PortalProbe.shared.existingProfiles[uuid],p.data==installedCMS else { throw AppleProfileEvidenceError.identityMismatch }

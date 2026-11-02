@@ -57,6 +57,12 @@ def generate_source(root):
     step_cases = step_source[step_source.index('enum PipelineStep:'):step_source.index('    fileprivate static let stepMap:')]
     source = '\nimport CryptoKit\nprotocol OperationStep: Equatable, Hashable {}\n' + step_cases + '}\n'
     source += '\n' + declaration(read('SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift'), 'struct V3RefreshSelectionFailure:')
+    refresh = read('SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift')
+    source += '\n' + declaration(refresh, 'enum V3PreservationPostDispatchFailure:')
+    # Exact production stored fields/wire support only; profile SDK methods are
+    # unused by error mapping and deliberately excluded from this fixture.
+    verification = declaration(refresh, 'struct V3RefreshVerification:')
+    source += '\n' + verification[:verification.index('    static func readProfiles(')] + '}\n'
     for signature in ['func lcSigningHash(', 'func lcPreservationCertificateFacts(', 'enum V3RefreshFailureBoundary:', 'func lcRefreshFailureFacts(', 'func lcSafeSigningCause(', 'func lcStructuredSigningFailure(', 'private final class LCSigningHTTPObservation:', 'func lcPortalSigningRequest<T>']:
         source += '\n' + declaration(pipeline, signature)
     app_operation = read('SideStore/Core/Operations/AppOperation.swift')
@@ -90,6 +96,8 @@ class RefreshFailureContract(unittest.TestCase):
     def test_native_instruction_boundaries_preserve_existing_flow(self):
         profile = self.refresh.split('        do {\n            await CellularRefreshManager.shared.turnOffDataIfNeeded()', 1)[1]
         profile = profile.split('        self.setProgress(80)', 1)[0]
+        # Explanatory comments may change without changing instruction adjacency.
+        profile = '\n'.join(line for line in profile.splitlines() if not line.lstrip().startswith('//'))
         self.assertEqual(profile.count('try await installProvisioningProfiles(p.value.data)'), 1)
         self.assertIn('await CellularRefreshManager.shared.turnOnDataIfNeeded()\n            throw V3RefreshFailureBoundary.provisioningProfileInstallation.preserving(error)', profile)
         self.assertNotIn('retry', profile)
@@ -159,6 +167,11 @@ class RefreshFailureContract(unittest.TestCase):
         self.assertNotIn('enum V3HeadlessPairingFailure {', source)
         self.assertNotIn('@main', source)
         self.assertIn('func refreshBoundaryFixtureCases()', source)
+        self.assertIn('func preservationPostDispatchFixtureCases()', source)
+        self.assertIn(declaration(self.refresh, 'enum V3PreservationPostDispatchFailure:'), source)
+        self.assertIn('PRESERVATION_POSTDISPATCH_REAL_BRIDGE_PASS', source)
+        self.assertIn('failure.stage == .command && failure.code == .failed', source)
+        self.assertIn('failure.signingContext["local_precondition"] == nil', source)
         standalone = common(self.shared)
         policy = declaration(self.shared, 'enum V3AuthFailureDiagnosticsPolicy {')
         self.assertEqual(standalone.count(policy), 1)
@@ -215,6 +228,8 @@ class RefreshFailureContract(unittest.TestCase):
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('REFRESH_FAILURE_BOUNDARY_PASS', result.stdout)
+            self.assertEqual(result.stdout.splitlines().count('PRESERVATION_POSTDISPATCH_REAL_BRIDGE_PASS'), 1)
+            print('PRESERVATION_POSTDISPATCH_REAL_BRIDGE_PASS')
             self.assertIn('CMS_SIGNER_REAL_SIGNING_BRIDGE_PASS', result.stdout)
             print('CMS_SIGNER_REAL_SIGNING_BRIDGE_PASS')
             self.assertIn('APPLE_PROFILE_ORIGIN_REAL_SIGNING_BRIDGE_PASS', result.stdout)

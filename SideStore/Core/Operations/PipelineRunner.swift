@@ -12,6 +12,98 @@ import SideSign
 import Minimuxer
 
 
+// V3_PROFILE_TRANSACTION_LANE_BEGIN
+// Process-wide, not runner/batch-local: every app operation may affect the
+// device profile inventory. Ownership survives suspension; actor isolation alone
+// would allow another transaction in during a native await. No native work or
+// continuation resumption occurs under the lock. Never acquire recursively.
+final class V3ProfileTransactionLane: @unchecked Sendable {
+    static let shared = V3ProfileTransactionLane()
+
+    final class Ticket: @unchecked Sendable {
+        fileprivate enum State { case created, queued, granted, cancelled, released }
+        fileprivate var state: State = .created
+        fileprivate var continuation: CheckedContinuation<Void, Error>?
+    }
+
+    private let lock = NSLock()
+    private var owner: Ticket?
+    private var queue: [Ticket] = []
+
+    func acquire() async throws -> Ticket {
+        let ticket = Ticket()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                enqueue(ticket, continuation: continuation)
+            }
+        }, onCancel: {
+            self.cancel(ticket)
+        })
+        // A cancellation racing a grant still owns the lane. Transfer it back
+        // here, rather than leaking ownership or running a cancelled operation.
+        do { try Task.checkCancellation() }
+        catch { release(ticket); throw error }
+        return ticket
+    }
+
+    private func enqueue(_ ticket: Ticket, continuation: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        if ticket.state == .cancelled {
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+        } else if owner == nil {
+            ticket.state = .granted
+            owner = ticket
+            lock.unlock()
+            continuation.resume()
+        } else {
+            ticket.state = .queued
+            ticket.continuation = continuation
+            queue.append(ticket)
+            lock.unlock()
+        }
+    }
+
+    private func cancel(_ ticket: Ticket) {
+        lock.lock()
+        var continuation: CheckedContinuation<Void, Error>?
+        switch ticket.state {
+        case .created:
+            ticket.state = .cancelled
+        case .queued:
+            queue.removeAll { $0 === ticket }
+            continuation = ticket.continuation
+            ticket.continuation = nil
+            ticket.state = .cancelled
+        case .granted, .cancelled, .released:
+            break // Granted ownership is released by acquire/caller's defer.
+        }
+        lock.unlock()
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    func release(_ ticket: Ticket) {
+        lock.lock()
+        guard owner === ticket, ticket.state == .granted else {
+            lock.unlock()
+            return // Idempotent; an old owner can never release a new owner.
+        }
+        ticket.state = .released
+        owner = nil
+        var continuation: CheckedContinuation<Void, Error>?
+        if !queue.isEmpty {
+            let next = queue.removeFirst()
+            next.state = .granted
+            owner = next
+            continuation = next.continuation
+            next.continuation = nil
+        }
+        lock.unlock()
+        continuation?.resume()
+    }
+}
+// V3_PROFILE_TRANSACTION_LANE_END
+
 // Memory-only comparison. Never serialized: peer addresses remain private.
 // No public backend configuration generation exists; this compares observations
 // before/after the native await, not uninterrupted configuration equivalence.
@@ -471,6 +563,26 @@ final class PipelineRunner: Sendable
     }
 
     func performOperation(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1, refreshAdmission: (() throws -> Void)? = nil, readProfiles: (() async throws -> [Data])? = nil) async throws {
+        // V3_PROFILE_TRANSACTION_OWNERSHIP_V1: includes direct entry and other
+        // batches. Hold through readback, durable save and terminal accounting;
+        // serialize app transactions only, not readiness/authentication services.
+        let transactionAdmission = V3RemoteRequestLeases.admitted
+        // Retain the original progress owner: UI lookups may remove cancelled
+        // entries from the manager dictionary while this transaction is queued.
+        let transactionProgress = progress.progress(for: operation)
+        var profileTransaction: V3ProfileTransactionLane.Ticket?
+        defer {
+            if let profileTransaction { V3ProfileTransactionLane.shared.release(profileTransaction) }
+        }
+        func checkTransactionAdmission() throws {
+            try Task.checkCancellation()
+            try transactionAdmission?.check()
+            try refreshAdmission?()
+            guard !group.progress.isCancelled,
+                  transactionProgress?.isCancelled != true else {
+                throw CancellationError()
+            }
+        }
         debugLog("[AppManager] performOperation: Starting execution for app: \(operation.bundleIdentifier)")
         defer {
             // request update view context's in-mem coredata caches (coz we worked so far on bg context)
@@ -479,9 +591,13 @@ final class PipelineRunner: Sendable
             }
         }
         do {
+            try checkTransactionAdmission()
+            profileTransaction = try await V3ProfileTransactionLane.shared.acquire()
+            // The request may have expired while another app held the lane.
+            try checkTransactionAdmission()
             group.setVerification(V3RefreshVerification(installAcknowledged: false, mutationDispatched: false),
                                   for: operation.bundleIdentifier)
-            let result = try await self.performPipeline(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: refreshAdmission, readProfiles: readProfiles)
+            let result = try await self.performPipeline(for: operation, handler: handler, group: group, operationsCount: operationsCount, refreshAdmission: checkTransactionAdmission, readProfiles: readProfiles)
             if operationsCount <= 1 {
                 progress.set(nil, for: operation)
                 debugLog("[AppManager] performOperation: completed successfully; progress was reset.")

@@ -42,6 +42,13 @@ class Contract(unittest.TestCase):
    for result in ['accepted','rejected']:self.assertIn('"origin-'+phase+'-envelope-"+label+"-'+result+'"',s)
   self.assertIn('override class func canInit(with request:URLRequest)->Bool {true}',s)
   self.assertIn('"platform_tls_executed":false',s);self.assertIn('"cms_verified":false',s)
+ def test_candidate_receipt_is_mandatory_and_historical_is_not_authority(self):
+  consumer=g.extract((ROOT/'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift').read_text(),'struct V3AppleProfileOriginEvidence:')
+  self.assertIn('let candidate: AppleProfileEvidence',consumer)
+  self.assertNotIn('AppleProfileEvidence?',consumer)
+  self.assertNotIn('let installed:',consumer)
+  self.assertIn('candidate.cmsData == bytes',consumer)
+  self.assertIn('operation.authorize(candidate, exactCMS: bytes)',consumer)
  def test_visibility_checks_use_unflagged_actual_library(self):
   s=(HERE/'run.sh').read_text()
   self.assertIn('-D SIDESIGN_PROFILE_TRANSPORT_TESTING "$work/Integration.swift"',s)

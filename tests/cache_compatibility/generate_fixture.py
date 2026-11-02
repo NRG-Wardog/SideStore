@@ -170,7 +170,30 @@ def project_reviewed_cold_vpn(text):
     return text, True
 
 
+REVIEWED_PROFILE_TRANSACTION_DELTA_SHA256 = '2a034d639266032185a06a9a48f976fe15f468121d958238513784c3162dc236'
+
+def project_reviewed_profile_transaction(text):
+    # Exact whole-file and bounded hunk identity; no unknown Runner is admitted.
+    if 'V3_PROFILE_TRANSACTION_LANE_BEGIN' not in text:
+        return text, False
+    raw = (HERE / 'reviewed-profile-transaction-host-delta.json').read_bytes()
+    assert digest(raw) == REVIEWED_PROFILE_TRANSACTION_DELTA_SHA256, 'Profile transaction receipt changed'
+    receipt = json.loads(raw)
+    assert digest(text.encode()) == receipt['after_sha256'], 'Unreviewed profile transaction runner changes'
+    for hunk in receipt['hunks']:
+        assert text.count(hunk['after']) == 1, 'Changed, absent or duplicate profile transaction hunk'
+        text = text.replace(hunk['after'], hunk['before'], 1)
+    assert digest(text.encode()) == receipt['before_sha256'], 'Changes outside exact profile transaction hunks'
+    return text, True
+
 def verify_host_preservation(text):
+    original, applied = project_reviewed_profile_transaction(text)
+    proof = verify_prior_host_preservation(original)
+    if applied:
+        proof['reviewed_profile_transaction_delta_sha256'] = REVIEWED_PROFILE_TRANSACTION_DELTA_SHA256
+    return proof
+
+def verify_prior_host_preservation(text):
     text, preservation = project_reviewed_preservation_registry(text)
     text, legacy = project_reviewed_legacy_replacement(text)
     text, observation = project_reviewed_transport_observation(text)
@@ -211,7 +234,9 @@ def verify_reviewed_cache_callers(root):
     assert actual_calls == sorted(allowed), 'Cache helper escaped reviewed callers'
     if has_preservation:
         for path, expected in extra.items():
-            assert digest((root / path).read_bytes()) == expected, 'Reviewed identity caller changed: ' + path
+            raw = (root / path).read_bytes()
+            normalized = project_reviewed_profile_transaction(raw.decode())[0].encode() if path == PRODUCTION['host'] else raw
+            assert digest(normalized) == expected, 'Reviewed identity caller changed: ' + path
             assert (root / path).read_text().count('AppBundleFingerprint.computeOriginalCacheKey(') == 1
 
     stage = (root / caller['path']).read_bytes()
@@ -219,7 +244,7 @@ def verify_reviewed_cache_callers(root):
     text = stage.decode()
     assert text.count('AppBundleFingerprint.computeOriginalCacheKey(') == 1
     assert text.index('AppBundleFingerprint.compute(for: source.fileURL)') < text.index('AppBundleFingerprint.computeOriginalCacheKey(')
-    return {'SideStore/' + caller['path']: caller['sha256'], **{'SideStore/' + path: value for path, value in extra.items()}}
+    return {'SideStore/' + caller['path']: caller['sha256'], **{'SideStore/' + path: digest((root / path).read_bytes()) for path in extra}}
 
 
 def main():
@@ -260,7 +285,8 @@ def main():
     assert source["cache"].count("import Foundation\nimport Darwin\n") == 1, "Production Darwin import missing"
     untouched_cache = source["cache"].replace("import Foundation\nimport Darwin\n", "import Foundation\n", 1).replace(compatibility_cache, "<CACHE_PAYLOAD>")
     assert digest(untouched_cache.encode()) == "ce90052574e4198c71cae64ee0d93ac76adcf3e3cab561eed3960d8cb21a1f53", "Execute/pruning changed"
-    reviewed_host, _ = project_reviewed_preservation_registry(source["host"])
+    reviewed_host, _ = project_reviewed_profile_transaction(source["host"])
+    reviewed_host, _ = project_reviewed_preservation_registry(reviewed_host)
     assert "AppBundleFingerprint.computeOriginalCacheKey" not in reviewed_host
     assert reviewed_host.count("AppBundleFingerprint.compute(for:") == 5
     caller_inputs = verify_reviewed_cache_callers(args.candidate_root)
@@ -314,7 +340,7 @@ class InstalledApp {
         "swift_compiled": False, "swift_executed": False,
         "native_provider_executed": False, "network_executed": False,
         "inputs_sha256": {**{"SideStore/" + path: digest(source[key].encode()) for key, path in PRODUCTION.items()}, **caller_inputs},
-        "fixture_inputs_sha256": {name: digest((HERE / name).read_bytes()) for name in ["generate_fixture.py", "reviewed-cold-vpn-host-delta.json", "reviewed-refresh-truth-host-delta.json", "reviewed-transport-observation-host-delta.json", "reviewed-legacy-replacement-host-delta.json", "reviewed-preservation-registry-host-delta.json", "Cases.swift", *ORIGINAL_PINS]},
+        "fixture_inputs_sha256": {name: digest((HERE / name).read_bytes()) for name in ["generate_fixture.py", "reviewed-cold-vpn-host-delta.json", "reviewed-refresh-truth-host-delta.json", "reviewed-transport-observation-host-delta.json", "reviewed-legacy-replacement-host-delta.json", "reviewed-preservation-registry-host-delta.json", "reviewed-profile-transaction-host-delta.json", "Cases.swift", *ORIGINAL_PINS]},
         "generated_sha256": digest(generated.encode()),
         "expected_case_names": cases, "expected_case_count": len(cases),
         "strict_compute_byte_identical": True, **host_proof,

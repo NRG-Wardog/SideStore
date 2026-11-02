@@ -1,9 +1,7 @@
-// Strict, bounded semantic binding of authenticated provisioning profile payloads.
-// Preconditions: caller verified both complete CMS envelopes through the narrow
-// provisioning-role facade, including strong nested CMS authentication. Legacy
-// outer SHA1 is not an independent modern authority: complete inner binding below
-// is mandatory. This API does not authenticate CMS. Never pass scanner-derived
-// or unverified payload bytes.
+// Strict bounded outer/inner representation binding; this decoder grants no authority.
+// Callers must cryptographically check both envelopes. Historical results may only
+// restrict a candidate; candidate authority independently requires exact Apple-origin
+// provenance. Inner inspection alone is never a signer-role endorsement.
 import Foundation
 import CoreFoundation
 import CryptoKit

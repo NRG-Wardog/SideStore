@@ -2,15 +2,15 @@
  static func main() async throws {
   let now=Date(); let der=Data([7]); var passed:[String]=[]
   func profile(_ number:Int,_ lifetime:Double,_ group:String="group.existing") -> ALTProvisioningProfile {
-   let p=ALTProvisioningProfile(uuid:UUID(uuidString:String(format:"00000000-0000-0000-0000-%012d",number))!,data:Data([UInt8(number)]),bundleIdentifier:"app",teamIdentifier:"T",expirationDate:now.addingTimeInterval(lifetime),certificates:[Cert(serialNumber:"S",data:der)])
-   fixtureProfiles[p.data]=p
-   fixturePayloads[p.data]=["UUID":p.uuid.uuidString,"CreationDate":now.addingTimeInterval(-100),"ExpirationDate":p.expirationDate,"TimeToLive":7,"TeamIdentifier":["T"],"ApplicationIdentifierPrefix":["PREFIX"],"DeveloperCertificates":[der],"ProvisionedDevices":["synthetic"],"Platform":["iOS"],"Entitlements":["application-identifier":"PREFIX.app","com.apple.developer.team-identifier":"T","keychain-access-groups":["PREFIX.app","PREFIX.shared"],"com.apple.security.application-groups":[group],"get-task-allow":true]]
-   return p
+   AuthenticatedAdapterCases.register(number,lifetime,now:now,group:group)
   }
   let old=profile(1,1000), fresh=profile(2,2000), changed=profile(3,2000,"group.changed"), concurrent=profile(4,1500)
   func setup(changedAtFreshRead:Bool=false, missing:Bool=false, rebindAtFreshRead:Bool=false, postread:String="matched") -> InstallAppOperationContext {
+   FixturePreservationTransport.reset()
    Injection.shared.count=0;Injection.shared.failAt=0;Injection.shared.after=nil
    CellularRefreshManager.shared.duringOff=nil
+   FixtureCMSBoundary.calls=0;FixtureCMSBoundary.failure=nil;FixtureCMSBoundary.innerFailures=[:]
+   FixtureCMSBoundary.duringCall=nil;FixtureCMSBoundary.inspectionCalls=0;FixtureCMSBoundary.inspectionFailures=[:];FixtureCMSBoundary.duringInspection=nil
    PortalProbe.shared.resetOrigin()
    PortalProbe.shared.calls=[];PortalProbe.shared.appIDs=[FixtureAppID(bundleIdentifier:"app")];PortalProbe.shared.candidate=fresh;PortalProbe.shared.failDownload=false
    let c=InstallAppOperationContext();c.isPreservationRefresh=true;c.useMainProfile=true;c.installedApp!.useMainProfile=true;c.targetAppBundle=nil
@@ -92,9 +92,11 @@
   }
   do {
    let c=setup();c.overrideProvisioningProfile=fresh
-   try await run(c)
-   precondition(!PortalProbe.shared.calls.contains("lookup-existing-id") && Injection.shared.count==1)
-   passed.append("provided-profile-same-authority-no-portal")
+   do { try await run(c);fatalError("supplied profile without fresh origin accepted") } catch {}
+   precondition(!PortalProbe.shared.calls.contains("lookup-existing-id") && Injection.shared.count==0)
+   precondition(PortalProbe.shared.corroboratedUUIDs==[fresh.uuid])
+   precondition(c.refreshVerification==nil && c.installedApp!.expirationDate==Date(timeIntervalSince1970:0))
+   passed.append("provided-profile-no-fresh-origin-rejected")
   }
   do {
    let c=setup();c.profileMutationAdmission={throw CancellationError()}
@@ -128,7 +130,13 @@
    let c=setup(postread:outcome)
    c.installedApp!.expirationDate=old.expirationDate
    let oldMain=c.installedApp!.expirationDate, oldExtension=c.installedApp!.appExtensions[0].expirationDate
-   try await run(c)
+   do { try await run(c);fatalError("unverified preservation reported success") }
+   catch let failure as V3PreservationPostDispatchFailure {
+    switch (outcome,failure) {
+    case ("unavailable",.verificationUnavailable),("mismatch",.verificationMismatch): break
+    default: fatalError("wrong preservation post-dispatch failure")
+    }
+   }
    precondition(Injection.shared.count==1 && c.refreshVerification?.installAcknowledged==true)
    precondition(c.refreshVerification?.profileStore == (outcome=="unavailable" ? .unavailable : .mismatch))
    precondition(c.refreshVerification?.renewal == .unknown)
@@ -191,8 +199,8 @@
    precondition(V3RefreshSelectionFailure(reason:.preservationIdentityUnavailable,scope:.nonHost,preservationConflict:"teamMismatch").facts["preservation_conflict"]==nil)
    passed.append("conflict-detail-finite-map-and-scope")
   }
-  for (detail,label) in [("alternateIdentity","fresh-alternate-identity-detail-no-install"),
-                          ("entitlementsDiffer","fresh-entitlements-detail-no-install")] {
+  for (detail,label) in [("alternateIdentity","fresh-alternate-identity-snapshot-drift-no-install"),
+                          ("entitlementsDiffer","fresh-entitlements-snapshot-drift-no-install")] {
    let c=setup();var reads=0
    let oldMain=c.installedApp!.expirationDate, oldExtension=c.installedApp!.appExtensions[0].expirationDate
    let alternate=profile(5,1500)
@@ -206,15 +214,23 @@
    }
    do { try await run(c);fatalError("fresh conflict accepted") }
    catch let e as V3RefreshSelectionFailure {
-    precondition(e.reason == .preservationAuthorityConflict && e.preservationConflict==detail)
-    precondition(e.facts["preservation_conflict"]==detail)
+    precondition(e.reason == .preservationSnapshotChanged)
    }
    precondition(reads==3 && Injection.shared.count==0 && c.refreshVerification==nil)
    precondition(c.installedApp!.expirationDate==oldMain && c.installedApp!.appExtensions[0].expirationDate==oldExtension)
    passed.append(label)
   }
+  for mode in ["lost-ack","port-change-eligible"] {
+   let c=setup();FixturePreservationTransport.failure = mode=="lost-ack" ? ProbeError.installFailed:MinimuxerError.notReachable
+   precondition(isRetriableRemotePairingError(FixturePreservationTransport.failure!))
+   do {try await run(c);fatalError("uncertain dispatch retried")}catch{}
+   precondition(FixturePreservationTransport.coreCalls==1 && Injection.shared.count==1)
+   precondition(FixturePreservationTransport.retryEntries==0 && FixturePreservationTransport.portChanges==0)
+   precondition(c.refreshVerification?.installAcknowledged==false && c.installedApp!.expirationDate==Date(timeIntervalSince1970:0))
+   passed.append("preservation-actual-wrapper-"+mode+"-single-attempt")
+  }
   passed += try await AuthenticatedAdapterCases.run(now:now,makeContext:{ setup() },execute:run)
-  precondition(passed.count==64)
-  print(String(data:try JSONSerialization.data(withJSONObject:["schema":"preservation-refresh-integration-v1","status":"PASS","cases":passed,"device_executed":false],options:[.sortedKeys]),encoding:.utf8)!)
+  precondition(passed.count==80 && Set(passed).count==80)
+  print(String(data:try JSONSerialization.data(withJSONObject:["schema":"preservation-refresh-integration-v1","status":"PASS","cases":passed,"device_executed":false,"cms_verified":false,"platform_tls_executed":false,"portal_executed":false],options:[.sortedKeys]),encoding:.utf8)!)
  }
 }

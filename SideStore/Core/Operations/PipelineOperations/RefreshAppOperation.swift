@@ -76,6 +76,30 @@ struct V3RefreshSelectionFailure: Error, Sendable {
     }
 }
 
+// An acknowledged profile injection is not a verified renewal. This is a
+// terminal, post-dispatch outcome: callers must not retry or imply rollback.
+// Only fixed local text is exposed; native errors and profile data stay private.
+enum V3PreservationPostDispatchFailure: LocalizedError, Sendable {
+    case verificationUnavailable
+    case verificationMismatch
+
+    var errorDescription: String? {
+        switch self {
+        case .verificationUnavailable:
+            return "The profile installation was acknowledged, but renewal could not be verified. Review the device before trying again."
+        case .verificationMismatch:
+            return "The profile installation was acknowledged, but the profile inventory did not verify. Review the device before trying again."
+        }
+    }
+
+    static func outcome(for verification: V3RefreshVerification) -> Self? {
+        if verification.installAcknowledged && verification.profileStore == .matched &&
+            verification.renewal == .extended && verification.certificate == "valid" &&
+            verification.preservation == "authorizationPreserved" { return nil }
+        return verification.profileStore == .unavailable ? .verificationUnavailable : .verificationMismatch
+    }
+}
+
 final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContext, InstalledApp>, @unchecked Sendable {
     
     // Set before execution; only refresh pipelines supply this owned admission.
@@ -84,7 +108,7 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
 
     override func execute(parentProgress: Progress?) async throws -> InstalledApp {
         let startTime = CFAbsoluteTimeGetCurrent()
-        defer { context.preservationRefreshState?.origin?.operation.invalidate() }
+        defer { context.preservationRefreshState?.origin.operation.invalidate() }
         debugLog("[RefreshAppOperation] execute() started")
         defer {
             let elapsed = CFAbsoluteTimeGetCurrent() - startTime
@@ -141,15 +165,19 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
                 throw OperationError.invalidParameters("The selected signing lifetime expired before installation began.")
             }
             preservationMutationDispatched = true
-            let dispatched = V3RefreshVerification(installAcknowledged: false, preservation: context.isPreservationRefresh ? "authorizationPreserved" : nil)
+            let dispatched = V3RefreshVerification(installAcknowledged: false)
             context.refreshVerification = dispatched
             context.recordRefreshVerification?(dispatched)
             for p in profiles {
-                try await installProvisioningProfiles(p.value.data)
+                if context.isPreservationRefresh {
+                    try await installPreservationProvisioningProfile(p.value.data)
+                } else {
+                    try await installProvisioningProfiles(p.value.data)
+                }
             }
             // Acknowledged means ALL required injections returned success. A
             // partial batch remains dispatched/unconfirmed; it cannot be replayed.
-            let acknowledged = V3RefreshVerification(preservation: context.isPreservationRefresh ? "authorizationPreserved" : nil)
+            let acknowledged = V3RefreshVerification()
             context.refreshVerification = acknowledged
             context.recordRefreshVerification?(acknowledged)
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
@@ -160,6 +188,10 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
             throw selection
         } catch {
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            // An error after dispatch can be a lost acknowledgement. Do not
+            // inject again or infer the device state. The current native profile
+            // read has no bounded cancellation guarantee, so do not start an
+            // unbounded reconciliation read while holding the transaction.
             throw V3RefreshFailureBoundary.provisioningProfileInstallation.preserving(error)
         }
         
@@ -168,7 +200,18 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         var verification = V3RefreshVerification.evaluate(expected: selection.profiles,
             before: before, after: after, certificateSerial: selection.certificateSerial,
             certificateExpiry: selection.certificateExpiry, certificateData: selection.certificateData, now: verificationNow())
-        verification.preservation = context.isPreservationRefresh ? "authorizationPreserved" : nil
+        if context.isPreservationRefresh {
+            if context.preservationRefreshState?.validatePostReadback(after) == true,
+               verification.profileStore == .matched, verification.renewal == .extended,
+               verification.certificate == "valid" {
+                verification.preservation = "authorizationPreserved"
+            } else {
+                verification.profileStore = after == nil ? .unavailable : .mismatch
+                verification.renewal = .unknown
+                verification.certificate = "unknown"
+                verification.preservation = nil
+            }
+        }
         self.context.refreshVerification = verification
         self.context.recordRefreshVerification?(verification)
         // No cancellation check after injection: durable accounting must still run.
@@ -179,6 +222,14 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
             }
         } catch {
             throw V3RefreshFailureBoundary.refreshRecordUpdate.preserving(error)
+        }
+
+        // Keep the recorded post-dispatch observation available to all result
+        // consumers, but never return a success for an unverified preservation
+        // refresh. updateInstalledApp deliberately left expiry unchanged above.
+        if context.isPreservationRefresh,
+           let failure = V3PreservationPostDispatchFailure.outcome(for: verification) {
+            throw failure
         }
         
         self.setProgress(100)
@@ -208,7 +259,15 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
     }
 
     private func readProfilesWithoutMutation() async -> [ALTProvisioningProfile]? {
-        await V3RefreshVerification.readProfiles(context.readInstalledProvisioningProfiles)
+        if context.isPreservationRefresh {
+            guard let read = context.readInstalledProvisioningProfiles else { return nil }
+            do {
+                let bytes = try await read()
+                try V3PreservationRefreshState.checkInventoryBounds(bytes)
+                return try bytes.map { try ALTProvisioningProfile(data: $0) }
+            } catch { return nil }
+        }
+        return await V3RefreshVerification.readProfiles(context.readInstalledProvisioningProfiles)
     }
 
     private struct ProfileSelection {
@@ -519,14 +578,15 @@ enum PreservedProfilePolicy {
             }
         }
     }
-    // Projection can only be constructed by the authenticated adapter in this
-    // source file, never by a marker inside an untrusted plist dictionary.
+    // A normalized comparison projection is not an authority credential. Only this
+    // file constructs it after strict cryptographic/representation checks; candidate
+    // authority is separately required through an exact Apple-origin receipt.
     struct ProfileInput {
         let raw: [String: Any]
         fileprivate let normalizedInnerAuthority: [String: Data]?
         init(raw: [String: Any]) { self.raw = raw; normalizedInnerAuthority = nil }
-        fileprivate init(raw: [String: Any], authenticatedInner: [String: Data]) {
-            self.raw = raw; normalizedInnerAuthority = authenticatedInner
+        fileprivate init(raw: [String: Any], normalizedConstraints: [String: Data]) {
+            self.raw = raw; normalizedInnerAuthority = normalizedConstraints
         }
     }
     struct Binding: Equatable, Sendable {
@@ -724,8 +784,8 @@ enum PreservedProfilePolicy {
         let binding = baseline.binding
         guard binding.certificateExpiration > now else { throw Failure.expiredCertificate }
         let new = try Profile(input)
-        if let sameUUID = baseline.installedPayloadsByUUID[new.uuid], sameUUID != new.complete {
-            // Do not intentionally overwrite an existing UUID with changed payload semantics.
+        if baseline.installedPayloadsByUUID[new.uuid] != nil {
+            // Never overwrite any existing UUID, even if its decoded payload is identical.
             throw Failure.duplicateUUIDConflict
         }
         guard new.applicationID == binding.applicationIdentifier,
@@ -774,151 +834,130 @@ enum PreservedProfilePolicy {
     }
 }
 
-// A receipt is created only by SideSign's private Apple HTTPS transport. This
-// adapter never constructs evidence from a fingerprint, signer, cache or caller bytes.
+// Candidate authority comes only from a private SideSign Apple HTTPS receipt.
+// Historical profiles below cannot confer authority on any signer or candidate.
 struct V3AppleProfileOriginEvidence: Sendable {
     let operation: AppleProfileOperation
-    let installed: [AppleProfileEvidence]
-    let candidate: AppleProfileEvidence?
-
-    func authorize(_ bytes: Data, installedPhase: Bool) throws {
-        let receipts = installedPhase ? installed : candidate.map { [$0] } ?? []
-        guard let exact = receipts.first(where: { $0.cmsData == bytes }) else {
+    let candidate: AppleProfileEvidence
+    func authorizeCandidate(_ bytes: Data) throws {
+        guard candidate.cmsData == bytes else {
             throw V3PreservationRefreshState.failure(.preservationEvidenceUnavailable)
         }
-        try operation.authorize(exact, exactCMS: bytes)
-    }
-
-    func validateInstalledBytes(_ inventory: [Data]) throws {
-        for evidence in installed {
-            guard inventory.contains(evidence.cmsData) else {
-                throw V3PreservationRefreshState.failure(.preservationSnapshotChanged)
-            }
-            try operation.authorize(evidence, exactCMS: evidence.cmsData)
-        }
+        try operation.authorize(candidate, exactCMS: bytes)
     }
 }
 
-// Snapshot and candidate remain internal; raw profile bytes never enter wire facts.
-struct V3PreservationRefreshState: Sendable {
+/// Restrictive historical observations only. Not proof of signer role, installed
+/// binary entitlements, launch, extension identity or Keychain accessibility.
+struct HistoricalConstraintSnapshot: Sendable {
     let baseline: PreservedProfilePolicy.Evidence
-    let candidateData: Data
     let originalInventory: [Data]
-    let usesAuthenticatedDER: Bool
-    let origin: V3AppleProfileOriginEvidence?
+    let profilesByUUID: [UUID: Data]
+}
 
+struct V3PreservationRefreshState: Sendable {
+    let historical: HistoricalConstraintSnapshot
+    let candidateData: Data
+    let origin: V3AppleProfileOriginEvidence
+    var baseline: PreservedProfilePolicy.Evidence { historical.baseline }
+    var originalInventory: [Data] { historical.originalInventory }
     struct Prepared: Sendable {
-        let baseline: PreservedProfilePolicy.Evidence
-        let originalInventory: [Data]
-        let usesAuthenticatedDER: Bool
-        let origin: V3AppleProfileOriginEvidence?
+        let historical: HistoricalConstraintSnapshot
+        var baseline: PreservedProfilePolicy.Evidence { historical.baseline }
+        var originalInventory: [Data] { historical.originalInventory }
     }
 
     static func prepare(resignedBundleID: String, teamID: String, signerDER: Data,
                         certificateExpiration: Date, inventory: [Data], now: Date,
-                        admission: (() throws -> Void)?, origin: V3AppleProfileOriginEvidence? = nil) throws -> Prepared {
+                        admission: (() throws -> Void)?) throws -> Prepared {
+        let started = ProcessInfo.processInfo.systemUptime
+        try checkInventoryBounds(inventory)
+        try checkWork(admission, started: started)
         let raw = try payloads(inventory)
-        try origin?.validateInstalledBytes(inventory)
-        do {
-            if origin?.installed.isEmpty == false { throw PreservedProfilePolicy.Failure.embeddedDERDiffer }
-            let baseline = try PreservedProfilePolicy.selectSnapshot(resignedBundleID: resignedBundleID,
-                teamID: teamID, historicalSignerDER: signerDER, certificateExpiration: certificateExpiration,
-                useMainProfile: true, installed: raw, now: now)
-            return Prepared(baseline: baseline, originalInventory: inventory, usesAuthenticatedDER: false, origin: origin)
-        } catch PreservedProfilePolicy.Failure.embeddedDERDiffer {
-            let started = ProcessInfo.processInfo.systemUptime
-            let inputs = try authenticatedTargetInputs(inventory: inventory, raw: raw,
-                resignedBundleID: resignedBundleID, admission: admission, started: started, origin: origin)
-            let baseline = try PreservedProfilePolicy.selectSnapshot(resignedBundleID: resignedBundleID,
-                teamID: teamID, historicalSignerDER: signerDER, certificateExpiration: certificateExpiration,
-                useMainProfile: true, inputs: inputs, now: now)
+        let profilesByUUID = try exactProfilesByUUID(inventory)
+        var inputs = raw.map { PreservedProfilePolicy.ProfileInput(raw: $0) }
+        let indices = try PreservedProfilePolicy.targetIndices(resignedBundleID: resignedBundleID, installed: raw)
+        for index in indices {
             try checkWork(admission, started: started)
-            return Prepared(baseline: baseline, originalInventory: inventory, usesAuthenticatedDER: true, origin: origin)
+            // The result constrains comparison only; no custom inner leaf role pin
+            // and no old-profile portal lookup is an admission prerequisite.
+            inputs[index] = try historicalConstraintInput(inventory[index], admission: admission, started: started)
+            guard try PreservedProfilePolicy.Value(inputs[index].raw) == PreservedProfilePolicy.Value(raw[index]) else {
+                throw PreservedProfilePolicy.Failure.embeddedDERBindingMismatch
+            }
         }
+        let baseline = try PreservedProfilePolicy.selectSnapshot(resignedBundleID: resignedBundleID,
+            teamID: teamID, historicalSignerDER: signerDER, certificateExpiration: certificateExpiration,
+            useMainProfile: true, inputs: inputs, now: now)
+        try checkWork(admission, started: started)
+        return Prepared(historical: HistoricalConstraintSnapshot(baseline: baseline,
+            originalInventory: inventory, profilesByUUID: profilesByUUID))
     }
 
     static func finish(prepared: Prepared, candidateData: Data, now: Date,
-                       admission: (() throws -> Void)?, origin suppliedOrigin: V3AppleProfileOriginEvidence? = nil) throws -> Self {
-        let origin = suppliedOrigin ?? prepared.origin
+                       admission: (() throws -> Void)?, origin: V3AppleProfileOriginEvidence? = nil) throws -> Self {
+        guard let origin else { throw failure(.preservationEvidenceUnavailable) }
         let started = ProcessInfo.processInfo.systemUptime
-        var effective = prepared
-        if !prepared.usesAuthenticatedDER {
-            do {
-                _ = try PreservedProfilePolicy.validate(candidate: payloads([candidateData])[0],
-                    baseline: prepared.baseline, now: now)
-                return Self(baseline: prepared.baseline, candidateData: candidateData,
-                    originalInventory: prepared.originalInventory, usesAuthenticatedDER: false, origin: origin)
-            } catch PreservedProfilePolicy.Failure.changedAuthorization {
-                guard try PreservedProfilePolicy.hasOnlyEmbeddedDERDifference(
-                    candidate: payloads([candidateData])[0], baseline: prepared.baseline) else {
-                    throw PreservedProfilePolicy.Failure.changedAuthorization
-                }
-                // Only this previously rejected comparison can request the
-                // stronger alternative. Every original target participates.
-                let inputs = try authenticatedTargetInputs(inventory: prepared.originalInventory,
-                    raw: payloads(prepared.originalInventory),
-                    resignedBundleID: prepared.baseline.binding.resignedBundleID, admission: admission, started: started, origin: origin)
-                let baseline = try PreservedProfilePolicy.snapshot(binding: prepared.baseline.binding,
-                    inputs: inputs, now: now)
-                effective = Prepared(baseline: baseline, originalInventory: prepared.originalInventory,
-                    usesAuthenticatedDER: true, origin: origin)
-            }
+        // The retained old inventory plus the new record must fit the same
+        // bounded readback budget before any injection can be admitted.
+        try checkInventoryBounds(prepared.originalInventory + [candidateData])
+        try checkWork(admission, started: started)
+        let candidate = try authenticatedCandidateInput(candidateData, origin: origin, admission: admission, started: started)
+        let model = try ALTProvisioningProfile(data: candidateData)
+        guard prepared.historical.profilesByUUID[model.uuid] == nil else {
+            throw PreservedProfilePolicy.Failure.duplicateUUIDConflict
         }
+        _ = try PreservedProfilePolicy.validate(input: candidate, baseline: prepared.baseline, now: now)
+        try origin.authorizeCandidate(candidateData)
         try checkWork(admission, started: started)
-        let candidate = try authenticatedInput(candidateData, phase: "candidate", admission: admission, started: started, origin: origin)
-        try checkWork(admission, started: started)
-        _ = try PreservedProfilePolicy.validate(input: candidate, baseline: effective.baseline, now: now)
-        try checkWork(admission, started: started)
-        return Self(baseline: effective.baseline, candidateData: candidateData,
-            originalInventory: effective.originalInventory, usesAuthenticatedDER: true, origin: origin)
+        return Self(historical: prepared.historical, candidateData: candidateData, origin: origin)
     }
 
     func validateFresh(_ inventory: [Data], now: Date, admission: (() throws -> Void)?) throws {
         let started = ProcessInfo.processInfo.systemUptime
-        let raw = try Self.payloads(inventory)
-        try origin?.validateInstalledBytes(inventory)
-        let fresh: PreservedProfilePolicy.Evidence
-        if usesAuthenticatedDER {
-            // Never repair raw target drift by upgrading semantic comparison.
-            guard try PreservedProfilePolicy.sameRawTarget(baseline: baseline, installed: raw) else {
-                throw Self.failure(.preservationSnapshotChanged)
-            }
-            let inputs = try Self.authenticatedTargetInputs(inventory: inventory, raw: raw,
-                resignedBundleID: baseline.binding.resignedBundleID, admission: admission, started: started, phase: "freshInstalled", origin: origin)
-            fresh = try PreservedProfilePolicy.snapshot(binding: baseline.binding, inputs: inputs, now: now)
-        } else {
-            fresh = try PreservedProfilePolicy.snapshot(binding: baseline.binding, installed: raw, now: now)
+        try Self.checkInventoryBounds(inventory)
+        try Self.checkWork(admission, started: started)
+        // Preserve every old blob, not only target payload semantics. No repair,
+        // mode upgrade, dropping an expired profile or automatic snapshot retry.
+        guard Self.multiset(inventory) == Self.multiset(originalInventory) else {
+            throw Self.failure(.preservationSnapshotChanged)
         }
-        guard fresh.hasSameTarget(as: baseline) else { throw Self.failure(.preservationSnapshotChanged) }
-        if usesAuthenticatedDER {
-            try Self.checkWork(admission, started: started)
-            let candidate = try Self.authenticatedInput(candidateData, phase: "freshCandidate", admission: admission, started: started, origin: origin)
-            try Self.checkWork(admission, started: started)
-            _ = try PreservedProfilePolicy.validate(input: candidate, baseline: fresh, now: now)
-            try Self.checkWork(admission, started: started)
-        } else {
-            _ = try PreservedProfilePolicy.validate(candidate: Self.payloads([candidateData])[0], baseline: fresh, now: now)
-        }
+        _ = try Self.exactProfilesByUUID(inventory)
+        let candidate = try Self.authenticatedCandidateInput(candidateData, origin: origin, admission: admission, started: started)
+        let model = try ALTProvisioningProfile(data: candidateData)
+        guard historical.profilesByUUID[model.uuid] == nil else { throw PreservedProfilePolicy.Failure.duplicateUUIDConflict }
+        _ = try PreservedProfilePolicy.validate(input: candidate, baseline: baseline, now: now)
+        try origin.authorizeCandidate(candidateData)
+        try Self.checkWork(admission, started: started)
+    }
+
+    /// Post-ACK observation only. Never triggers another injection or claims rollback.
+    func validatePostReadback(_ after: [ALTProvisioningProfile]?) -> Bool {
+        guard let after else { return false }
+        do {
+            let bytes = after.map(\.data)
+            try Self.checkInventoryBounds(bytes)
+            let byUUID = try Self.exactProfilesByUUID(bytes)
+            let candidate = try ALTProvisioningProfile(data: candidateData)
+            guard historical.profilesByUUID[candidate.uuid] == nil,
+                  after.filter({ $0.uuid == candidate.uuid }).count == 1,
+                  byUUID[candidate.uuid] == candidateData,
+                  historical.profilesByUUID.allSatisfy({ byUUID[$0.key] == $0.value }) else { return false }
+            // Only the intended additive change may qualify. Unexpected extra
+            // target or unrelated records are uncertainty, never silent success.
+            return Self.multiset(bytes) == Self.multiset(originalInventory + [candidateData])
+        } catch { return false }
     }
 
     func validateOriginAdmission() throws {
-        guard let origin else { return }
-        do {
-            try origin.validateInstalledBytes(originalInventory)
-            if origin.candidate != nil { try origin.authorize(candidateData, installedPhase: false) }
-        } catch is CancellationError { throw CancellationError() }
+        do { try origin.authorizeCandidate(candidateData) }
+        catch is CancellationError { throw CancellationError() }
         catch { throw Self.originFailure(error) }
     }
-
-    private static func checkWork(_ admission: (() throws -> Void)?, started: TimeInterval) throws {
-        try Task.checkCancellation()
-        try admission?()
-        guard ProcessInfo.processInfo.systemUptime - started <= 20 else {
-            throw failure(.preservationEvidenceUnavailable)
-        }
+    private static func multiset(_ inventory: [Data]) -> [Data: Int] {
+        inventory.reduce(into: [:]) { $0[$1, default: 0] += 1 }
     }
-    static func requiredOriginProfiles(inventory: [Data], resignedBundleID: String,
-        admission: (() throws -> Void)?) throws -> [(bytes: Data, uuid: UUID)] {
+    static func checkInventoryBounds(_ inventory: [Data]) throws {
         guard inventory.count <= 512 else { throw failure(.preservationEvidenceUnavailable) }
         var total = 0
         for bytes in inventory {
@@ -928,100 +967,67 @@ struct V3PreservationRefreshState: Sendable {
             }
             total = next
         }
-        let raw = try payloads(inventory)
-        let indices = try PreservedProfilePolicy.targetIndices(resignedBundleID: resignedBundleID, installed: raw)
-        let started = ProcessInfo.processInfo.systemUptime
-        var missing: [(bytes: Data, uuid: UUID)] = []
-        for index in indices {
-            try checkWork(admission, started: started)
-            guard raw[index]["DER-Encoded-Profile"] != nil else { continue }
-            do {
-                _ = try authenticatedInput(inventory[index], phase: "installed", admission: admission, started: started)
-            } catch let selection as V3RefreshSelectionFailure where selection.preservationConflict == "embeddedDERUnsupportedSigner" {
-                guard let value = raw[index]["UUID"] as? String, let uuid = UUID(uuidString: value) else {
-                    throw failure(.preservationMalformedProfile)
-                }
-                missing.append((inventory[index], uuid))
-            }
-        }
-        return missing
     }
-
-    private static func authenticatedTargetInputs(inventory: [Data], raw: [[String: Any]],
-        resignedBundleID: String, admission: (() throws -> Void)?, started: TimeInterval, phase: String = "installed", origin: V3AppleProfileOriginEvidence? = nil) throws -> [PreservedProfilePolicy.ProfileInput] {
-        // A semantic alternative has an explicit bounded budget; raw-equal
-        // legacy admission above is unchanged. Never truncate the inventory.
-        guard inventory.count == raw.count, inventory.count <= 512 else { throw failure(.preservationEvidenceUnavailable) }
-        var total = 0
+    private static func exactProfilesByUUID(_ inventory: [Data]) throws -> [UUID: Data] {
+        var result: [UUID: Data] = [:]
         for bytes in inventory {
-            let (next, overflow) = total.addingReportingOverflow(bytes.count)
-            guard !overflow, !bytes.isEmpty, bytes.count <= 1_048_576, next <= 32 * 1024 * 1024 else { throw failure(.preservationEvidenceUnavailable) }
-            total = next
-        }
-        var inputs = raw.map { PreservedProfilePolicy.ProfileInput(raw: $0) }
-        let indices = try PreservedProfilePolicy.targetIndices(resignedBundleID: resignedBundleID, installed: raw)
-        for index in indices {
-            try checkWork(admission, started: started)
-            let verified = try authenticatedInput(inventory[index], phase: phase, admission: admission, started: started, origin: origin)
-            // Authentication must decode exactly the same raw payload, never
-            // replace a scanner-selected identity with a different CMS content.
-            guard try PreservedProfilePolicy.Value(verified.raw) == PreservedProfilePolicy.Value(raw[index]) else {
-                throw PreservedProfilePolicy.Failure.embeddedDERBindingMismatch
+            let profile = try ALTProvisioningProfile(data: bytes)
+            if let previous = result[profile.uuid], previous != bytes {
+                throw PreservedProfilePolicy.Failure.duplicateUUIDConflict
             }
-            inputs[index] = verified
+            result[profile.uuid] = bytes
         }
-        try checkWork(admission, started: started)
-        return inputs
+        return result
     }
-    private static func authenticatedInput(_ bytes: Data, phase: String, admission: (() throws -> Void)?, started: TimeInterval, origin: V3AppleProfileOriginEvidence? = nil) throws -> PreservedProfilePolicy.ProfileInput {
+    private static func checkWork(_ admission: (() throws -> Void)?, started: TimeInterval) throws {
+        try Task.checkCancellation()
+        try admission?()
+        guard ProcessInfo.processInfo.systemUptime - started <= 20 else {
+            throw failure(.preservationEvidenceUnavailable)
+        }
+    }
+    private static func historicalConstraintInput(_ bytes: Data, admission: (() throws -> Void)?,
+                                                  started: TimeInterval) throws -> PreservedProfilePolicy.ProfileInput {
+        try normalizedComparisonInput(bytes, admission: admission, started: started)
+    }
+    private static func authenticatedCandidateInput(_ bytes: Data, origin: V3AppleProfileOriginEvidence,
+        admission: (() throws -> Void)?, started: TimeInterval) throws -> PreservedProfilePolicy.ProfileInput {
+        try checkWork(admission, started: started)
+        try origin.authorizeCandidate(bytes)
+        let input = try normalizedComparisonInput(bytes, admission: admission, started: started)
+        // Inspection is NOT provenance. Exact independently authorized candidate
+        // bytes must remain operation/account-owned after all cryptographic work.
+        try origin.authorizeCandidate(bytes)
+        try checkWork(admission, started: started)
+        return input
+    }
+    private static func normalizedComparisonInput(_ bytes: Data, admission: (() throws -> Void)?,
+                                                  started: TimeInterval) throws -> PreservedProfilePolicy.ProfileInput {
         do {
+            try checkWork(admission, started: started)
             let outerXML = try ProfileCMSVerifier.authenticateOuter(bytes)
             let outer = try PreservedProfileDecoder.decodeOuter(verifiedOuterXML: outerXML)
+            // Preserve supported XML-only profiles only when DER is genuinely
+            // absent. Malformed/present DER can never select this branch.
+            if !outer.keys.contains("DER-Encoded-Profile") {
+                guard try PreservedProfilePolicy.Value(outer) == PreservedProfilePolicy.Value(payloads([bytes])[0]) else {
+                    throw PreservedProfilePolicy.Failure.embeddedDERBindingMismatch
+                }
+                try checkWork(admission, started: started)
+                return PreservedProfilePolicy.ProfileInput(raw: outer)
+            }
             guard let nestedCMS = outer["DER-Encoded-Profile"] as? Data, !nestedCMS.isEmpty else {
                 throw PreservedProfilePolicy.Failure.embeddedDERUnsupportedRepresentation
             }
-            let innerDER: Data
-            var usedOrigin = false
-            do {
-                innerDER = try ProfileCMSVerifier.authenticateInner(nestedCMS)
-            } catch ProfileCMSVerificationError.unsupportedSigner {
-                if let origin {
-                    try checkWork(admission, started: started)
-                    try origin.authorize(bytes, installedPhase: phase == "installed" || phase == "freshInstalled")
-                    // Inspection is explicitly UNTRUSTED by itself. Only the exact
-                    // full outer CMS receipt above establishes Apple-origin authority.
-                    innerDER = try ProfileCMSVerifier.inspectInnerCryptography(nestedCMS).untrustedContent
-                    usedOrigin = true
-                    try checkWork(admission, started: started)
-                } else {
-                // Read-only evidence is NOT an alternate authority path. Even a
-                // valid Apple chain/signature cannot admit an unapproved role.
-                try checkWork(admission, started: started)
-                let evidence = ProfileCMSVerifier.diagnoseInnerSigner(nestedCMS)
-                try checkWork(admission, started: started)
-                let verified = evidence.algorithmAndAttributes == .passed && evidence.chain == .passed &&
-                    evidence.signature == .passed && evidence.temporal == .passed
-                let role = verified ? [evidence.profileSubjectMarker, evidence.profileIssuerMarker,
-                    evidence.profileExtensionMarker, evidence.appDeveloperMarker].map { $0 ? "1" : "0" }.joined() : "unchecked"
-                let fingerprint = verified ? (evidence.signerSHA256 ?? "unknown") : "unknown"
-                let diagnostic = ["cs1", phase, evidence.algorithmAndAttributes.rawValue, evidence.chain.rawValue,
-                    evidence.signature.rawValue, evidence.temporal.rawValue, evidence.pin.rawValue, role, fingerprint].joined(separator: "|")
-                throw V3RefreshSelectionFailure(reason: .preservationAuthorityConflict, scope: .nonHost,
-                    preservationConflict: "embeddedDERUnsupportedSigner", cmsSignerDiagnostic: diagnostic)
-                }
-            }
+            let innerDER = try ProfileCMSVerifier.inspectInnerCryptography(nestedCMS).untrustedContent
+            try checkWork(admission, started: started)
             let decoded = try PreservedProfileDecoder.decode(verifiedOuterXML: outerXML, verifiedInnerDER: innerDER)
-            // Includes candidates: model/selection metadata must describe the
-            // exact authenticated payload, not a different scanner substring.
             guard try PreservedProfilePolicy.Value(decoded.rawOuter) == PreservedProfilePolicy.Value(payloads([bytes])[0]) else {
                 throw PreservedProfilePolicy.Failure.embeddedDERBindingMismatch
             }
-            if usedOrigin {
-                try origin?.authorize(bytes, installedPhase: phase == "installed" || phase == "freshInstalled")
-                try checkWork(admission, started: started)
-            }
+            try checkWork(admission, started: started)
             return PreservedProfilePolicy.ProfileInput(raw: decoded.rawOuter,
-                authenticatedInner: decoded.normalizedInnerAuthority)
+                normalizedConstraints: decoded.normalizedInnerAuthority)
         } catch let error as ProfileCMSVerificationError {
             switch error {
             case .unsupportedSigner: throw PreservedProfilePolicy.Failure.embeddedDERUnsupportedSigner
