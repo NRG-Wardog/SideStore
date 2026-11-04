@@ -164,6 +164,28 @@ func main() throws {
     }
     try run("wal-relocation-and-resume") { fixture in
         try child("seed-wal", fixture.source)
+        // Synthetic-only counterfactual for Foundation's /private normalization.
+        // Emit finite facts, never any path or SQLite error message.
+        guard let resolved = realpath(fixture.roots.privateDatabase.path, nil) else {
+            throw TestFailure(description: "POSIX root canonicalization failed")
+        }
+        let posixRoot = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+        free(resolved)
+        let foundationRoot = fixture.roots.privateDatabase.resolvingSymlinksInPath().standardizedFileURL
+        FileHandle.standardOutput.write(Data("PATH_PROBE foundation_matches_posix=\(foundationRoot.path == posixRoot.path)\n".utf8))
+        do {
+            let lease = try DatabaseRecovery.SourceReservation(posixRoot.appendingPathComponent("AltStore.sqlite"))
+            withExtendedLifetime(lease) {}
+        }
+        FileHandle.standardOutput.write(Data("PATH_PROBE posix_source_lease=pass\n".utf8))
+        do {
+            let lease = try DatabaseRecovery.SourceReservation(foundationRoot.appendingPathComponent("AltStore.sqlite"))
+            withExtendedLifetime(lease) {}
+            FileHandle.standardOutput.write(Data("PATH_PROBE foundation_source_lease=pass\n".utf8))
+        } catch let failure as DatabaseRecovery.SQLiteFailure {
+            FileHandle.standardOutput.write(Data("PATH_PROBE foundation_source_lease=\(failure)\n".utf8))
+        }
+        FileHandle.standardOutput.write(Data("CASE_PHASE wal-relocation-and-resume initial-resolve\n".utf8))
         do {
             let selection = try DatabaseRecovery().resolve(fixture.roots) { path, migrate in
                 try child("writer-blocked", fixture.source)
@@ -176,6 +198,7 @@ func main() throws {
             try Data("mutable".utf8).write(to: selection.apps!.appendingPathComponent("new-file"))
             withExtendedLifetime(selection) {}
         }
+        FileHandle.standardOutput.write(Data("CASE_PHASE wal-relocation-and-resume resume\n".utf8))
         do {
             let resumed = try DatabaseRecovery().resolve(fixture.roots, validate: validate)
             try require(try row(resumed.database) == "destination-edit", "Resume rejected/reverted legitimate destination edits")

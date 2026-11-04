@@ -43,6 +43,9 @@ class RunnerContract(unittest.TestCase):
         self.assertIn('run("source-ancestor-symlink")', native)
         self.assertIn('NOFOLLOW accepted a linked ancestor', native)
         self.assertIn('FAILED_CASE', native)
+        self.assertIn('PATH_PROBE foundation_matches_posix=', native)
+        self.assertIn('PATH_PROBE posix_source_lease=pass', native)
+        self.assertIn('CASE_PHASE wal-relocation-and-resume initial-resolve', native)
 
     def test_final_success_is_written_only_after_source_immutability_check(self):
         source = (HERE/'run.py').read_text()
