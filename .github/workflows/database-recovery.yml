@@ -11,6 +11,7 @@ on:
       - AltStore/Core/Model/AltStore.xcdatamodeld/**
       - SideStore/MaintenanceManager.swift
       - AltStore/Core/Model/InstalledApp.swift
+      - AltStore.xcodeproj/project.pbxproj
       - .github/workflows/database-recovery.yml
 permissions:
   contents: read
@@ -27,14 +28,14 @@ jobs:
           submodules: false
       - name: Check runner contract
         run: |
-          python3 -m unittest discover -s tests/database_recovery -p test_runner.py -v
-          python3 -m unittest discover -s tests/database_recovery_coredata -p test_contract.py -v
-          python3 -m unittest discover -s tests/upstream_sync -p test_maintenance_preservation.py -v
+          python3 -B -m unittest discover -s tests/database_recovery -p test_runner.py -v
+          python3 -B -m unittest discover -s tests/database_recovery_coredata -p test_contract.py -v
+          python3 -B -m unittest discover -s tests/upstream_sync -p test_maintenance_preservation.py -v
       - name: Run exact production engine against native SQLite fixtures
-        run: python3 tests/database_recovery/run.py --output "$RUNNER_TEMP/database-recovery-report"
+        run: python3 -B tests/database_recovery/run.py --output "$RUNNER_TEMP/database-recovery-report"
       - name: Run exact PersistentContainer with real Core Data models
         if: ${{ !cancelled() }}
-        run: python3 tests/database_recovery_coredata/run.py --output "$RUNNER_TEMP/database-recovery-coredata"
+        run: python3 -B tests/database_recovery_coredata/run.py --output "$RUNNER_TEMP/database-recovery-coredata"
       - name: Retain qualification report and logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -140,8 +140,13 @@ func main() throws {
     try fm.createDirectory(at: output, withIntermediateDirectories: true)
     var cases: [String] = []
     func run(_ name: String, _ body: (Fixture) throws -> Void) throws {
+        FileHandle.standardOutput.write(Data("BEGIN \(name)\n".utf8))
         let fixture = try Fixture(output.appendingPathComponent(name))
-        try body(fixture)
+        do { try body(fixture) }
+        catch {
+            FileHandle.standardError.write(Data("FAILED_CASE \(name)\n".utf8))
+            throw error
+        }
         cases.append(name)
         print("PASS \(name)")
     }
@@ -223,6 +228,19 @@ func main() throws {
         try Data("not-json".utf8).write(to: fixture.generation.appendingPathComponent("recovery.json"))
         try rejected { _ = try DatabaseRecovery().resolve(fixture.roots, validate: validate) }
         try require(try row(fixture.source) == "original", "Malformed receipt changed source")
+    }
+    try run("source-ancestor-symlink") { fixture in
+        try seed(fixture.source)
+        let linkedParent = fixture.root.appendingPathComponent("linked-private")
+        try fm.createSymbolicLink(at: linkedParent, withDestinationURL: fixture.roots.privateDatabase)
+        do {
+            _ = try DatabaseRecovery.SourceReservation(linkedParent.appendingPathComponent("AltStore.sqlite"))
+            throw TestFailure(description: "NOFOLLOW accepted a linked ancestor")
+        } catch let error as DatabaseRecovery.SQLiteFailure {
+            try require(error.phase == .sourceOpen && (error.code & 0xff) == SQLITE_CANTOPEN,
+                        "Wrong bounded ancestor-symlink rejection")
+        }
+        try require(try row(fixture.source) == "original", "Rejected linked path changed source")
     }
     try run("source-symlink") { fixture in
         let actual = fixture.root.appendingPathComponent("actual.sqlite")

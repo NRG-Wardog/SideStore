@@ -60,6 +60,58 @@ class RecoveryIntegration(unittest.TestCase):
         self.assertIn('root.appendingPathComponent(startupLockName)', self.engine)
         self.assertIn('container.persistentStoreDescriptions.first?.url', delete)
 
+    def test_coredata_mode_is_target_derived_and_source_closure_is_complete(self):
+        import importlib.util
+        path = ROOT/'tests/database_recovery_coredata/run.py'
+        spec = importlib.util.spec_from_file_location('coredata_recovery_runner', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        paths = {str(p.relative_to(ROOT)) for p in module.source_paths()}
+        required = {'SideStore/DatabaseRecovery.swift', 'SideStore/DatabaseRecoverySQLite.c',
+                    'AltStore/Core/Model/DatabaseManager/PersistentContainer.swift',
+                    'AltStore/Core/Model/DatabaseManager/DatabaseManager.swift',
+                    'SideStore/MaintenanceManager.swift', 'AltStore/Core/Model/InstalledApp.swift',
+                    'tests/database_recovery_coredata/run.py', 'tests/database_recovery_coredata/Cases.swift',
+                    'tests/database_recovery_coredata/test_contract.py', 'tests/database_recovery/target_settings.py',
+                    'AltStore.xcodeproj/project.pbxproj'}
+        self.assertEqual(paths - required, {str(p.relative_to(ROOT)) for p in
+            (ROOT/'AltStore/Core/Model/AltStore.xcdatamodeld').rglob('*') if p.is_file()})
+        source = path.read_text()
+        self.assertIn("'-swift-version', settings['swiftc_argument']", source)
+        self.assertNotIn("'-swift-version', '6'", source)
+        self.assertLess(source.index('if hashes() != before_inputs:'), source.index("(output/'receipt.json').write_text"))
+
+    def test_sqlite_phase_errors_keep_original_startup_classification(self):
+        self.assertIn('else if error is DatabaseRecovery.SQLiteFailure { recoveryFailure = .sqlite }', self.maintenance)
+        cases = self.maintenance.split('case .storage, .sqlite:', 1)[1].split('}', 1)[0]
+        self.assertIn('cause = .databaseLayoutBlocked', cases)
+        self.assertIn('The database could not be safely copied or verified.', cases)
+        self.assertIn('if error is V3DatabaseStartupGuardFailure || error is V3DatabaseStartupObservedFailure { throw error }', self.maintenance)
+
+    def test_sqlite_failure_diagnostics_remain_bounded(self):
+        block = self.engine.split('struct SQLiteFailure:', 1)[1].split('struct Selection', 1)[0]
+        self.assertIn('let phase: Phase', block)
+        self.assertIn('let code: Int32', block)
+        self.assertNotIn('URL', block)
+        self.assertNotIn('sqlite3_errmsg', self.engine)
+        self.assertNotIn('localizedDescription', block)
+
+    def test_silent_native_command_keeps_nonempty_bounded_log(self):
+        import importlib.util
+        import sys
+        import tempfile
+        spec = importlib.util.spec_from_file_location('coredata_runner_log', ROOT/'tests/database_recovery_coredata/run.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary)/'clang.log'
+            self.assertEqual(module.run([sys.executable, '-c', 'pass'], log), '')
+            self.assertIn('"return_code": 0', log.read_text())
+            self.assertIn('"stage": "clang.log"', log.read_text())
+            with self.assertRaises(RuntimeError):
+                module.run([sys.executable, '-c', 'raise SystemExit(3)'], log)
+            self.assertIn('"return_code": 3', log.read_text())
+
     def test_native_coredata_runner_compiles_whole_production_container(self):
         source = (ROOT/'tests/database_recovery_coredata/run.py').read_text()
         self.assertIn("ROOT/'AltStore/Core/Model/DatabaseManager/PersistentContainer.swift'", source)

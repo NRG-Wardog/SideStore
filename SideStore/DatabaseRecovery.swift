@@ -10,6 +10,17 @@ private func disableCloseCheckpoint(_ database: OpaquePointer) -> Int32
 
 final class DatabaseRecovery {
     enum Failure: Error { case unsafeLayout, conflict, sourceBusy, sourceChanged, invalidReceipt, storage, sqlite }
+    // Bounded local diagnostics only: never retain SQLite error messages, SQL,
+    // filenames, model data, or account information in an error description.
+    struct SQLiteFailure: Error, CustomStringConvertible, Sendable {
+        enum Phase: String, Sendable {
+            case sourceOpen, readerOpen, targetOpen, backupInit, backupStep
+            case backupFinish, journalMode, quickCheckPrepare, quickCheckStep, quickCheckResult
+        }
+        let phase: Phase
+        let code: Int32
+        var description: String { "database_recovery_sqlite_phase=\(phase.rawValue) code=\(code)" }
+    }
     struct Selection {
         let database: URL
         let apps: URL?
@@ -298,7 +309,7 @@ final class DatabaseRecovery {
             guard result == SQLITE_OK, let writer else {
                 if let writer { sqlite3_close(writer) }
                 self.writer = nil
-                throw Failure.sqlite
+                throw SQLiteFailure(phase: .sourceOpen, code: result)
             }
             sqlite3_busy_timeout(writer, 0)
             // Do not checkpoint a retained original merely because this guard closes.
@@ -316,32 +327,45 @@ final class DatabaseRecovery {
         }
         func snapshot(to destination: URL) throws {
             var source: OpaquePointer?
-            guard sqlite3_open_v2(url.path, &source, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_PRIVATECACHE | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK,
-                  let source else {
+            let sourceResult = sqlite3_open_v2(url.path, &source, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_PRIVATECACHE | SQLITE_OPEN_NOFOLLOW, nil)
+            guard sourceResult == SQLITE_OK, let source else {
                 if let source { sqlite3_close(source) }
-                throw Failure.sqlite
+                throw SQLiteFailure(phase: .readerOpen, code: sourceResult)
             }
             defer { sqlite3_close(source) }
             let descriptor = open(destination.path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
             guard descriptor >= 0 else { throw Failure.storage }
             close(descriptor)
             var target: OpaquePointer?
-            guard sqlite3_open_v2(destination.path, &target, SQLITE_OPEN_READWRITE | SQLITE_OPEN_PRIVATECACHE | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK,
-                  let target else {
+            let targetResult = sqlite3_open_v2(destination.path, &target, SQLITE_OPEN_READWRITE | SQLITE_OPEN_PRIVATECACHE | SQLITE_OPEN_NOFOLLOW, nil)
+            guard targetResult == SQLITE_OK, let target else {
                 if let target { sqlite3_close(target) }
-                throw Failure.sqlite
+                throw SQLiteFailure(phase: .targetOpen, code: targetResult)
             }
             defer { sqlite3_close(target) }
-            guard let backup = sqlite3_backup_init(target, "main", source, "main") else { throw Failure.sqlite }
+            guard let backup = sqlite3_backup_init(target, "main", source, "main") else {
+                throw SQLiteFailure(phase: .backupInit, code: sqlite3_errcode(target))
+            }
             let step = sqlite3_backup_step(backup, -1)
             let finish = sqlite3_backup_finish(backup)
-            guard step == SQLITE_DONE, finish == SQLITE_OK,
-                  sqlite3_exec(target, "PRAGMA journal_mode=DELETE", nil, nil, nil) == SQLITE_OK else { throw Failure.sqlite }
+            guard step == SQLITE_DONE else { throw SQLiteFailure(phase: .backupStep, code: step) }
+            guard finish == SQLITE_OK else { throw SQLiteFailure(phase: .backupFinish, code: finish) }
+            let journalResult = sqlite3_exec(target, "PRAGMA journal_mode=DELETE", nil, nil, nil)
+            guard journalResult == SQLITE_OK else { throw SQLiteFailure(phase: .journalMode, code: journalResult) }
             var check: OpaquePointer?
-            guard sqlite3_prepare_v2(target, "PRAGMA quick_check", -1, &check, nil) == SQLITE_OK, let check else { throw Failure.sqlite }
+            let prepareResult = sqlite3_prepare_v2(target, "PRAGMA quick_check", -1, &check, nil)
+            guard prepareResult == SQLITE_OK, let check else {
+                if let check { sqlite3_finalize(check) }
+                throw SQLiteFailure(phase: .quickCheckPrepare, code: prepareResult)
+            }
             defer { sqlite3_finalize(check) }
-            guard sqlite3_step(check) == SQLITE_ROW, let text = sqlite3_column_text(check, 0),
-                  String(cString: text) == "ok", sqlite3_step(check) == SQLITE_DONE else { throw Failure.sqlite }
+            let rowResult = sqlite3_step(check)
+            guard rowResult == SQLITE_ROW else { throw SQLiteFailure(phase: .quickCheckStep, code: rowResult) }
+            guard let text = sqlite3_column_text(check, 0), String(cString: text) == "ok" else {
+                throw SQLiteFailure(phase: .quickCheckResult, code: SQLITE_CORRUPT)
+            }
+            let doneResult = sqlite3_step(check)
+            guard doneResult == SQLITE_DONE else { throw SQLiteFailure(phase: .quickCheckStep, code: doneResult) }
         }
     }
 }

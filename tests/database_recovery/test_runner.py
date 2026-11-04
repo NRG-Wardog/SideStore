@@ -1,6 +1,9 @@
 """Portable runner-contract tests. These are NOT native recovery qualification."""
 import importlib.util
 import pathlib
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +13,53 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
 class RunnerContract(unittest.TestCase):
+    def project(self, version='5.0'):
+        return {'objects': {
+            'target': {'isa': 'PBXNativeTarget', 'name': 'SideStore', 'buildConfigurationList': 'list'},
+            'other': {'isa': 'PBXNativeTarget', 'name': 'SideBackup', 'buildConfigurationList': 'other-list'},
+            'list': {'isa': 'XCConfigurationList', 'buildConfigurations': ['release']},
+            'other-list': {'isa': 'XCConfigurationList', 'buildConfigurations': ['other-release']},
+            'release': {'isa': 'XCBuildConfiguration', 'name': 'Release', 'buildSettings': {'SWIFT_VERSION': version}},
+            'other-release': {'isa': 'XCBuildConfiguration', 'name': 'Release', 'buildSettings': {'SWIFT_VERSION': '6.0'}},
+        }}
+
+    def test_language_mode_comes_from_sidestore_not_other_target(self):
+        from target_settings import settings_from_objects
+        result = settings_from_objects(self.project())
+        self.assertEqual(result, {'target': 'SideStore', 'configuration': 'Release',
+                                 'declared': '5.0', 'swiftc_argument': '5'})
+        self.assertEqual(settings_from_objects(self.project('6.0'))['swiftc_argument'], '6')
+
+    def test_unknown_or_inherited_language_mode_is_not_silently_downgraded(self):
+        from target_settings import settings_from_objects
+        for version in (None, '7.0', '$(inherited)', '5'):
+            with self.assertRaises(ValueError):
+                settings_from_objects(self.project(version))
+
+    def test_canonical_fixture_root_keeps_nofollow_negative(self):
+        source = (HERE/'run.py').read_text()
+        self.assertIn('pathlib.Path(temporary).resolve(strict=True)', source)
+        native = (HERE/'main.swift').read_text()
+        self.assertIn('run("source-ancestor-symlink")', native)
+        self.assertIn('NOFOLLOW accepted a linked ancestor', native)
+        self.assertIn('FAILED_CASE', native)
+
+    def test_final_success_is_written_only_after_source_immutability_check(self):
+        source = (HERE/'run.py').read_text()
+        self.assertLess(source.index("raise RuntimeError('Production inputs changed"),
+                        source.index("(output / 'report.json').write_text"))
+        self.assertIn('Fresh output is required', source)
+
+    def test_silent_command_has_nonempty_bounded_log(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = pathlib.Path(temporary)/'compile.log'
+            runner.run([sys.executable, '-c', 'pass'], log)
+            self.assertIn('"return_code": 0', log.read_text())
+            self.assertIn('"stage": "compile.log"', log.read_text())
+            with self.assertRaises(subprocess.CalledProcessError):
+                runner.run([sys.executable, '-c', 'raise SystemExit(3)'], log)
+            self.assertIn('"return_code": 3', log.read_text())
+
     def test_exact_production_inputs(self):
         paths = runner.source_paths()
         self.assertEqual(paths[0], runner.ROOT / 'SideStore/DatabaseRecovery.swift')

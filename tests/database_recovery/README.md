@@ -42,3 +42,16 @@ Portable checks:
 
 These check runner/report contracts only and are not a native qualification pass.
 The workflow runs only on pushes to `validation/issue56-preserving-recovery`.
+
+## Qualification environment binding
+
+The fixture canonicalizes only its owned temporary root before direct lease tests,
+matching production root selection. `SQLITE_OPEN_NOFOLLOW` remains enabled; an
+additional linked-ancestor negative must reject the open. Cases and SQLite failure
+phases/codes are emitted without database paths or SQLite error-message content.
+
+Both native runners derive the language mode from the actual SideStore target's
+Release configuration through `plutil`. They record the declared setting, compiler
+argument and project hash. This avoids compiling the production container under
+an unrelated target's language mode. Reports bind all runner/helper/fixture inputs
+and require unchanged source bytes before writing PASS to a fresh output directory.

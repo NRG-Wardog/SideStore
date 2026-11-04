@@ -90,10 +90,19 @@ public final class MaintenanceManager: @unchecked Sendable {
             // the committed recovery receipt, not a preference, owns this cutover.
             lock.withLock { recoveredSelection = selection }
             description.url = selection.database
-        } catch let error as DatabaseRecovery.Failure {
+        } catch {
+            let recoveryFailure: DatabaseRecovery.Failure?
+            if let failure = error as? DatabaseRecovery.Failure { recoveryFailure = failure }
+            else if error is DatabaseRecovery.SQLiteFailure { recoveryFailure = .sqlite }
+            else { recoveryFailure = nil }
+            guard let failure = recoveryFailure else {
+                if error is V3DatabaseStartupGuardFailure || error is V3DatabaseStartupObservedFailure { throw error }
+                throw V3DatabaseStartupGuardFailure(cause: .databaseLayoutBlocked,
+                    underlying: DatabaseError.migrationFailed(reason: "Recovery could not safely read or write the app-owned storage. Unlock the device and check available space, then retry. Original data has been retained."))
+            }
             let cause: V3DatabaseStartupFailure
             let reason: String
-            switch error {
+            switch failure {
             case .sourceBusy:
                 cause = .databaseLayoutBlocked
                 reason = "The previous database is still in use. Close other SideStore processes and retry. All original data remains intact."
@@ -111,10 +120,6 @@ public final class MaintenanceManager: @unchecked Sendable {
                 reason = "The database could not be safely copied or verified. Check available storage and unlock the device, then retry. Original databases and app files have been retained."
             }
             throw V3DatabaseStartupGuardFailure(cause: cause, underlying: DatabaseError.migrationFailed(reason: reason))
-        } catch {
-            if error is V3DatabaseStartupGuardFailure || error is V3DatabaseStartupObservedFailure { throw error }
-            throw V3DatabaseStartupGuardFailure(cause: .databaseLayoutBlocked,
-                underlying: DatabaseError.migrationFailed(reason: "Recovery could not safely read or write the app-owned storage. Unlock the device and check available space, then retry. Original data has been retained."))
         }
     }
 
