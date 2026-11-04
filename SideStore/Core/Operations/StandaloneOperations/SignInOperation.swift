@@ -722,14 +722,15 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 v3DiagnosticAttemptClock = nil
                 await handler.setDiagnosticAttemptClock(nil)
                 v3RemoteContextSnapshot()?.invalidate()
-                if let owned = v3OwnedODAContextSnapshot() {
+                let failedOwnedContext = v3OwnedODAContextSnapshot()
+                if let owned = failedOwnedContext {
                     await handler.recordDiagnosticProvider(attempt.provider, outcome: "cleanupPending")
                     await owned.finish()
                 }
                 if isCancelled || Task.isCancelled || v3IsAuthCancellation(error) { throw error }
                 let challengeSeen = await clock.challengeSeen
                 let appleStarted = await clock.appleRequestStarted
-                let failure = diagnosticRetryFailure(error, appleStarted: appleStarted, provider: attempt.provider)
+                let failure = diagnosticRetryFailure(error, appleStarted: appleStarted, provider: attempt.provider, ownedContext: failedOwnedContext)
                 if challengeSeen { sequence.needsUser(attempt) }
                 sequence.failed(attempt, reason: failure)
                 await handler.recordDiagnosticProvider(attempt.provider,
@@ -751,14 +752,21 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
     }
 
     private func diagnosticRetryFailure(_ error: Error, appleStarted: Bool,
-        provider: V3DiagnosticProvider) -> V3DiagnosticProviderSequence.Failure {
+        provider: V3DiagnosticProvider, ownedContext: OwnedODAAuthenticationContext?) -> V3DiagnosticProviderSequence.Failure {
         // A timeout after an Apple request has begun has an uncertain account
         // outcome. It is not permission to submit credentials again.
         if error is V3DiagnosticAttemptTimeout {
             return appleStarted || provider != .remoteMac ? .unknown : .timedOut
         }
-        guard let kind = v3ClassifyAuthError(error) else { return .unknown }
         let underlying = v3AccountUnderlyingError(error)
+        // Only SideSign's source-minted first-init evidence permits this one
+        // post-request transition. The caller has joined and drained the owned
+        // context; sequence challenge and identity/commit gates still apply.
+        if provider == .onDevice, let ownedContext,
+           let rejection = underlying as? OwnedODAInitialProviderRejection, rejection.matches(ownedContext) {
+            return .providerRejectedInit
+        }
+        guard let kind = v3ClassifyAuthError(error) else { return .unknown }
         if kind == .anisette {
             if let portal = underlying as? DeveloperPortalError, case .invalidAnisetteData = portal {
                 return .providerUnavailable

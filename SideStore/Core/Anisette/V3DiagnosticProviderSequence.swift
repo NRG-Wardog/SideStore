@@ -48,7 +48,7 @@ struct V3DiagnosticProviderPlan: Equatable, Sendable {
 // context before reporting quiescence. A timeout alone is not that evidence.
 struct V3DiagnosticProviderSequence: Equatable, Sendable {
     enum Failure: String, Sendable {
-        case providerUnavailable, transientNetwork, timedOut
+        case providerUnavailable, providerRejectedInit, transientNetwork, timedOut
         case invalidCredentials, accountRestricted, rateLimited, invalidCode
         case identityChanged, credentialStorage, unknown
     }
@@ -114,7 +114,7 @@ struct V3DiagnosticProviderSequence: Equatable, Sendable {
         results.append(reason)
         // Any interactive challenge latches this attempt. Never rotate providers
         // after a 2FA challenge, even when its final request fails transiently.
-        if challengeSeen || ![Failure.providerUnavailable, .transientNetwork, .timedOut].contains(reason) {
+        if challengeSeen || ![Failure.providerUnavailable, .providerRejectedInit, .transientNetwork, .timedOut].contains(reason) {
             state = .stopped(reason)
             attempt = nil
         } else {

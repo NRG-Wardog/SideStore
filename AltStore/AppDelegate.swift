@@ -11364,6 +11364,11 @@ func v3AccountOperationFailure(_ error: Error, step: CombinedFailure.SourceStep)
     if let remoteKind = V3AccountOperationError.remoteIdentityKind(domain: (error as NSError).domain, code: (error as NSError).code) { kind = remoteKind }
     else if error is LCAnisettePairError { kind = .anisetteIdentityStateInvalid }
     else if error is V3AccountDatabaseOutcomeUnknownError { kind = .persistenceOutcomeUnknown }
+    else if error is OwnedODAInitialProviderRejection {
+        kind = .sideSignServerReportedError
+        serverCode = OwnedODAInitialProviderRejection.serverCode
+        httpStatus = 200
+    }
     else if let server = error as? ServerError {
         switch server {
         case .underlyingError(let code, _): kind = .sideSignServerReportedError; serverCode = code
