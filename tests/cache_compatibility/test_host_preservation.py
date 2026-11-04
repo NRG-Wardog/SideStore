@@ -256,5 +256,55 @@ class HostPreservationTests(unittest.TestCase):
                     generator.verify_host_preservation(text)
 
 
+
+class RecoveryGetterBoundaryTests(unittest.TestCase):
+    def test_installed_source_recovers_exact_frozen_baseline(self):
+        source = (HERE.parents[1]/generator.PRODUCTION['installed']).read_text()
+        original = generator.verify_installed_recovery_selection(source)
+        self.assertEqual(generator.digest(original.encode()), generator.PINNED['installed'])
+        self.assertEqual(source, original.replace('let appsDirectoryURL = baseDirectory.appendingPathComponent("Apps")',
+            'let appsDirectoryURL = '+generator.RECOVERED_APPS_INSERTION+'baseDirectory.appendingPathComponent("Apps")', 1))
+        for changed in (original,
+                        source.replace('recoveredAppsDirectory ??', 'recoveredAppsDirectory!', 1),
+                        source.replace('?? baseDirectory.appendingPathComponent("Apps")', '?? baseDirectory', 1),
+                        source + generator.RECOVERED_APPS_INSERTION,
+                        source + '\n// unrelated source change\n'):
+            with self.assertRaises(AssertionError):
+                generator.verify_installed_recovery_selection(changed)
+
+    def test_exact_production_getter_is_retained_without_rewriting(self):
+        source = (HERE.parents[1]/generator.PRODUCTION['installed']).read_text()
+        getter = generator.verify_production_apps_getter(source)
+        self.assertIn('MaintenanceManager.shared.recoveredAppsDirectory ?? baseDirectory.appendingPathComponent("Apps")', getter)
+        self.assertIn('FileManager.default.createDirectory(at: appsDirectoryURL', getter)
+        for changed in (source.replace('MaintenanceManager.shared.recoveredAppsDirectory ?? ', '', 1),
+                        source.replace('withIntermediateDirectories: true, attributes: nil', 'withIntermediateDirectories: false, attributes: nil'),
+                        source + getter):
+            with self.assertRaises(AssertionError):
+                generator.verify_production_apps_getter(changed)
+
+    def test_boundary_only_supplies_optional_selection(self):
+        boundary = generator.RECOVERY_SELECTION_BOUNDARY
+        self.assertIn('var recoveredAppsDirectory: URL?', boundary)
+        self.assertIn('AliasFixtureBoundary.recoveredAppsDirectory', boundary)
+        for forbidden in ('func resolve', 'DatabaseRecovery', 'createDirectory', 'removeItem', 'FileManager', 'CoreData'):
+            self.assertNotIn(forbidden, boundary)
+        self.assertIn('production_root_getter = verify_production_apps_getter(source["installed"])', (HERE/'generate_fixture.py').read_text())
+
+    def test_existing_alias_case_exercises_nil_and_selected_roots(self):
+        import re
+        source = (HERE/'Cases.swift').read_text()
+        names = re.findall(r'^    \("([a-z0-9_]+)", \{', source, re.M)
+        self.assertEqual(len(names), 26)
+        self.assertEqual(len(set(names)), 26)
+        case = source.split('("trusted_root_alias_before_fails_after_passes", { root in', 1)[1]
+        self.assertIn('AliasFixtureBoundary.recoveredAppsDirectory = nil', case)
+        self.assertIn('AliasFixtureBoundary.recoveredAppsDirectory = selectedApps', case)
+        self.assertIn('InstalledApp.appsDirectoryURL == selectedApps', case)
+        self.assertIn('Recovered getter/cache wrote fallback Apps', case)
+        self.assertIn('try copied(source, recoveredCache.targetFileURL)', case)
+        self.assertIn('Recovered cache changed source', case)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

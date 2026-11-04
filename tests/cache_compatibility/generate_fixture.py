@@ -65,6 +65,34 @@ GUARD = '''        // Retain containment and no-overwrite copy boundaries while 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
+# Accept only this reviewed one-expression change to InstalledApp; retain the
+# historical whole-file pin as an exact inverse proof, not a generic repin.
+RECOVERED_INSTALLED_SHA256 = "5112612b8425399cb6930cf989d9247c4216477de28495655912b6260de2e94d"
+RECOVERED_APPS_INSERTION = "MaintenanceManager.shared.recoveredAppsDirectory ?? "
+
+def verify_installed_recovery_selection(text):
+    assert digest(text.encode()) == RECOVERED_INSTALLED_SHA256, "Unreviewed InstalledApp recovery source"
+    assert text.count(RECOVERED_APPS_INSERTION) == 1, "Missing or duplicate recovered Apps selection"
+    original = text.replace(RECOVERED_APPS_INSERTION, "", 1)
+    assert digest(original.encode()) == PINNED['installed'], "InstalledApp changed outside recovered Apps selection"
+    return original
+
+# Exact production getter, including recovery selection and retained mkdir/fallback.
+RECOVERED_APPS_GETTER_SHA256 = "c3cf73a0127f554461833defffa56dc1fa48774b56a773716efb60bcebf364cd"
+RECOVERY_SELECTION_BOUNDARY = """// Inert optional selection only. This does not implement or qualify recovery.
+enum MaintenanceManager {
+    struct SelectionBoundary {
+        var recoveredAppsDirectory: URL? { AliasFixtureBoundary.recoveredAppsDirectory }
+    }
+    static let shared = SelectionBoundary()
+}
+"""
+
+def verify_production_apps_getter(text):
+    getter = extract(text, "    class var appsDirectoryURL: URL")
+    assert digest(getter.encode()) == RECOVERED_APPS_GETTER_SHA256, "Production Apps recovery getter changed"
+    return getter
+
 def extract(text, marker):
     assert text.count(marker) == 1, marker
     start = text.index(marker)
@@ -276,8 +304,9 @@ def main():
     args = parser.parse_args()
     source = {key: (args.candidate_root / path).read_text() for key, path in PRODUCTION.items()}
     host_proof = verify_host_preservation(source['host'])
+    verify_installed_recovery_selection(source['installed'])
     for key, expected in PINNED.items():
-        if key == 'host':
+        if key in ('host', 'installed'):
             continue
         assert digest(source[key].encode()) == expected, "Changed retained input: " + key
     references = {name: (HERE / name).read_text() for name in ORIGINAL_PINS}
@@ -317,7 +346,7 @@ def main():
     copy_method = extract(source["copy"], "    func copyItem(at sourceURL: URL, to destinationURL: URL, shouldReplace: Bool) throws")
     payload_directory = extract(source["installed"], "    class func payloadDirectoryURL(forSignature signature: String) -> URL")
     payload_url = extract(source["installed"], "    class func payloadURL(forSignature signature: String) -> URL")
-    production_root_getter = extract(source["installed"], "    class var appsDirectoryURL: URL")
+    production_root_getter = verify_production_apps_getter(source["installed"])
     before_cache = extract(references["BeforeCanonicalAnchorCacheAppOperation.swift"], CACHE_START)
     boundary = '''import Foundation
 import CryptoKit
@@ -328,7 +357,9 @@ func debugLog(_ message: String) {}
 enum SideStore { static func debugLog(_ message: String) {} }
 enum AliasFixtureBoundary {
     static var baseDirectoryURL = URL(fileURLWithPath: "/unused-fixture-base")
+    static var recoveredAppsDirectory: URL? = nil
 }
+''' + RECOVERY_SELECTION_BOUNDARY + '''
 extension FileManager {
     var altstoreSharedDirectory: URL? { AliasFixtureBoundary.baseDirectoryURL }
     var applicationSupportDirectory: URL { AliasFixtureBoundary.baseDirectoryURL }

@@ -295,7 +295,12 @@ let cases: [(String, (URL) throws -> Void)] = [
         let sourceBefore = AppBundleFingerprint.compute(for: source)
         let signature = try legacy(source)
         let previousRoot = InstalledApp.fixtureRootOverride
-        defer { InstalledApp.fixtureRootOverride = previousRoot }
+        let previousRecovered = AliasFixtureBoundary.recoveredAppsDirectory
+        defer {
+            InstalledApp.fixtureRootOverride = previousRoot
+            AliasFixtureBoundary.recoveredAppsDirectory = previousRecovered
+        }
+        AliasFixtureBoundary.recoveredAppsDirectory = nil
         for implementation in ["original", "before", "after"] {
             let realBase = root.appendingPathComponent(implementation + "-real")
             let aliasBase = root.appendingPathComponent(implementation + "-alias")
@@ -345,6 +350,23 @@ let cases: [(String, (URL) throws -> Void)] = [
             try require(sourceBefore != nil && AppBundleFingerprint.compute(for: source) == sourceBefore, "Alias operation changed source")
             aliasRegressionEvidence.append(evidence)
         }
+        // Execute the same extracted production getter with a selected recovered
+        // Apps root. The boundary supplies a URL only, never recovery behavior.
+        let unusedFallback = root.appendingPathComponent("unused-fallback")
+        let selectedApps = root.appendingPathComponent("recovered-generation/Apps")
+        AliasFixtureBoundary.baseDirectoryURL = unusedFallback
+        AliasFixtureBoundary.recoveredAppsDirectory = selectedApps
+        InstalledApp.fixtureRootOverride = nil
+        try require(!fm.fileExists(atPath: unusedFallback.path), "Recovery fallback was already present")
+        try require(InstalledApp.appsDirectoryURL == selectedApps, "Production getter ignored recovered Apps root")
+        try require(fm.fileExists(atPath: selectedApps.path), "Production getter did not create selected Apps root")
+        try require(InstalledApp.payloadDirectoryURL(forSignature: signature) == selectedApps.appendingPathComponent("Payloads").appendingPathComponent(signature), "Payload directory ignored recovery selection")
+        let recoveredCache = try CacheAppOperation.cachePayload(for: source)
+        try require(recoveredCache.signature == signature, "Recovery cache key changed")
+        try require(filesystemPath(recoveredCache.targetFileURL).hasPrefix(filesystemPath(selectedApps) + "/"), "Recovery cache escaped selected Apps")
+        try copied(source, recoveredCache.targetFileURL)
+        try require(!fm.fileExists(atPath: unusedFallback.path), "Recovered getter/cache wrote fallback Apps")
+        try require(sourceBefore != nil && AppBundleFingerprint.compute(for: source) == sourceBefore, "Recovered cache changed source")
     }),
 ]
 
