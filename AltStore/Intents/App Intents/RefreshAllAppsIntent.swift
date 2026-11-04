@@ -91,6 +91,8 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
     
     func perform() async throws -> some IntentResult & ProvidesDialog
     {
+        let trace = V3RefreshIntentBoundaryTrace()
+        trace.record(.started)
         do
         {
             // Request foreground execution at ~27 seconds to gracefully handle timeout.
@@ -98,11 +100,19 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
             
             try await withThrowingTaskGroup(of: Void.self) { taskGroup in
                 taskGroup.addTask {
-                    try await self.refreshAllApps()
+                    trace.record(.pipelineStarted)
+                    do {
+                        try await self.refreshAllApps()
+                        trace.record(.pipelineCompleted)
+                    } catch {
+                        trace.record(.pipelineThrew)
+                        throw error
+                    }
                 }
                 
                 taskGroup.addTask {
                     try await Task.sleep(until: deadline)
+                    trace.record(.deadlineElapsed)
                     throw OperationError.timedOut
                 }
                 
@@ -122,14 +132,23 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
                     let operation = await self.operationActor.operation
                     operation?.presentsFinishedNotification = true
                     
-                    try await self.requestToContinueInForeground()
+                    trace.record(.foregroundRequested)
+                    do {
+                        try await self.requestToContinueInForeground()
+                        trace.record(.foregroundReturned)
+                    } catch {
+                        trace.record(.foregroundThrew)
+                        throw error
+                    }
                 }
             }
             
+            trace.record(.wrapperCompleted)
             return .result(dialog: "All apps have been refreshed.")
         }
         catch
         {
+            trace.record(.wrapperThrew)
             let intentError = IntentError(V3HeadlessPairingFailure.tagIfInvalidPairing(error))
             throw intentError
         }
@@ -139,16 +158,38 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
 @available(iOS 17.0, tvOS 17.0, *)
 private extension RefreshAllAppsIntent
 {
-    func refreshAllApps() async throws
-    {
+    func refreshAllApps() async throws {
+        let ticket = try await V3SideStoreService.shared.beginExternalRefreshExecution()
+        do {
+            try await V3RefreshIntentBackend.run(presentsNotifications: self.presentsNotifications,
+                progress: self.progress, ticket: ticket) { operation in
+                    await self.operationActor.set(operation)
+                }
+            await V3SideStoreService.shared.endRefreshExecution(ticket)
+        } catch {
+            await V3SideStoreService.shared.endRefreshExecution(ticket)
+            throw error
+        }
+    }
+}
+
+@available(iOS 17.0, tvOS 17.0, *)
+enum V3RefreshIntentBackend {
+    static func run(presentsNotifications: Bool, progress: Progress,
+                    ticket: V3RefreshExecutionTicket,
+                    onStarted: @escaping @Sendable (BackgroundRefreshAppsOperation) async -> Void = { _ in }) async throws {
+        try await V3SideStoreService.shared.validateRefreshExecution(ticket)
+
         try await DatabaseManager.shared.start()
         
         let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         let installedApps = await context.perform { InstalledApp.fetchAppsForRefreshingAll(in: context) }
         
+        try await V3SideStoreService.shared.validateRefreshExecution(ticket)
+        try Task.checkCancellation()
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let operation = V3RefreshIntentStartPolicy.create({
-                try AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: self.presentsNotifications) { (result) in
+                try AppManager.shared.backgroundRefresh(installedApps, presentsNotifications: presentsNotifications) { (result) in
                 do
                 {
                     let results = try result.get()
@@ -176,11 +217,31 @@ private extension RefreshAllAppsIntent
             
             operation.ignoresServerNotFoundError = false
             
-            self.progress.addChild(operation.progress, withPendingUnitCount: 1)
+            progress.addChild(operation.progress, withPendingUnitCount: 1)
             
             Task {
-                await self.operationActor.set(operation)
+                await onStarted(operation)
             }
         }
+    }
+}
+
+
+// V3_REFRESH_INTENT_BOUNDARY_TRACE_V1: fixed local phases only. Never record
+// native error text, domains, userInfo, credentials, account or device IDs.
+private struct V3RefreshIntentBoundaryTrace: Sendable {
+    enum Phase: String {
+        case started, pipelineStarted, pipelineCompleted, pipelineThrew
+        case deadlineElapsed, foregroundRequested, foregroundReturned, foregroundThrew
+        case wrapperCompleted, wrapperThrew
+    }
+    // This random local trace tag is not an account/device/session identifier.
+    private let tag = String(UUID().uuidString.prefix(8))
+    private let started = DispatchTime.now().uptimeNanoseconds
+
+    func record(_ phase: Phase) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let elapsed = now >= started ? min((now - started) / 1_000_000, 86_400_000) : 0
+        print("[V3_REFRESH_INTENT] trace=\(tag) phase=\(phase.rawValue) elapsed_ms=\(elapsed)")
     }
 }
