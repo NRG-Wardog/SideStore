@@ -355,13 +355,16 @@ class SwiftSourceContractTests(unittest.TestCase):
         self.assertIn("excludedLegacyPasses = [1, 2, 3, 6]", self.source)
         self.assertIn("legacyCounterUnchanged = true", self.source)
 
-    def test_database_selection_never_copies_or_moves_database(self):
+    def test_database_selection_delegates_to_preserving_recovery(self):
         body = self.source.split("public func preparePersistentStoreURLs", 1)[1].split("public func performMaintenanceIfNeeded", 1)[0]
         for prohibited in ("copyItem(", "moveItem(", "removeItem(", "destroyPersistentStore", "replacePersistentStore"):
             self.assertNotIn(prohibited, body)
         self.assertIn("NSPersistentContainer.defaultDirectoryURL()", body)
-        self.assertIn('bool(forKey: "requiresAppGroupMigration")', body)
-        self.assertIn("description.url = selected", body)
+        self.assertIn("DatabaseRecovery().resolve", body)
+        self.assertIn("container.validateRecoveryStore", body)
+        self.assertIn("recoveredSelection = selection", body)
+        self.assertIn("description.url = selection.database", body)
+        self.assertNotIn('set(false, forKey: "requiresAppGroupMigration")', body)
 
     def test_cleanup_only_owned_staging_copy(self):
         lines = [line.strip() for line in self.source.splitlines() if "removeItem(" in line]

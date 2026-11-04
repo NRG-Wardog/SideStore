@@ -152,6 +152,53 @@ open class PersistentContainer: NSPersistentContainer, @unchecked Sendable {
         }
     }
 
+    // Recovery calls this before publishing a new generation. The retained original
+    // is never attached to Core Data, migrated, replaced, or reset here.
+    func validateRecoveryStore(at url: URL, migrateStagedCopy: Bool) throws -> String {
+        var metadata = try NSPersistentStoreCoordinator.metadataForPersistentStore(
+            ofType: NSSQLiteStoreType, at: url, options: [NSReadOnlyPersistentStoreOption: true])
+        if migrateStagedCopy {
+            guard let source = sourceModel(forStoreMetadata: metadata),
+                  !source.entities.flatMap({ $0.attributesByName.values }).contains(where: { $0.allowsExternalBinaryDataStorage }) else {
+                throw V3DatabaseStartupGuardFailure(cause: .databaseModelUnrecognized,
+                    underlying: DatabaseError.migrationFailed(reason: "The previous database model or its external data cannot be safely recovered. The original remains intact."))
+            }
+            guard let description = persistentStoreDescriptions.first else { throw DatabaseRecovery.Failure.unsafeLayout }
+            let originalURL = description.url
+            defer { description.url = originalURL }
+            description.url = url
+            if !managedObjectModel.isConfiguration(withName: description.configuration, compatibleWithStoreMetadata: metadata) {
+                try validateMigrationCompatibility(metadata: metadata, configuration: description.configuration)
+                try _progressivelyMigratePersistentStore(to: managedObjectModel, configuration: description.configuration)
+            }
+            metadata = try NSPersistentStoreCoordinator.metadataForPersistentStore(
+                ofType: NSSQLiteStoreType, at: url, options: [NSReadOnlyPersistentStoreOption: true])
+            guard managedObjectModel.isConfiguration(withName: description.configuration, compatibleWithStoreMetadata: metadata) else {
+                throw DatabaseRecovery.Failure.sqlite
+            }
+            let verifier = NSPersistentStoreCoordinator(managedObjectModel: managedObjectModel)
+            let store = try verifier.addPersistentStore(ofType: NSSQLiteStoreType, configurationName: description.configuration,
+                at: url, options: [NSReadOnlyPersistentStoreOption: true,
+                                  NSMigratePersistentStoresAutomaticallyOption: false,
+                                  NSInferMappingModelAutomaticallyOption: false])
+            defer { try? verifier.remove(store) }
+            let context = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+            context.persistentStoreCoordinator = verifier
+            try context.performAndWait {
+                // Force every entity to be readable before publishing the recovery copy.
+                for entity in managedObjectModel.entities where !entity.isAbstract {
+                    guard let name = entity.name else { throw DatabaseRecovery.Failure.sqlite }
+                    let request = NSFetchRequest<NSManagedObject>(entityName: name)
+                    request.includesSubentities = false
+                    request.returnsObjectsAsFaults = false
+                    _ = try context.fetch(request)
+                }
+            }
+        }
+        guard let identity = metadata[NSStoreUUIDKey] as? String, !identity.isEmpty else { throw DatabaseRecovery.Failure.sqlite }
+        return identity
+    }
+
     private func validateMigrationCompatibility(metadata: [String: Any], configuration: String?) throws {
         guard let sourceModel = self.sourceModel(forStoreMetadata: metadata) else {
             throw V3DatabaseStartupGuardFailure(cause: .databaseModelUnrecognized,

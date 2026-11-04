@@ -1,0 +1,48 @@
+name: Native database recovery qualification
+on:
+  push:
+    branches: [validation/issue56-preserving-recovery]
+    paths:
+      - SideStore/DatabaseRecovery.swift
+      - SideStore/DatabaseRecoverySQLite.c
+      - tests/database_recovery/**
+      - tests/database_recovery_coredata/**
+      - AltStore/Core/Model/DatabaseManager/**
+      - AltStore/Core/Model/AltStore.xcdatamodeld/**
+      - SideStore/MaintenanceManager.swift
+      - AltStore/Core/Model/InstalledApp.swift
+      - .github/workflows/database-recovery.yml
+permissions:
+  contents: read
+jobs:
+  native-recovery:
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Check runner contract
+        run: |
+          python3 -m unittest discover -s tests/database_recovery -p test_runner.py -v
+          python3 -m unittest discover -s tests/database_recovery_coredata -p test_contract.py -v
+          python3 -m unittest discover -s tests/upstream_sync -p test_maintenance_preservation.py -v
+      - name: Run exact production engine against native SQLite fixtures
+        run: python3 tests/database_recovery/run.py --output "$RUNNER_TEMP/database-recovery-report"
+      - name: Run exact PersistentContainer with real Core Data models
+        if: ${{ !cancelled() }}
+        run: python3 tests/database_recovery_coredata/run.py --output "$RUNNER_TEMP/database-recovery-coredata"
+      - name: Retain qualification report and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: database-recovery-qualification-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/database-recovery-report
+            ${{ runner.temp }}/database-recovery-coredata/*.log
+            ${{ runner.temp }}/database-recovery-coredata/receipt.json
+          if-no-files-found: error
+          retention-days: 14

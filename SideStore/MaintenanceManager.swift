@@ -20,13 +20,39 @@ public final class MaintenanceManager: @unchecked Sendable {
     public static let maintenanceCounterFileName = ".maintenance_counter"
     private static let preservationLedgerFileName = ".maintenance_preservation_v1.json"
     private let lock = NSLock()
+    private let databaseOwnershipLock = NSRecursiveLock()
     private var maintenanceTask: Task<Void, Never>?
+    private var recoveredSelection: DatabaseRecovery.Selection?
+    private var recoveryInProgress = false
+    var recoveredAppsDirectory: URL? { lock.withLock { recoveredSelection?.apps } }
+    var hasRecoveredDatabase: Bool {
+        if lock.withLock({ recoveryInProgress || recoveredSelection?.identity != nil }) { return true }
+        return DatabaseRecovery.hasPublishedGeneration(in: PersistentContainer.defaultDirectoryURL())
+    }
 
     private init() {}
 
+    // Reset and store selection share the same process-local gate. A check of a
+    // recovery flag by itself would race a concurrently starting recovery.
+    func performDatabaseResetIfSafe(_ operation: () -> Bool) -> Bool {
+        databaseOwnershipLock.lock()
+        defer { databaseOwnershipLock.unlock() }
+        return DatabaseRecovery.withResetLock(in: PersistentContainer.defaultDirectoryURL()) {
+            // The same App Group lock excludes another process's publication.
+            guard !hasRecoveredDatabase else {
+                debugLog("[Database] Reset refused for a recovered installation; all data remains intact.")
+                return false
+            }
+            return operation()
+        }
+    }
+
     /// Called by DatabaseManager.performStart(), before any store inspection/load.
-    /// Keeping the existing SQLite URL avoids copying a live database/WAL pair.
+    /// Existing shared stores stay in place; legacy recovery uses SQLite snapshots,
+    /// retained source write reservations and an atomic, verified generation.
     public func preparePersistentStoreURLs(in container: PersistentContainer) throws {
+        databaseOwnershipLock.lock()
+        defer { databaseOwnershipLock.unlock() }
         #if !os(tvOS)
         guard FileManager.default.altstoreSharedDirectory != nil else {
             throw V3DatabaseStartupGuardFailure(cause: .databaseAppGroupUnavailable, underlying: DatabaseError.missingAppGroup(reason: "The shared container is unavailable. Existing data has not been moved or reset."))
@@ -40,46 +66,56 @@ public final class MaintenanceManager: @unchecked Sendable {
         }
         let directory = PersistentContainer.defaultDirectoryURL()
         let fm = FileManager.default
-        // Upstream removed the old private-container relocation. Never silently
-        // create a shared store while that earlier database/cache is still pending.
-        let privateDirectory = NSPersistentContainer.defaultDirectoryURL()
-        if privateDirectory.resolvingSymlinksInPath().standardizedFileURL != directory.resolvingSymlinksInPath().standardizedFileURL {
-            for name in [AppConstants.Database.legacyFileName, AppConstants.Database.fileName] {
-                for suffix in ["", "-wal", "-shm"] {
-                    if fm.fileExists(atPath: privateDirectory.appendingPathComponent(name + suffix).path) {
-                        throw V3DatabaseStartupGuardFailure(cause: .databaseLayoutBlocked, underlying: DatabaseError.migrationFailed(reason: "A database remains in the previous private container. This validation build will not relocate or overwrite it. Keep the existing data and resolve the App Group migration before continuing."))
-                    }
+        lock.withLock { recoveryInProgress = true }
+        defer { lock.withLock { recoveryInProgress = false } }
+        do {
+            if let retained = lock.withLock({ recoveredSelection }), let identity = retained.identity {
+                // An explicit retry in this process must reuse its own live source
+                // reservations, not deadlock trying to acquire them a second time.
+                guard try container.validateRecoveryStore(at: retained.database, migrateStagedCopy: false) == identity else {
+                    throw DatabaseRecovery.Failure.invalidReceipt
                 }
+                description.url = retained.database
+                return
             }
-        }
-        let oldApps = fm.applicationSupportDirectory.appendingPathComponent("Apps")
-        let sharedApps = directory.deletingLastPathComponent().appendingPathComponent("Apps")
-        if UserDefaults.standard.bool(forKey: "requiresAppGroupMigration"),
-           oldApps.resolvingSymlinksInPath().standardizedFileURL != sharedApps.resolvingSymlinksInPath().standardizedFileURL,
-           fm.fileExists(atPath: oldApps.path) {
-            guard try fm.contentsOfDirectory(at: oldApps, includingPropertiesForKeys: nil).isEmpty else {
-                throw V3DatabaseStartupGuardFailure(cause: .databaseLayoutBlocked, underlying: DatabaseError.migrationFailed(reason: "App data remains in the previous private container and migration is pending. Startup stopped without moving or replacing it. Keep the existing data and resolve the App Group migration before continuing."))
+            let selection = try DatabaseRecovery().resolve(.init(
+                sharedDatabase: directory,
+                privateDatabase: NSPersistentContainer.defaultDirectoryURL(),
+                sharedApps: directory.deletingLastPathComponent().appendingPathComponent("Apps"),
+                privateApps: fm.applicationSupportDirectory.appendingPathComponent("Apps"))) { url, migrate in
+                    try container.validateRecoveryStore(at: url, migrateStagedCopy: migrate)
+                }
+            // Retaining the selection retains SQLite reservations on all originals.
+            // Do not clear requiresAppGroupMigration or change the legacy counter:
+            // the committed recovery receipt, not a preference, owns this cutover.
+            lock.withLock { recoveredSelection = selection }
+            description.url = selection.database
+        } catch let error as DatabaseRecovery.Failure {
+            let cause: V3DatabaseStartupFailure
+            let reason: String
+            switch error {
+            case .sourceBusy:
+                cause = .databaseLayoutBlocked
+                reason = "The previous database is still in use. Close other SideStore processes and retry. All original data remains intact."
+            case .conflict:
+                cause = .databaseLayoutConflict
+                reason = "Different databases or app files were found. All copies have been preserved. Startup cannot safely choose between them; do not delete or reset either installation."
+            case .sourceChanged:
+                cause = .databaseLayoutConflict
+                reason = "The previous installation changed after recovery. Both the recovered and original data are preserved. Stop using the previous version before resolving this conflict."
+            case .invalidReceipt, .unsafeLayout:
+                cause = .databaseLayoutConflict
+                reason = "The existing database recovery layout could not be verified. Startup stopped without replacing or deleting it. Keep the installation and its data."
+            case .storage, .sqlite:
+                cause = .databaseLayoutBlocked
+                reason = "The database could not be safely copied or verified. Check available storage and unlock the device, then retry. Original databases and app files have been retained."
             }
+            throw V3DatabaseStartupGuardFailure(cause: cause, underlying: DatabaseError.migrationFailed(reason: reason))
+        } catch {
+            if error is V3DatabaseStartupGuardFailure || error is V3DatabaseStartupObservedFailure { throw error }
+            throw V3DatabaseStartupGuardFailure(cause: .databaseLayoutBlocked,
+                underlying: DatabaseError.migrationFailed(reason: "Recovery could not safely read or write the app-owned storage. Unlock the device and check available space, then retry. Original data has been retained."))
         }
-        let legacy = directory.appendingPathComponent(AppConstants.Database.legacyFileName)
-        let current = directory.appendingPathComponent(AppConstants.Database.fileName)
-        let legacyExists = fm.fileExists(atPath: legacy.path)
-        let currentExists = fm.fileExists(atPath: current.path)
-        let legacySidecars = ["-wal", "-shm"].contains { fm.fileExists(atPath: legacy.path + $0) }
-        let currentSidecars = ["-wal", "-shm"].contains { fm.fileExists(atPath: current.path + $0) }
-        guard !(legacyExists && currentExists),
-              !(!legacyExists && legacySidecars),
-              !(!currentExists && currentSidecars) else {
-            throw V3DatabaseStartupGuardFailure(cause: .databaseLayoutConflict, underlying: DatabaseError.migrationFailed(reason: "Multiple database layouts or orphaned SQLite sidecars were found. Startup stopped without changing them. Keep both layouts and contact support; do not reset the database."))
-        }
-        let selected = legacyExists ? legacy : current
-        if legacyExists || currentExists {
-            let values = try selected.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            guard values.isRegularFile == true, values.isSymbolicLink != true else {
-                throw V3DatabaseStartupGuardFailure(cause: .databaseLayoutConflict, underlying: DatabaseError.migrationFailed(reason: "The existing database is not a regular store file. Startup stopped without changing it."))
-            }
-        }
-        description.url = selected
     }
 
     public func performMaintenanceIfNeeded() async {

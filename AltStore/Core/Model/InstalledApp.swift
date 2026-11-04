@@ -491,7 +491,7 @@ public extension InstalledApp
 {
     class var appsDirectoryURL: URL {
         let baseDirectory = FileManager.default.altstoreSharedDirectory ?? FileManager.default.applicationSupportDirectory
-        let appsDirectoryURL = baseDirectory.appendingPathComponent("Apps")
+        let appsDirectoryURL = MaintenanceManager.shared.recoveredAppsDirectory ?? baseDirectory.appendingPathComponent("Apps")
         
         do { try FileManager.default.createDirectory(at: appsDirectoryURL, withIntermediateDirectories: true, attributes: nil) }
         catch { debugLog("Creating App Directory Error: \(error)") }

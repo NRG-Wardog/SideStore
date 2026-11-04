@@ -113,44 +113,43 @@ public class DatabaseManager: @unchecked Sendable
     
     public class func deleteDatabase() -> Bool
     {
-        // delete existing database and start fresh if required
-        do {
-            let container = Self.shared.persistentContainer
+        return MaintenanceManager.shared.performDatabaseResetIfSafe {
+            // delete existing database and start fresh if required
+            do {
+                let container = Self.shared.persistentContainer
             
-            var databaseStore = container.persistentStoreCoordinator.persistentStores.first
-            let databaseStoreURL = databaseStore?.url ?? PersistentContainer.defaultDirectoryURL().appendingPathComponent(AppConstants.Database.fileName)
+                var databaseStore = container.persistentStoreCoordinator.persistentStores.first
+                let databaseStoreURL = databaseStore?.url ?? container.persistentStoreDescriptions.first?.url ?? PersistentContainer.defaultDirectoryURL().appendingPathComponent(AppConstants.Database.fileName)
             
-            // Reset the managed object context
-            Self.shared.persistentContainer.viewContext.reset()
+                // Reset the managed object context
+                Self.shared.persistentContainer.viewContext.reset()
 
-            // Remove all existing persistent stores
-            for store in Self.shared.persistentContainer.persistentStoreCoordinator.persistentStores {
-                try? Self.shared.persistentContainer.persistentStoreCoordinator.remove(store)
-            }
+                // Remove all existing persistent stores
+                for store in Self.shared.persistentContainer.persistentStoreCoordinator.persistentStores {
+                    try? Self.shared.persistentContainer.persistentStoreCoordinator.remove(store)
+                }
 
-            // Now destroy the persistent store
-            if FileManager.default.fileExists(atPath: databaseStoreURL.path) {
-                try Self.shared.persistentContainer.persistentStoreCoordinator.destroyPersistentStore(
-                    at: databaseStoreURL,
-                    ofType: NSSQLiteStoreType,
-                    options: nil
-                )
-                try? FileManager.default.removeItem(at: databaseStoreURL)
-            }
+                // Now destroy the persistent store
+                if FileManager.default.fileExists(atPath: databaseStoreURL.path) {
+                    try Self.shared.persistentContainer.persistentStoreCoordinator.destroyPersistentStore(
+                        at: databaseStoreURL,
+                        ofType: NSSQLiteStoreType,
+                        options: nil
+                    )
+                    try? FileManager.default.removeItem(at: databaseStoreURL)
+                }
                 
-            debugLog("\nDatabase Delete: SUCCEEDED\n")
-            return true
-        } catch {
-            debugLog("\nDatabase Delete request FAILED: \(error)\n")
-            return false
+                debugLog("\nDatabase Delete: SUCCEEDED\n")
+                return true
+            } catch {
+                debugLog("\nDatabase Delete request FAILED: \(error)\n")
+                return false
+            }
         }
     }
     
     public class func recreateDatabase() {
-        // Try to perform delete if one exists
-        _ = Self.deleteDatabase()
-        
-        // create new instance and load persistence store
+        guard Self.deleteDatabase() else { return }
         Self.shared = DatabaseManager()
     }
 
