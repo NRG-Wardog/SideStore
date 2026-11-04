@@ -220,13 +220,48 @@ final class DatabaseRecovery {
         return lstat(url.path, &info) == 0 || errno != ENOENT
     }
     private func directory(_ url: URL, create: Bool) throws -> URL {
-        if !exists(url) {
-            if create { try fm.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
-            else { return url.resolvingSymlinksInPath().standardizedFileURL }
+        guard url.isFileURL, !url.pathComponents.contains("."), !url.pathComponents.contains("..") else {
+            throw Failure.unsafeLayout
         }
-        let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-        guard values.isDirectory == true, values.isSymbolicLink != true else { throw Failure.unsafeLayout }
-        return url.resolvingSymlinksInPath().standardizedFileURL
+        var info = stat()
+        if lstat(url.path, &info) != 0 {
+            // Permission errors and non-directory ancestors are not absence.
+            guard errno == ENOENT else { throw Failure.storage }
+            if create {
+                try fm.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                return try directory(url, create: false)
+            }
+        } else {
+            // The supplied app-owned root itself must not be a symlink. Its
+            // ancestors may include approved OS aliases such as /var.
+            guard (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else { throw Failure.unsafeLayout }
+        }
+        return try canonicalApprovedRoot(url)
+    }
+    private func canonicalApprovedRoot(_ url: URL) throws -> URL {
+        var ancestor = url
+        var missing: [String] = []
+        var info = stat()
+        while lstat(ancestor.path, &info) != 0 {
+            guard errno == ENOENT else { throw Failure.storage }
+            let component = ancestor.lastPathComponent
+            let parent = ancestor.deletingLastPathComponent()
+            guard !component.isEmpty, component != ".", component != "..", parent.path != ancestor.path else {
+                throw Failure.unsafeLayout
+            }
+            missing.append(component)
+            ancestor = parent
+        }
+        guard let resolved = realpath(ancestor.path, nil) else { throw Failure.storage }
+        defer { free(resolved) }
+        guard lstat(resolved, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
+            throw Failure.unsafeLayout
+        }
+        // Foundation standardization can remove /private and reintroduce an OS
+        // symlink. Keep POSIX canonical spelling for SQLite's NOFOLLOW contract.
+        var result = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+        for component in missing.reversed() { result.appendPathComponent(component, isDirectory: true) }
+        return result
     }
     private func regularFile(_ url: URL) throws -> Bool {
         guard exists(url) else { return false }

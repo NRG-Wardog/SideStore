@@ -27,6 +27,9 @@ EXPECTED_CASES = {
     'apps-symlink', 'orphan-sidecar', 'real-rollback-journal',
     'validation-failure-before-promotion', 'racer-created-generation',
     'source-ancestor-symlink',
+    'approved-root-canonicalization', 'approved-root-leaf-symlink', 'missing-approved-roots',
+    'invalid-approved-ancestor', 'inaccessible-approved-ancestor',
+    'aliased-roots-share-selection', 'reset-lock-alias-contention',
     'process-exit-before-publication', 'process-exit-after-publication-and-divergence',
 }
 

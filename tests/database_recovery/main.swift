@@ -209,6 +209,83 @@ func main() throws {
         try typedRejection(.sourceChanged) { _ = try DatabaseRecovery().resolve(fixture.roots, validate: validate) }
         try require(try row(fixture.generation.appendingPathComponent("SideStore.sqlite")) == "destination-edit", "Divergence overwrote destination")
     }
+    try run("approved-root-canonicalization") { fixture in
+        try seed(fixture.source)
+        let alias = fixture.root.appendingPathComponent("approved-ancestor")
+        try fm.createSymbolicLink(at: alias, withDestinationURL: fixture.root)
+        let roots = DatabaseRecovery.Roots(sharedDatabase: alias.appendingPathComponent("shared/Database"),
+            privateDatabase: alias.appendingPathComponent("private/Database"),
+            sharedApps: alias.appendingPathComponent("shared/Apps"), privateApps: alias.appendingPathComponent("private/Apps"))
+        let selection = try DatabaseRecovery().resolve(roots, validate: validate)
+        try require(try row(selection.database) == "original", "Approved ancestor alias lost original data")
+        guard let resolved = realpath(selection.database.path, nil) else { throw TestFailure(description: "Selected path is absent") }
+        defer { free(resolved) }
+        try require(selection.database.path == String(cString: resolved), "Selected path reintroduced a symbolic ancestor")
+        try require(try row(fixture.source) == "original", "Approved alias changed original data")
+        withExtendedLifetime(selection) {}
+    }
+    try run("approved-root-leaf-symlink") { fixture in
+        try seed(fixture.source)
+        let alias = fixture.root.appendingPathComponent("private-root-alias")
+        try fm.createSymbolicLink(at: alias, withDestinationURL: fixture.roots.privateDatabase)
+        let roots = DatabaseRecovery.Roots(sharedDatabase: fixture.roots.sharedDatabase, privateDatabase: alias,
+            sharedApps: fixture.roots.sharedApps, privateApps: fixture.roots.privateApps)
+        try typedRejection(.unsafeLayout) { _ = try DatabaseRecovery().resolve(roots, validate: validate) }
+        try require(try row(fixture.source) == "original", "Root symlink rejection changed original")
+    }
+    try run("missing-approved-roots") { fixture in
+        let alias = fixture.root.appendingPathComponent("approved-ancestor")
+        try fm.createSymbolicLink(at: alias, withDestinationURL: fixture.root)
+        let missing = alias.appendingPathComponent("absent/deeper")
+        let roots = DatabaseRecovery.Roots(sharedDatabase: fixture.roots.sharedDatabase,
+            privateDatabase: missing.appendingPathComponent("Database"),
+            sharedApps: missing.appendingPathComponent("sharedApps"), privateApps: missing.appendingPathComponent("privateApps"))
+        let selection = try DatabaseRecovery().resolve(roots, validate: validate)
+        try require(!fm.fileExists(atPath: selection.database.path), "Fresh selection created an empty database")
+        try require(!fm.fileExists(atPath: fixture.root.appendingPathComponent("absent").path), "Optional absent roots were created")
+    }
+    try run("invalid-approved-ancestor") { fixture in
+        let file = fixture.root.appendingPathComponent("regular-parent")
+        try Data("original".utf8).write(to: file)
+        let roots = DatabaseRecovery.Roots(sharedDatabase: fixture.roots.sharedDatabase,
+            privateDatabase: file.appendingPathComponent("absent/Database"),
+            sharedApps: fixture.roots.sharedApps, privateApps: fixture.roots.privateApps)
+        try typedRejection(.storage) { _ = try DatabaseRecovery().resolve(roots, validate: validate) }
+        try require(try Data(contentsOf: file) == Data("original".utf8), "Invalid ancestor changed")
+    }
+    try run("inaccessible-approved-ancestor") { fixture in
+        try require(geteuid() != 0, "Permission negative must run as an unprivileged user")
+        let locked = fixture.root.appendingPathComponent("locked")
+        try fm.createDirectory(at: locked, withIntermediateDirectories: false)
+        try fm.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
+        defer { try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked.path) }
+        let roots = DatabaseRecovery.Roots(sharedDatabase: fixture.roots.sharedDatabase,
+            privateDatabase: locked.appendingPathComponent("absent/Database"),
+            sharedApps: fixture.roots.sharedApps, privateApps: fixture.roots.privateApps)
+        try typedRejection(.storage) { _ = try DatabaseRecovery().resolve(roots, validate: validate) }
+    }
+    try run("aliased-roots-share-selection") { fixture in
+        try seed(fixture.source)
+        let alias = fixture.root.appendingPathComponent("approved-ancestor")
+        try fm.createSymbolicLink(at: alias, withDestinationURL: fixture.root)
+        let roots = DatabaseRecovery.Roots(sharedDatabase: fixture.roots.privateDatabase,
+            privateDatabase: alias.appendingPathComponent("private/Database"),
+            sharedApps: fixture.roots.sharedApps, privateApps: fixture.roots.privateApps)
+        let selection = try DatabaseRecovery().resolve(roots, validate: validate)
+        try require(selection.identity == nil && selection.ownership.isEmpty, "Equivalent aliased roots reserved twice")
+        try require(try row(selection.database) == "original", "Equivalent root selection changed source")
+    }
+    try run("reset-lock-alias-contention") { fixture in
+        try seed(fixture.source)
+        let alias = fixture.root.appendingPathComponent("approved-ancestor")
+        try fm.createSymbolicLink(at: alias, withDestinationURL: fixture.root)
+        let selection = try DatabaseRecovery().resolve(fixture.roots) { database, migrate in
+            let admitted = DatabaseRecovery.withResetLock(in: alias.appendingPathComponent("shared/Database")) { true }
+            try require(!admitted, "Reset alias bypassed active recovery lock")
+            return try validate(database, migrate)
+        }
+        withExtendedLifetime(selection) {}
+    }
     try run("identical-databases") { fixture in
         try seed(fixture.source)
         try fm.copyItem(at: fixture.source, to: fixture.roots.sharedDatabase.appendingPathComponent("SideStore.sqlite"))

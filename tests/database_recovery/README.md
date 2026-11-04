@@ -55,3 +55,12 @@ Release configuration through `plutil`. They record the declared setting, compil
 argument and project hash. This avoids compiling the production container under
 an unrelated target's language mode. Reports bind all runner/helper/fixture inputs
 and require unchanged source bytes before writing PASS to a fresh output directory.
+
+Approved app-owned directory roots use POSIX `realpath` so Foundation cannot strip
+`/private` and reintroduce an OS symlink rejected by SQLite `NOFOLLOW`. Existing
+root leaves still cannot be symlinks. Missing optional paths are reconstructed
+from an existing canonical ancestor without creation; permissions and non-directory
+ancestors fail closed. Native negatives cover leaf aliases, inaccessible and invalid
+ancestors, while approved ancestor aliases, equivalent roots and reset-lock
+contention are tested. The finite Foundation/POSIX counterfactual remains in the
+WAL relocation case and emits no paths.

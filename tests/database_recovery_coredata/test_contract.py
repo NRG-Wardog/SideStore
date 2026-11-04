@@ -19,6 +19,16 @@ class RecoveryIntegration(unittest.TestCase):
         self.assertIn('description.url = retained.database', self.maintenance)
         self.assertIn('MaintenanceManager.shared.recoveredAppsDirectory', (ROOT/'AltStore/Core/Model/InstalledApp.swift').read_text())
 
+    def test_approved_root_canonicalization_keeps_posix_spelling_and_absence(self):
+        block = self.engine.split('private func directory(', 1)[1].split('private func regularFile(', 1)[0]
+        self.assertIn('guard errno == ENOENT else', block)
+        self.assertIn('mode_t(S_IFDIR)', block)
+        self.assertIn('realpath(ancestor.path, nil)', block)
+        self.assertIn('defer { free(resolved) }', block)
+        self.assertIn('for component in missing.reversed()', block)
+        self.assertNotIn('standardizedFileURL', block)
+        self.assertNotIn('resolvingSymlinksInPath', block)
+
     def test_no_raw_copy_or_hash_of_original_sqlite(self):
         self.assertIn('sqlite3_backup_init', self.engine)
         self.assertIn('"BEGIN IMMEDIATE"', self.engine)
