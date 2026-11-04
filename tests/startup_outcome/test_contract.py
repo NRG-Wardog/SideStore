@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Source-owned startup outcome checks. Native extracted-production tests require Swift."""
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -17,17 +19,72 @@ CAUSES = ('databaseLayoutBlocked', 'databaseLayoutConflict', 'databaseAppGroupUn
           'databaseHostBundleUnavailable', 'databaseHostProfileUnavailable', 'databaseModelUnrecognized',
           'databaseMigrationPathUnavailable', 'databaseMigrationFailed', 'databaseSaveFailed')
 
+def assert_maintenance_guard_contract(check, source):
+    anchor = '    public func preparePersistentStoreURLs(in container: PersistentContainer) throws {'
+    check.assertEqual(source.count(anchor), 1)
+    text = source.split(anchor, 1)[1].split('    public func performMaintenanceIfNeeded', 1)[0]
+    # These original admission guards retain their exact causes and underlying
+    # error kinds. Recovery now maps its finite failures at one shared throw.
+    app_group = text.split('guard FileManager.default.altstoreSharedDirectory != nil else {', 1)[1].split('#endif', 1)[0]
+    check.assertIn('cause: .databaseAppGroupUnavailable, underlying: DatabaseError.missingAppGroup', app_group)
+    unloaded = text.split('guard container.persistentStoreCoordinator.persistentStores.isEmpty,', 1)[1].split('let directory =', 1)[0]
+    check.assertIn('container.persistentStoreDescriptions.count == 1', unloaded)
+    check.assertIn('description.type == NSSQLiteStoreType else {', unloaded)
+    check.assertIn('cause: .databaseStartupFailed, underlying: DatabaseError.migrationFailed', unloaded)
+    check.assertEqual(text.count('throw V3DatabaseStartupGuardFailure('), 4)
+    check.assertEqual(text.count('underlying: DatabaseError.migrationFailed'), 3)
+    check.assertIn('if let failure = error as? DatabaseRecovery.Failure { recoveryFailure = failure }', text)
+    check.assertIn('else if error is DatabaseRecovery.SQLiteFailure { recoveryFailure = .sqlite }', text)
+    fallback = text.split('guard let failure = recoveryFailure else {', 1)[1].split('            let cause:', 1)[0]
+    check.assertIn('if error is V3DatabaseStartupGuardFailure || error is V3DatabaseStartupObservedFailure { throw error }', fallback)
+    check.assertIn('cause: .databaseLayoutBlocked,', fallback)
+    check.assertIn('underlying: DatabaseError.migrationFailed(', fallback)
+    switch = text.split('            switch failure {', 1)[1].split('            throw V3DatabaseStartupGuardFailure', 1)[0]
+    mappings = re.findall(r'case ([^:]+):\n\s+cause = \.([A-Za-z]+)\n\s+reason = "([^"\n]+)"', switch)
+    check.assertEqual([(names, cause) for names, cause, _ in mappings], [
+        ('.sourceBusy', 'databaseLayoutBlocked'), ('.conflict', 'databaseLayoutConflict'),
+        ('.sourceChanged', 'databaseLayoutConflict'), ('.invalidReceipt, .unsafeLayout', 'databaseLayoutConflict'),
+        ('.storage, .sqlite', 'databaseLayoutBlocked')])
+    check.assertEqual(switch.count('case '), len(mappings))
+    check.assertIn('throw V3DatabaseStartupGuardFailure(cause: cause, underlying: DatabaseError.migrationFailed(reason: reason))', text)
+    for forbidden in ['moveItem(', 'removeItem(', 'copyItem(', 'destroyPersistentStore', 'localizedDescription']:
+        check.assertNotIn(forbidden, text)
+
 class StartupContract(unittest.TestCase):
     def test_typed_guards_preserve_original_failures(self):
-        text = MAINTENANCE.read_text().split('public func performMaintenanceIfNeeded')[0]
-        self.assertEqual(text.count('throw V3DatabaseStartupGuardFailure('), 6)
-        for cause, count in [('databaseLayoutBlocked', 2), ('databaseLayoutConflict', 2),
-                             ('databaseAppGroupUnavailable', 1), ('databaseStartupFailed', 1)]:
-            self.assertEqual(text.count('cause: .' + cause + ','), count)
-        self.assertIn('underlying: DatabaseError.missingAppGroup', text)
-        self.assertEqual(text.count('underlying: DatabaseError.migrationFailed'), 5)
-        for forbidden in ['moveItem(', 'removeItem(', 'copyItem(', 'destroyPersistentStore']:
-            self.assertNotIn(forbidden, text)
+        assert_maintenance_guard_contract(self, MAINTENANCE.read_text())
+
+    def test_recovery_guard_contract_rejects_missing_or_wrong_mappings(self):
+        portable = source_only_suite()
+        portable_names = {case._testMethodName for case in portable}
+        self.assertEqual(portable.countTestCases(), 14)
+        native = {'test_native_production_outcome', 'test_native_actual_start_lifecycle'}
+        self.assertTrue(native.isdisjoint(portable_names))
+        self.assertTrue(native <= set(unittest.TestLoader().getTestCaseNames(StartupContract)))
+        rejected = subprocess.run([sys.executable, '-B', str(Path(__file__).resolve()), '--source-only'],
+            env={**os.environ, 'REQUIRE_SWIFT_STARTUP_TESTS': '1'}, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn('cannot replace required native', rejected.stderr)
+        self.assertNotIn('STARTUP_SOURCE_ONLY_PASS', rejected.stdout)
+        source = MAINTENANCE.read_text()
+        mutations = [
+            ('cause: .databaseAppGroupUnavailable, underlying:', 'cause: .databaseStartupFailed, underlying:'),
+            ('cause: .databaseStartupFailed, underlying:', 'cause: .databaseLayoutBlocked, underlying:'),
+            ('if let failure = error as? DatabaseRecovery.Failure { recoveryFailure = failure }', ''),
+            ('else if error is DatabaseRecovery.SQLiteFailure { recoveryFailure = .sqlite }', ''),
+            ('if error is V3DatabaseStartupGuardFailure || error is V3DatabaseStartupObservedFailure { throw error }', ''),
+            ('throw V3DatabaseStartupGuardFailure(cause: cause, underlying: DatabaseError.migrationFailed(reason: reason))', 'throw error'),
+        ]
+        for names, cause in [('.sourceBusy', 'databaseLayoutBlocked'), ('.conflict', 'databaseLayoutConflict'),
+                             ('.sourceChanged', 'databaseLayoutConflict'), ('.invalidReceipt, .unsafeLayout', 'databaseLayoutConflict'),
+                             ('.storage, .sqlite', 'databaseLayoutBlocked')]:
+            token = 'case '+names+':\n                cause = .'+cause
+            mutations.extend([(token, 'case '+names+':\n                cause = .databaseStartupFailed'),
+                              (token, '')])
+        for before, after in mutations:
+            self.assertEqual(source.count(before), 1)
+            with self.subTest(mapping=before), self.assertRaises(AssertionError):
+                assert_maintenance_guard_contract(self, source.replace(before, after, 1))
 
     def test_outcome_only_finite_data(self):
         text = DB.read_text().split('struct V3DatabaseStartupOutcome:')[1].split('// V3_DATABASE_STARTUP_OUTCOME_END')[0]
@@ -88,8 +145,8 @@ class StartupContract(unittest.TestCase):
         self.assertEqual(prepare.count('observing(.databaseSaveFailed)'), 1)
         self.assertIn('try context.save()', prepare)
         persistent = PERSISTENT.read_text()
-        self.assertEqual(persistent.count('cause: .databaseModelUnrecognized'), 2)
-        self.assertEqual(persistent.count('cause: .databaseMigrationPathUnavailable'), 2)
+        from test_model_resource_owner import assert_schema_guard_contract
+        assert_schema_guard_contract(self, persistent)
         observed = persistent.split('observing(.databaseMigrationFailed)')[1].split('\n        }')[0]
         self.assertIn('try migrationManager.migrateStore(', observed)
         self.assertIn('try self.persistentStoreCoordinator.replacePersistentStore(', observed)
@@ -271,4 +328,24 @@ def load_tests(loader, tests, pattern):
     return tests
 
 
-if __name__ == '__main__': unittest.main()
+def source_only_suite():
+    # Explicit portable preflight; this never substitutes for the native receipt.
+    from test_model_resource_owner import ModelResourceOwnerTests
+    native = {'test_native_production_outcome', 'test_native_actual_start_lifecycle'}
+    loader = unittest.TestLoader()
+    names = set(loader.getTestCaseNames(StartupContract))
+    if not native <= names:
+        raise AssertionError('Native startup test identities changed')
+    suite = unittest.TestSuite(StartupContract(name) for name in sorted(names - native))
+    suite.addTests(loader.loadTestsFromTestCase(ModelResourceOwnerTests))
+    return suite
+
+if __name__ == '__main__':
+    if sys.argv[1:] == ['--source-only']:
+        if os.environ.get('REQUIRE_SWIFT_STARTUP_TESTS') == '1':
+            raise SystemExit('Source-only preflight cannot replace required native startup tests.')
+        result = unittest.TextTestRunner(verbosity=2).run(source_only_suite())
+        if result.wasSuccessful():
+            print('STARTUP_SOURCE_ONLY_PASS_NATIVE_NOT_RUN')
+        raise SystemExit(not result.wasSuccessful())
+    unittest.main()
