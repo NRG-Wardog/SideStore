@@ -17614,8 +17614,9 @@ public enum V3AuthenticationDiagnostics {
     public static func boundingWire(_ supplied: [String: Any]) -> [String: Any] {
         guard let raw = supplied["signingContext"] as? [String: String], !observationKeys.isDisjoint(with: raw.keys) else { return supplied }
         var fields = sanitizingContext(raw)
-        if fields[stateKey] == nil { fields[stateKey] = "recorded" }
+        // Adding the observer state is bookkeeping, not loss of diagnostic evidence.
         var trimmed = fields != raw
+        if fields[stateKey] == nil { fields[stateKey] = "recorded" }
         for key in ancillary where fields.count > 20 { if removeAncillary(key, from: &fields) { trimmed = true } }
         var result = supplied; result["signingContext"] = fields
         let beforeTrace = fields[V3LoginDiagnosticSnapshot.contextKey]
