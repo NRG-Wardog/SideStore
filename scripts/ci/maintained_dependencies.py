@@ -47,6 +47,21 @@ def clone_exact(parent, name, repository, pin):
     return exact_checkout(root, pin)
 
 
+def acquire_gitlink(root, relative, pin):
+    require(git(root, 'rev-parse', 'HEAD:' + relative) == pin, 'Product gitlink differs: ' + relative)
+    target = root / relative
+    require(not target.is_symlink() and not target.parent.is_symlink(), 'Linked gitlink checkout path')
+    # Git checkout may create an empty gitlink directory. Remove only that
+    # empty placeholder; never remove an existing repository or user contents.
+    if target.exists() and not (target / '.git').exists():
+        require(target.is_dir() and not any(target.iterdir()), 'Nonempty uninitialized gitlink')
+        target.rmdir()
+    if not target.exists():
+        target.parent.mkdir(exist_ok=True)
+        clone_exact(target.parent, target.name, 'NRG-Wardog/' + target.name, pin)
+    exact_checkout(target, pin)
+
+
 def lock_identity(value):
     require(value.get('version') == 3 and isinstance(value.get('pins'), list), 'Unsupported package lock')
     # originHash is resolver metadata; all package identities, locations and
@@ -62,8 +77,7 @@ def acquire(root, output):
     require(not output.resolve().is_relative_to(root), 'Acquisition must be outside product checkout')
     output.mkdir(parents=True)
     for path, pin in GITLINKS.items():
-        require(git(root, 'rev-parse', 'HEAD:' + path) == pin, 'Product gitlink differs: ' + path)
-        exact_checkout(root / path, pin)
+        acquire_gitlink(root, path, pin)
     identities = {'tools': clone_exact(output, 'tools', *TOOLS)}
     for name, (repository, pin) in SOURCES.items():
         identities[name] = clone_exact(output, name, repository, pin)

@@ -40,7 +40,7 @@ jobs:
         with:
           persist-credentials: false
           set-safe-directory: false
-          submodules: recursive
+          submodules: false
           fetch-depth: 1    # shallow clone just for PR
 
       - name: Initialize isolated generated-input paths
