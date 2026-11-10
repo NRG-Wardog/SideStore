@@ -165,6 +165,8 @@ test:
 
 # Overrides (will inherit from env if set already)
 BUILD_CONFIG ?= Release
+# Optional CI package-lock/reuse flags; local build defaults remain unchanged.
+XCODE_PACKAGE_FLAGS ?=
 MARKETING_VERSION ?= 
 BUNDLE_ID_SUFFIX ?= 
 # Common build settings for xcodebuild
@@ -193,7 +195,7 @@ build:
 	@echo ">>>>>>>>> BUILD_CONFIG is set to '$(BUILD_CONFIG)', Building for $(BUILD_CONFIG) mode! <<<<<<<<<<"
 	@echo ""
 	@xcodebuild archive -archivePath ./SideStore \
-		$(COMMON_BUILD_SETTINGS)
+		$(COMMON_BUILD_SETTINGS) $(XCODE_PACKAGE_FLAGS)
 
 build-and-test:
 	@rm -rf build/tests/test-results.xcresult

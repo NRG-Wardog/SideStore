@@ -12,6 +12,9 @@ on:
       - '.gitmodules'
       - '.github/**'
 
+permissions:
+  contents: read
+
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -21,12 +24,30 @@ jobs:
     name: Build and upload SideStore
     if: ${{ github.event.pull_request.draft == false }}
     runs-on: macos-26
+    timeout-minutes: 100
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      GIT_TERMINAL_PROMPT: '0'
+      GIT_CONFIG_NOSYSTEM: '1'
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_ALLOW_PROTOCOL: https
+      GIT_NO_REPLACE_OBJECTS: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
 
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: false
+          submodules: false
           fetch-depth: 1    # shallow clone just for PR
+
+      - name: Initialize isolated generated-input paths
+        run: |
+          printf 'DEPENDENCY_INPUTS=%s\n' "$RUNNER_TEMP/sidestore-maintained-inputs" >> "$GITHUB_ENV"
+          printf 'XCODE_PACKAGE_FLAGS=-clonedSourcePackagesDirPath "%s" -onlyUsePackageVersionsFromResolvedFile -disableAutomaticPackageResolution\n' \
+            "$RUNNER_TEMP/sidestore-packages" >> "$GITHUB_ENV"
 
       - run: brew install ldid xcbeautify
 
@@ -42,26 +63,71 @@ jobs:
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1.6.0
         with:
-          xcode-version: "26.2"
+          xcode-version: "26.4.1"
 
-      - name: Restore Cache (exact)
-        id: xcode-cache-exact
-        uses: actions/cache/restore@v3
-        with:
-          path: |
-            ~/Library/Developer/Xcode/DerivedData
-            ~/Library/Caches/org.swift.swiftpm
-          key: xcode-build-cache-${{ github.ref_name }}-${{ github.sha }}
+      - name: Validate dependency preparation contracts
+        run: python3 -B -m unittest discover -s tests/ci_dependencies -v
 
-      - name: Restore Cache (last)
-        if: steps.xcode-cache-exact.outputs.cache-hit != 'true'
-        id: xcode-cache-fallback
-        uses: actions/cache/restore@v3
-        with:
-          path: |
-            ~/Library/Developer/Xcode/DerivedData
-            ~/Library/Caches/org.swift.swiftpm
-          key: xcode-build-cache-${{ github.ref_name }}-
+      - name: Acquire exact reviewed source and generation recipes
+        run: |
+          set -euo pipefail
+          python3 -B scripts/ci/maintained_dependencies.py acquire --root "$GITHUB_WORKSPACE" --output "$DEPENDENCY_INPUTS"
+
+      - name: Install exact native transport toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal
+          RUSTUP_DIST_SERVER=https://static.rust-lang.org rustup component add --toolchain 1.98.1 llvm-tools-preview
+          rustup target add --toolchain 1.98.1 aarch64-apple-ios
+          cargo +1.98.1 install --locked bindgen-cli --version 0.72.1 --root "$RUNNER_TEMP/native-tools"
+          echo "$RUNNER_TEMP/native-tools/bin" >> "$GITHUB_PATH"
+          test "$(rustc +1.98.1 --version)" = 'rustc 1.98.1 (48a229cea 2026-09-01)'
+          test "$(cargo +1.98.1 --version)" = 'cargo 1.98.1 (797e8a9bc 2026-08-05)'
+
+      - name: Build pinned iOS transport and verify archive and header identity
+        run: |
+          set -euo pipefail
+          cd "$DEPENDENCY_INPUTS/idevice"
+          BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path)" IPHONEOS_DEPLOYMENT_TARGET=15.0 \
+            cargo +1.98.1 build --locked --release --target aarch64-apple-ios --features obfuscate --manifest-path ffi/Cargo.toml \
+            2>&1 | tee "$DEPENDENCY_INPUTS/transport-build.log"
+          cp ffi/idevice.h swift/include/idevice.h
+          # Fresh exact checkout; only the declared generated framework output.
+          rm -rf swift/IDevice.xcframework
+          xcodebuild -create-xcframework -library target/aarch64-apple-ios/release/libidevice_ffi.a \
+            -headers swift/include -output swift/IDevice.xcframework
+          mux="$GITHUB_WORKSPACE/Dependencies/minimuxer/DeviceGateway/LocalBinary"
+          mkdir -p "$mux"
+          test ! -e "$mux/IDevice.xcframework"
+          cp -R swift/IDevice.xcframework "$mux/IDevice.xcframework"
+          python3 -B "$DEPENDENCY_INPUTS/tools/ci/issues-native/idevice-abi-gate/verify_native_abi.py" \
+            --source "$DEPENDENCY_INPUTS/idevice" --framework "$DEPENDENCY_INPUTS/idevice/swift/IDevice.xcframework" \
+            --staged-framework "$mux/IDevice.xcframework" --output "$DEPENDENCY_INPUTS/idevice-abi-inspection.json"
+
+      - name: Generate and seal pinned RemotePairingKit and OpenSSL inputs
+        timeout-minutes: 35
+        run: |
+          set -euo pipefail
+          mkdir -p "$DEPENDENCY_INPUTS/crypto-evidence"
+          python3 -B -m unittest discover -s "$DEPENDENCY_INPUTS/tools/ci/issue53-lts" -p 'test_*.py'
+          python3 -B "$DEPENDENCY_INPUTS/tools/ci/issue53-lts/build.py" --output "$DEPENDENCY_INPUTS/lts-host-build" --optimization Os
+          python3 -B "$DEPENDENCY_INPUTS/tools/ci/issue53-crypto/acquire.py" --output "$DEPENDENCY_INPUTS/openssl-qualification-inputs"
+          python3 -B "$DEPENDENCY_INPUTS/tools/ci/issue53-crypto/consumer.py" acquire --inputs "$DEPENDENCY_INPUTS/openssl-qualification-inputs"
+          python3 -B "$DEPENDENCY_INPUTS/tools/ci/issue53-lts/qualify.py" --built "$DEPENDENCY_INPUTS/lts-host-build" \
+            --inputs "$DEPENDENCY_INPUTS/openssl-qualification-inputs" --evidence "$DEPENDENCY_INPUTS/crypto-evidence"
+          python3 -B "$DEPENDENCY_INPUTS/tools/ci/issue53-lts/build_ios.py" --output "$DEPENDENCY_INPUTS/lts-ios-build" \
+            --archive "$DEPENDENCY_INPUTS/lts-host-build/openssl-3.5.9.tar.gz" --optimization Os
+          python3 -B "$DEPENDENCY_INPUTS/tools/ci/issue53-lts/embedded.py" \
+            --built "$DEPENDENCY_INPUTS/lts-ios-build" --upstream "$DEPENDENCY_INPUTS/RemotePairingKit" \
+            --minimuxer "$GITHUB_WORKSPACE/Dependencies/minimuxer"
+
+      - name: Resolve exact app dependencies without concealing diagnostics
+        run: |
+          set -euo pipefail
+          GIT_ALLOW_PROTOCOL=https:file xcodebuild -resolvePackageDependencies -disablePackageRepositoryCache \
+            -project AltStore.xcodeproj -scheme SideStore -clonedSourcePackagesDirPath "$RUNNER_TEMP/sidestore-packages" \
+            2>&1 | tee "$DEPENDENCY_INPUTS/package-resolution.log"
+          python3 -B scripts/ci/maintained_dependencies.py verify-locks --root "$GITHUB_WORKSPACE" --output "$DEPENDENCY_INPUTS"
 
       - name: Build
         env:
@@ -72,14 +138,8 @@ jobs:
           mv SideStore.ipa SideStore-${{ env.MARKETING_VERSION }}.ipa
           exit $STATUS
 
-      - name: Save Cache
-        if: ${{ steps.xcode-cache-fallback.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v3
-        with:
-          path: |
-            ~/Library/Developer/Xcode/DerivedData
-            ~/Library/Caches/org.swift.swiftpm
-          key: xcode-build-cache-${{ github.ref_name }}-${{ github.sha }}
+      - name: Reverify source-bound dependencies after archive
+        run: python3 -B scripts/ci/maintained_dependencies.py verify-locks --root "$GITHUB_WORKSPACE" --output "$DEPENDENCY_INPUTS"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -95,3 +155,23 @@ jobs:
         with:
           name: SideStore-${{ env.MARKETING_VERSION }}-dSYMs.zip
           path: SideStore.dSYMs.zip
+
+      - name: Retain non-secret dependency receipts and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maintained-dependency-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sidestore-maintained-inputs/source-receipt.json
+            ${{ runner.temp }}/sidestore-maintained-inputs/resolver-receipt.json
+            ${{ runner.temp }}/sidestore-maintained-inputs/idevice-abi-inspection.json
+            ${{ runner.temp }}/sidestore-maintained-inputs/*.log
+            ${{ runner.temp }}/sidestore-maintained-inputs/crypto-evidence/
+            ${{ runner.temp }}/sidestore-maintained-inputs/lts-host-build/build.log
+            ${{ runner.temp }}/sidestore-maintained-inputs/lts-host-build/build-receipt.json
+            ${{ runner.temp }}/sidestore-maintained-inputs/lts-ios-build/build-ios.log
+            ${{ runner.temp }}/sidestore-maintained-inputs/lts-ios-build/ios-build-receipt.json
+            Dependencies/minimuxer/GeneratedDependencies/RemotePairingKit/generated-provenance.json
+            build/logs/build.log
+          if-no-files-found: warn
+          retention-days: 14
