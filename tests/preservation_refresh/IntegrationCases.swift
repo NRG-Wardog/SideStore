@@ -230,6 +230,9 @@
    passed.append("preservation-actual-wrapper-"+mode+"-single-attempt")
   }
   passed += try await AuthenticatedAdapterCases.run(now:now,makeContext:{ setup() },execute:run)
+  // The authenticated adapter suite clears its synthetic CMS mappings on exit.
+  // Restore this suite's original evidence before exercising portal admission.
+  _ = profile(1,1000); _ = profile(2,2000)
   for (ids,detail) in [([],"emptyList"),(["other"],"noExactMatch"),(["app","app"],"ambiguousMatch"),(["APP"],"caseOnlyMatch")] {
    let c=setup();PortalProbe.shared.appIDs=ids.map { FixtureAppID(bundleIdentifier:$0) }
    do { try await run(c);fatalError("unmatched identity accepted") }
