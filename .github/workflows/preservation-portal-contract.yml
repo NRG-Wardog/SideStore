@@ -1,0 +1,29 @@
+name: Preservation portal identity contract
+
+on:
+  push:
+    branches: ['validation/preservation-portal-identity-nov11']
+  pull_request:
+    paths:
+      - 'SideStore/Core/Auth/DeveloperPortalProxy.swift'
+      - 'SideStore/Core/Operations/PipelineOperations/FetchProvisioningProfilesOperation.swift'
+      - 'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift'
+      - 'AltStore/AppDelegate.swift'
+      - 'tests/preservation_refresh/**'
+      - '.github/workflows/preservation-portal-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preservation:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Run actual preservation fetch and refresh fixtures
+        run: bash tests/preservation_refresh/run.sh

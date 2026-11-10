@@ -30,11 +30,13 @@ struct V3RefreshSelectionFailure: Error, Sendable {
     let preservationConflict: String?
     let cmsSignerDiagnostic: String?
     let appleProfileOrigin: String?
+    let portalIdentity: String?
     init(reason: Reason, scope: Scope, preservationConflict: String? = nil, cmsSignerDiagnostic: String? = nil,
-         appleProfileOrigin: String? = nil) {
+          appleProfileOrigin: String? = nil, portalIdentity: String? = nil) {
         self.reason = reason; self.scope = scope; self.preservationConflict = preservationConflict
         self.cmsSignerDiagnostic = cmsSignerDiagnostic
         self.appleProfileOrigin = appleProfileOrigin
+        self.portalIdentity = portalIdentity
     }
     // This producer is also extracted independently of the wire model. Validate
     // here AND at the receiving boundary; never forward arbitrary error text.
@@ -52,9 +54,16 @@ struct V3RefreshSelectionFailure: Error, Sendable {
     }
     static let appleProfileOriginKinds: Set<String> = ["requestUnavailable", "recordNotFound", "ambiguousRecord",
         "responseMismatch", "invalidResponse", "responseTooLarge", "operationCancelled", "operationExpired", "ownershipChanged"]
+    static let portalIdentityKinds: Set<String> = ["invalidHTTPResponse", "httpFailure", "missingStatus", "unsuccessfulStatus",
+        "missingList", "nullList", "malformedList", "malformedRecord", "conflictingRecord", "requestUnavailable",
+        "emptyList", "noExactMatch", "ambiguousMatch", "caseOnlyMatch"]
     var facts: [String: String] {
         var result = ["refresh_failure_kind": "invalidParameters", "local_precondition": reason.rawValue,
                       "refresh_target_scope": scope.rawValue]
+        if reason == .preservationPortalIdentityUnavailable, scope == .nonHost,
+           let detail = portalIdentity, detail.utf8.count <= 32, Self.portalIdentityKinds.contains(detail) {
+            result["preservation_portal_identity"] = detail
+        }
         if reason == .preservationEvidenceUnavailable, scope == .nonHost,
            let origin = appleProfileOrigin, origin.utf8.count <= 32, Self.appleProfileOriginKinds.contains(origin) {
             result["apple_profile_origin"] = origin

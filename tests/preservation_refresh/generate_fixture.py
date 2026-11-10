@@ -38,14 +38,18 @@ def generate(out):
     binding=extract(service.read_text(),'struct V3LegacyReplacementBinding:')
     contexts=ROOT/'SideStore/Core/Operations/OperationContexts.swift'
     registry=extract(contexts.read_text(),'enum V3ValidatedReuseMainRegistry {')
+    pipeline=ROOT/'SideStore/Core/Operations/PipelineExecutor.swift'
+    requestObserver=extract(pipeline.read_text(),'private final class LCSigningHTTPObservation:')
+    requestWrapper=extract(pipeline.read_text(),'func lcPortalSigningRequest<T>(')
     integration='\n'.join([decoder.read_text(),binding,registry,doubles.read_text(),operation,metadataHarness,(here/'BoundaryDoubles.swift').read_text(),singleAttempt,retryClassifier,
+      (here/'PortalRequestDoubles.swift').read_text(),requestObserver,requestWrapper,
       'final class FetchHarness: BasePipelineOperation<InstallAppOperationContext, [String: ALTProvisioningProfile]> {\n'+helper+'\nfunc run() async throws -> [String: ALTProvisioningProfile] { try await fetchPreservingInstalledAuthorization() }\n}',
       (here/'OriginAdapterCases.swift').read_text(),(here/'AuthenticatedAdapterCases.swift').read_text(),(here/'IntegrationCases.swift').read_text()])
     out.mkdir(parents=True,exist_ok=True)
     (out/'Policy.swift').write_text('import Foundation\nimport CoreFoundation\n'+policy+'\n')
     (out/'main.swift').write_text((here/'PolicyCases.swift').read_text())
     (out/'Integration.swift').write_text(integration)
-    inputs=[wrapper,refresh,fetch,metadataPath,service,contexts,doubles,decoder,here/'BoundaryDoubles.swift',here/'IntegrationCases.swift',here/'AuthenticatedAdapterCases.swift',here/'OriginAdapterCases.swift',here/'PolicyCases.swift',here/'run.sh',here/'test_contract.py',here/'expected-cases.json',here/'historical-case-reconciliation.json',Path(__file__)]
+    inputs=[wrapper,refresh,fetch,ROOT/'SideStore/Core/Auth/DeveloperPortalProxy.swift',pipeline,here/'PortalRequestDoubles.swift',metadataPath,service,contexts,doubles,decoder,here/'BoundaryDoubles.swift',here/'IntegrationCases.swift',here/'AuthenticatedAdapterCases.swift',here/'OriginAdapterCases.swift',here/'PolicyCases.swift',here/'run.sh',here/'test_contract.py',here/'expected-cases.json',here/'historical-case-reconciliation.json',Path(__file__)]
     report={'schema':'preservation-refresh-source-v1','inputs':{str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in inputs},'swift_executed':False,'device_executed':False,'portal_executed':False}
     (out/'sources.json').write_text(json.dumps(report,indent=2)+'\n'); print(json.dumps(report))
 if __name__=='__main__':

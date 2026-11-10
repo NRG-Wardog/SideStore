@@ -230,7 +230,69 @@
    passed.append("preservation-actual-wrapper-"+mode+"-single-attempt")
   }
   passed += try await AuthenticatedAdapterCases.run(now:now,makeContext:{ setup() },execute:run)
-  precondition(passed.count==80 && Set(passed).count==80)
+  for (ids,detail) in [([],"emptyList"),(["other"],"noExactMatch"),(["app","app"],"ambiguousMatch"),(["APP"],"caseOnlyMatch")] {
+   let c=setup();PortalProbe.shared.appIDs=ids.map { FixtureAppID(bundleIdentifier:$0) }
+   do { try await run(c);fatalError("unmatched identity accepted") }
+   catch let error as V3RefreshSelectionFailure {
+    precondition(error.reason == .preservationPortalIdentityUnavailable && error.scope == .nonHost)
+    precondition(error.facts["preservation_portal_identity"]==detail)
+   }
+   precondition(PortalProbe.shared.calls==["read","team","lookup-existing-id"])
+   precondition(Injection.shared.count==0 && c.refreshVerification==nil)
+   precondition(c.installedApp!.expirationDate==Date(timeIntervalSince1970:0))
+   passed.append("portal-identity-"+detail+"-no-mutation")
+  }
+  for failure in AppIDLookupError.allCases {
+   let c=setup();PortalProbe.shared.lookupFailure=failure
+   do { try await run(c);fatalError("invalid lookup response accepted") }
+   catch let error as V3RefreshSelectionFailure {
+    precondition(error.reason == .preservationPortalIdentityUnavailable)
+    precondition(error.facts["preservation_portal_identity"]==failure.rawValue)
+   }
+   precondition(PortalProbe.shared.calls==["read","team","lookup-existing-id"] && Injection.shared.count==0)
+   precondition(c.refreshVerification==nil && c.installedApp!.expirationDate==Date(timeIntervalSince1970:0))
+   passed.append("portal-lookup-"+failure.rawValue+"-no-mutation")
+  }
+  do {
+   let c=setup();PortalProbe.shared.appIDs=[FixtureAppID(bundleIdentifier:"other"),FixtureAppID(bundleIdentifier:"app")]
+   try await run(c);precondition(Injection.shared.count==1 && c.refreshVerification?.renewal == .extended)
+   passed.append("portal-exact-match-among-unrelated-ids-renews")
+  }
+  do {
+   let c=setup();var admitted=true
+   c.profileMutationAdmission={ if !admitted { throw CancellationError() } }
+   PortalProbe.shared.afterIDLookup={ admitted=false }
+   do { try await run(c);fatalError("revoked lookup admitted") } catch is CancellationError {}
+   precondition(PortalProbe.shared.calls==["read","team","lookup-existing-id"] && Injection.shared.count==0)
+   passed.append("portal-lookup-revoked-before-generation")
+  }
+  do {
+   let c=setup();PortalProbe.shared.lookupFailure=ProbeError.stopped
+   do { try await run(c);fatalError("unknown lookup failure accepted") }
+   catch is V3RefreshSelectionFailure { fatalError("unknown failure mislabeled as missing identity") }
+   catch {}
+   precondition(PortalProbe.shared.calls==["read","team","lookup-existing-id"] && Injection.shared.count==0)
+   passed.append("portal-unknown-error-retains-original-classification")
+  }
+  do {
+   for detail in V3RefreshSelectionFailure.portalIdentityKinds {
+    precondition(V3RefreshSelectionFailure(reason:.preservationPortalIdentityUnavailable,scope:.nonHost,portalIdentity:detail).facts["preservation_portal_identity"]==detail)
+    precondition(V3RefreshSelectionFailure(reason:.preservationPortalIdentityUnavailable,scope:.host,portalIdentity:detail).facts["preservation_portal_identity"]==nil)
+    precondition(V3RefreshSelectionFailure(reason:.preservationIdentityUnavailable,scope:.nonHost,portalIdentity:detail).facts["preservation_portal_identity"]==nil)
+   }
+   for invalid in ["", "private.account@example.test", String(repeating:"x",count:64)] {
+    precondition(V3RefreshSelectionFailure(reason:.preservationPortalIdentityUnavailable,scope:.nonHost,portalIdentity:invalid).facts["preservation_portal_identity"]==nil)
+   }
+   passed.append("portal-identity-detail-finite-scoped-no-identifiers")
+  }
+  for expected in AppIDLookupError.allCases {
+   do {
+    let _: Void = try await lcPortalSigningRequest(sourceStep:"appIDLookup", facts:[:]) { throw expected }
+    fatalError("typed lookup failure swallowed")
+   } catch let actual as AppIDLookupError { precondition(actual == expected) }
+  }
+  passed.append("portal-typed-errors-survive-request-observation")
+  precondition(passed.count==98 && Set(passed).count==98)
   print(String(data:try JSONSerialization.data(withJSONObject:["schema":"preservation-refresh-integration-v1","status":"PASS","cases":passed,"device_executed":false,"cms_verified":false,"platform_tls_executed":false,"portal_executed":false],options:[.sortedKeys]),encoding:.utf8)!)
  }
 }

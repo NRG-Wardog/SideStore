@@ -338,6 +338,19 @@ public class DeveloperPortalProxy {
         try await self.fetchAppIDs(team: team)
     }
 
+    // Preservation cannot interpret a malformed or unsuccessful response as a
+    // missing identity. Keep the typed, data-free error for the selection guard.
+    public func fetchAppIDsPreservingIdentity(for team: ALTTeam) async throws -> [ALTAppID] {
+        let context = try await self.getBoundSession()
+        let team = try await self.getBoundTeam(team, context: context)
+        return try await self.awaitBound(context) {
+            try await lcPortalSigningRequest(sourceStep: "appIDLookup",
+                facts: lcPortalSigningContext(teamID: team.identifier, generation: context.generation)) {
+                try await ALTAppleAPI.shared.fetchAppIDsPreservingIdentity(for: team, session: context.session)
+            }
+        }
+    }
+
     @discardableResult
     public func addAppID(name: String, bundleIdentifier: String, team: ALTTeam? = nil) async throws -> ALTAppID {
         let context = try await self.getBoundSession()

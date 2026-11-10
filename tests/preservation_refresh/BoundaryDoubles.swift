@@ -2,6 +2,11 @@
 // calls in the actual production helper fails fixture compilation.
 struct ALTTeam { let identifier: String }
 struct FixtureAppID { let bundleIdentifier: String }
+typealias ALTAppID = FixtureAppID
+enum AppIDLookupError: String, Error, CaseIterable {
+ case invalidHTTPResponse, httpFailure, missingStatus, unsuccessfulStatus
+ case missingList, nullList, malformedList, malformedRecord, conflictingRecord
+}
 final class PortalProbe {
  static let shared = PortalProbe()
  var calls: [String] = []
@@ -17,7 +22,9 @@ final class PortalProbe {
  var corroboratedUUIDs:[UUID]=[]
  var originInvalidations=0
  var lastOriginOperation:AppleProfileOperation?
- func resetOrigin() { existingProfiles=[:];failCorroboration=false;afterList=nil;afterExisting=nil;afterGeneration=nil;wrongCandidateOperation=false;originInvalidations=0;lastOriginOperation=nil;corroboratedUUIDs=[] }
+ var lookupFailure:Error?
+ var afterIDLookup:(()->Void)?
+ func resetOrigin() { existingProfiles=[:];failCorroboration=false;afterList=nil;afterExisting=nil;afterGeneration=nil;wrongCandidateOperation=false;originInvalidations=0;lastOriginOperation=nil;corroboratedUUIDs=[];lookupFailure=nil;afterIDLookup=nil }
 }
 final class AuthManager {
  static let shared = AuthManager()
@@ -28,8 +35,11 @@ final class AuthManager {
 final class DeveloperPortalProxy {
  static let shared = DeveloperPortalProxy()
  static let currentDeviceType = "synthetic"
- func fetchAppIDs(for team: ALTTeam) async throws -> [FixtureAppID] {
-  PortalProbe.shared.calls.append("lookup-existing-id"); return PortalProbe.shared.appIDs
+ func fetchAppIDsPreservingIdentity(for team: ALTTeam) async throws -> [FixtureAppID] {
+  PortalProbe.shared.calls.append("lookup-existing-id")
+  await Task.yield();PortalProbe.shared.afterIDLookup?()
+  if let error=PortalProbe.shared.lookupFailure { throw error }
+  return PortalProbe.shared.appIDs
  }
  func downloadProvisioningProfile(for id: FixtureAppID, deviceType: String, team: ALTTeam) async throws -> ALTProvisioningProfile {
   PortalProbe.shared.calls.append("generate-existing-id-profile")

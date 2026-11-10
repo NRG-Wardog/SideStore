@@ -248,11 +248,28 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         } else {
             // Lookup only the existing App ID. No app/certificate/group/feature
             // registration, removal, re-sign or alternate install path exists here.
-            let appIDs = try await DeveloperPortalProxy.shared.fetchAppIDs(for: team)
+            let appIDs: [ALTAppID]
+            do {
+                appIDs = try await DeveloperPortalProxy.shared.fetchAppIDsPreservingIdentity(for: team)
+            } catch let error as AppIDLookupError {
+                // Invalid responses are not evidence that the identity vanished.
+                // Never include the response body or any account/app identifier.
+                throw V3RefreshSelectionFailure(reason: .preservationPortalIdentityUnavailable, scope: .nonHost,
+                    portalIdentity: error.rawValue)
+            }
             try admission?()
             let matching = appIDs.filter { $0.bundleIdentifier == identity.resigned }
             guard matching.count == 1, let existing = matching.first else {
-                throw V3PreservationRefreshState.failure(.preservationPortalIdentityUnavailable)
+                let detail: String
+                if matching.count > 1 { detail = "ambiguousMatch" }
+                else if appIDs.isEmpty { detail = "emptyList" }
+                else if appIDs.contains(where: { $0.bundleIdentifier.lowercased() == identity.resigned.lowercased() }) {
+                    // Observation only. Case-folding cannot authorize a different
+                    // identity or bypass candidate/installed-profile equality.
+                    detail = "caseOnlyMatch"
+                } else { detail = "noExactMatch" }
+                throw V3RefreshSelectionFailure(reason: .preservationPortalIdentityUnavailable, scope: .nonHost,
+                    portalIdentity: detail)
             }
             do {
                 let operation = try await DeveloperPortalProxy.shared.makePreservationProfileOperation(
