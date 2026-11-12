@@ -91,4 +91,18 @@ class Contract(unittest.TestCase):
    self.assertIn('private final class LCSigningHTTPObservation:',fixture)
   failure=generator.extract(self.source(),'struct V3RefreshSelectionFailure:')
   for required in ['reason == .preservationPortalIdentityUnavailable, scope == .nonHost','detail.utf8.count <= 32','Self.portalIdentityKinds.contains(detail)']:self.assertIn(required,failure)
+ def test_evidence_diagnostic_is_finite_scoped_and_preserves_guards(self):
+  source=self.source();failure=generator.extract(source,'struct V3RefreshSelectionFailure:')
+  for required in ['reason == .preservationEvidenceUnavailable, scope == .nonHost','Self.preservationEvidenceKinds.contains(detail)', 'result["preservation_evidence"] = detail']:
+   self.assertIn(required,failure)
+  helper=generator.extract((ROOT/'SideStore/Core/Operations/PipelineOperations/FetchProvisioningProfilesOperation.swift').read_text(),'private func fetchPreservingInstalledAuthorization()')
+  for token in ['incompatibleMode','missingCertificate','missingReader','readFailed','missingOrigin']:
+   self.assertIn('evidenceFailure("'+token+'")',helper)
+  self.assertIn('if error is CancellationError { throw error }',helper)
+  adapter=generator.extract(source,'struct V3PreservationRefreshState:')
+  for token in ['emptyInventory','noMatchingProfile','inventoryCountLimit','emptyProfile','profileSizeLimit','inventorySizeLimit','processingTimeLimit','missingOrigin']:
+   self.assertIn('evidenceFailure("'+token+'")',adapter)
+  self.assertNotIn('localizedDescription',failure)
+  self.assertNotIn('String(describing:',failure)
 if __name__=='__main__':unittest.main()
+

@@ -172,10 +172,14 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
 
     private func fetchPreservingInstalledAuthorization() async throws -> [String: ALTProvisioningProfile] {
         try context.profileMutationAdmission?()
-        guard !context.isCellularRefreshGroup, context.legacyReplacementBinding == nil,
-              let certificate = context.verifiedRefreshCertificate, !certificate.data.isEmpty,
-              let read = context.readInstalledProvisioningProfiles else {
-            throw V3PreservationRefreshState.failure(.preservationEvidenceUnavailable)
+        guard !context.isCellularRefreshGroup, context.legacyReplacementBinding == nil else {
+            throw V3PreservationRefreshState.evidenceFailure("incompatibleMode")
+        }
+        guard let certificate = context.verifiedRefreshCertificate, !certificate.data.isEmpty else {
+            throw V3PreservationRefreshState.evidenceFailure("missingCertificate")
+        }
+        guard let read = context.readInstalledProvisioningProfiles else {
+            throw V3PreservationRefreshState.evidenceFailure("missingReader")
         }
         // The database serial stores only an override certificate; ordinary
         // active-certificate installs legitimately leave it nil. Reconcile any
@@ -196,7 +200,7 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         do { bytes = try await read() }
         catch {
             if error is CancellationError { throw error }
-            throw V3PreservationRefreshState.failure(.preservationEvidenceUnavailable)
+            throw V3PreservationRefreshState.evidenceFailure("readFailed")
         }
         try context.profileMutationAdmission?()
         let team = try await AuthManager.shared.getAuthenticatedTeam()
@@ -285,7 +289,7 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         }
         try admission?()
         guard let operation = originOperation else {
-            throw V3PreservationRefreshState.failure(.preservationEvidenceUnavailable)
+            throw V3PreservationRefreshState.evidenceFailure("missingOrigin")
         }
         do {
             context.preservationRefreshState = try V3PreservationRefreshState.finish(prepared: prepared,
@@ -776,3 +780,4 @@ private extension FetchProvisioningProfilesOperation {
         return result
     }
 }
+

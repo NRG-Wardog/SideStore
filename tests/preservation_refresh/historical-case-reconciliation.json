@@ -166,7 +166,19 @@
     "portal-lookup-revoked-before-generation",
     "portal-unknown-error-retains-original-classification",
     "portal-identity-detail-finite-scoped-no-identifiers",
-    "portal-typed-errors-survive-request-observation"
+    "portal-typed-errors-survive-request-observation",
+    "evidence-incompatibleMode-no-mutation",
+    "evidence-missingCertificate-no-mutation",
+    "evidence-missingReader-no-mutation",
+    "evidence-readFailed-no-mutation",
+    "evidence-emptyInventory-no-mutation",
+    "evidence-read-cancellation-retained",
+    "evidence-inventoryCountLimit-classified",
+    "evidence-emptyProfile-classified",
+    "evidence-profileSizeLimit-classified",
+    "evidence-inventorySizeLimit-classified",
+    "evidence-no-match-and-deadline-classified",
+    "evidence-detail-finite-scoped-no-identifiers"
   ],
   "retained": [
     "actual-fetch-refresh-preserves-identity-and-extension-metadata",

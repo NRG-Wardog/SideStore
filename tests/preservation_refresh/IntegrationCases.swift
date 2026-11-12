@@ -295,7 +295,72 @@
    } catch let actual as AppIDLookupError { precondition(actual == expected) }
   }
   passed.append("portal-typed-errors-survive-request-observation")
-  precondition(passed.count==98 && Set(passed).count==98)
+  // Diagnostic categories observe existing failures; no fallback is admitted.
+  for detail in ["incompatibleMode", "missingCertificate", "missingReader", "readFailed", "emptyInventory"] {
+   let c=setup()
+   switch detail {
+   case "incompatibleMode": c.isCellularRefreshGroup=true
+   case "missingCertificate": c.verifiedRefreshCertificate=nil
+   case "missingReader": c.readInstalledProvisioningProfiles=nil
+   case "readFailed": c.readInstalledProvisioningProfiles={ throw ProbeError.stopped }
+   default: c.readInstalledProvisioningProfiles={ [] }
+   }
+   do { try await run(c);fatalError("missing evidence admitted") }
+   catch let error as V3RefreshSelectionFailure {
+    precondition(error.reason == .preservationEvidenceUnavailable)
+    precondition(error.facts["preservation_evidence"] == detail)
+   }
+   precondition(Injection.shared.count == 0 && c.refreshVerification == nil)
+   precondition(!PortalProbe.shared.calls.contains("lookup-existing-id"))
+   precondition(c.installedApp!.expirationDate == Date(timeIntervalSince1970:0))
+   passed.append("evidence-"+detail+"-no-mutation")
+  }
+  do {
+   let c=setup();c.readInstalledProvisioningProfiles={ throw CancellationError() }
+   do { try await run(c);fatalError("cancelled read admitted") } catch is CancellationError {}
+   precondition(Injection.shared.count == 0 && PortalProbe.shared.calls.isEmpty)
+   passed.append("evidence-read-cancellation-retained")
+  }
+  for (detail, inventory) in [
+   ("inventoryCountLimit",Array(repeating:Data([1]),count:513)),
+   ("emptyProfile",[Data()]),
+   ("profileSizeLimit",[Data(repeating:1,count:1_048_577)]),
+   ("inventorySizeLimit",Array(repeating:Data(repeating:1,count:1_048_576),count:33))] {
+   do { try V3PreservationRefreshState.checkInventoryBounds(inventory);fatalError("unbounded inventory") }
+   catch let error as V3RefreshSelectionFailure { precondition(error.facts["preservation_evidence"] == detail) }
+   passed.append("evidence-"+detail+"-classified")
+  }
+  do {
+   _ = setup()
+   do {
+    _ = try V3PreservationRefreshState.prepare(resignedBundleID:"absent",teamID:"T",signerDER:der,
+       certificateExpiration:now.addingTimeInterval(5000),inventory:[old.data],now:now,admission:nil)
+    fatalError("missing target admitted")
+   } catch { precondition(V3PreservationRefreshState.map(error).facts["preservation_evidence"] == "noMatchingProfile") }
+   do { try V3PreservationRefreshState.testElapsedEvidenceBudget();fatalError("elapsed budget admitted") }
+   catch let error as V3RefreshSelectionFailure { precondition(error.facts["preservation_evidence"] == "processingTimeLimit") }
+   passed.append("evidence-no-match-and-deadline-classified")
+  }
+  do {
+   for detail in V3RefreshSelectionFailure.preservationEvidenceKinds {
+    precondition(V3RefreshSelectionFailure(reason:.preservationEvidenceUnavailable,scope:.nonHost,preservationEvidence:detail).facts["preservation_evidence"] == detail)
+    precondition(V3RefreshSelectionFailure(reason:.preservationEvidenceUnavailable,scope:.host,preservationEvidence:detail).facts["preservation_evidence"] == nil)
+    precondition(V3RefreshSelectionFailure(reason:.preservationPortalIdentityUnavailable,scope:.nonHost,preservationEvidence:detail).facts["preservation_evidence"] == nil)
+   }
+   for invalid in ["", "private.account@example.test", "readFailed\nsecret", String(repeating:"x",count:64)] {
+    precondition(V3PreservationRefreshState.evidenceFailure(invalid).facts["preservation_evidence"] == nil)
+   }
+   passed.append("evidence-detail-finite-scoped-no-identifiers")
+  }
+  precondition(passed.count==110 && Set(passed).count==110)
   print(String(data:try JSONSerialization.data(withJSONObject:["schema":"preservation-refresh-integration-v1","status":"PASS","cases":passed,"device_executed":false,"cms_verified":false,"platform_tls_executed":false,"portal_executed":false],options:[.sortedKeys]),encoding:.utf8)!)
+ }
+}
+
+
+// Same-file extension probes the actual private clock guard, without sleeping.
+extension V3PreservationRefreshState {
+ static func testElapsedEvidenceBudget() throws {
+  try checkWork(nil, started: ProcessInfo.processInfo.systemUptime - 21)
  }
 }

@@ -15781,6 +15781,12 @@ public struct CombinedFailure: Error, LocalizedError {
             context["local_precondition"] != "preservationEvidenceUnavailable" {
             context.removeValue(forKey: "apple_profile_origin")
         }
+        // Local profile evidence observations describe only this signing guard.
+        if !preservationScope ||
+            (self.safeCause != nil && self.safeCause != .unknownSigningCause) ||
+            context["local_precondition"] != "preservationEvidenceUnavailable" {
+            context.removeValue(forKey: "preservation_evidence")
+        }
         // Portal-list observations are optional and only describe this signing guard.
         if !preservationScope ||
             (self.safeCause != nil && self.safeCause != .unknownSigningCause) ||
@@ -15807,6 +15813,10 @@ public struct CombinedFailure: Error, LocalizedError {
     ]
     public static func validatedWireSigningContext(_ supplied: Any) -> [String: String]? {
         guard var fields = supplied as? [String: Any] else { return nil }
+        if fields["preservation_evidence"] != nil &&
+            (!(fields["preservation_evidence"] is String) || fields.count > 20) {
+            fields.removeValue(forKey: "preservation_evidence")
+        }
         if fields["preservation_portal_identity"] != nil &&
             (!(fields["preservation_portal_identity"] is String) || fields.count > 20) {
             fields.removeValue(forKey: "preservation_portal_identity")
@@ -15839,6 +15849,7 @@ public struct CombinedFailure: Error, LocalizedError {
     }
     public static let refreshSelectionPreconditions: Set<String> = ["missingTargetAppBundle", "missingRefreshProfiles", "missingInstalledRecord", "missingMainProfile", "missingVerifiedCertificate", "mainProfileIdentityMismatch", "mainProfileExpired", "mainProfileCertificateMismatch", "extensionOutsideParent", "extensionProfileIdentityMismatch", "extensionProfileExpired", "extensionProfileCertificateMismatch", "extensionTeamMismatch", "legacyProofUnavailable", "legacyHostProofUnavailable", "missingExtensionProfile", "unexpectedProfileKeys", "inconsistentProfileUUID", "unexpectedProfileUUID", "preservationIdentityUnavailable", "preservationMalformedProfile", "preservationEvidenceUnavailable", "preservationAuthorityConflict", "preservationUUIDConflict", "preservationAuthorizationChanged", "preservationExpiredCertificate", "preservationNotExtended", "preservationSnapshotChanged", "preservationPortalIdentityUnavailable"]
     /// Finite Apple-origin read observations, never provider text or a trust verdict.
+    public static let preservationEvidenceKinds: Set<String> = ["incompatibleMode", "missingCertificate", "missingReader", "readFailed", "emptyInventory", "noMatchingProfile", "inventoryCountLimit", "emptyProfile", "profileSizeLimit", "inventorySizeLimit", "processingTimeLimit", "missingOrigin", "candidateMismatch"]
     public static let preservationPortalIdentityKinds: Set<String> = ["invalidHTTPResponse", "httpFailure", "missingStatus", "unsuccessfulStatus", "missingList", "nullList", "malformedList", "malformedRecord", "conflictingRecord", "requestUnavailable", "emptyList", "noExactMatch", "ambiguousMatch", "caseOnlyMatch"]
     public static let appleProfileOriginKinds: Set<String> = ["requestUnavailable", "recordNotFound", "ambiguousRecord", "responseMismatch", "invalidResponse", "responseTooLarge", "operationCancelled", "operationExpired", "ownershipChanged"]
     public static let preservationConflictKinds: Set<String> = ["multipleIdentities", "alternateIdentity", "teamMismatch", "prefixMismatch", "signerMissing", "entitlementsDiffer", "certificatesDiffer", "devicesDiffer", "platformsDiffer", "embeddedDERDiffer", "displayMetadataDiffer", "otherAuthorityDiffer", "embeddedDERUnsupportedSigner", "embeddedDERSignerTimeInvalid", "embeddedDERVerificationFailed", "embeddedDERUnsupportedRepresentation", "embeddedDERBindingMismatch"]
@@ -15846,6 +15857,7 @@ public struct CombinedFailure: Error, LocalizedError {
     private static let refreshLocalPreconditions: Set<String> = refreshSelectionPreconditions.union(["unknownTeamType", "unresolvedAppGroupPlaceholder", "missingProgressWeight", "invalidProgressReuse", "missingPipelineStepMapping"])
     public static func validatedSigningContext(_ value: [String: String]) -> [String: String]? {
         var supplied = value
+        if supplied.count > 20 { supplied.removeValue(forKey: "preservation_evidence") }
         if supplied.count > 20 { supplied.removeValue(forKey: "preservation_portal_identity") }
         if supplied.count > 20 { supplied.removeValue(forKey: "apple_profile_origin") }
         // This read-only extension never evicts existing failure facts.
@@ -15878,6 +15890,13 @@ public struct CombinedFailure: Error, LocalizedError {
            fields["local_precondition"] != "preservationAuthorityConflict" ||
            fields["refresh_failure_kind"] != "invalidParameters" {
             fields.removeValue(forKey: V3CMSSignerDiagnostic.contextKey)
+        }
+        if let reason = fields["preservation_evidence"],
+           !Self.preservationEvidenceKinds.contains(reason) ||
+           fields["refresh_target_scope"] != "nonHost" ||
+           fields["local_precondition"] != "preservationEvidenceUnavailable" ||
+           fields["refresh_failure_kind"] != "invalidParameters" {
+            fields.removeValue(forKey: "preservation_evidence")
         }
         if let reason = fields["preservation_portal_identity"],
            !Self.preservationPortalIdentityKinds.contains(reason) ||
@@ -15979,6 +15998,11 @@ public struct CombinedFailure: Error, LocalizedError {
             case "refresh_target_scope":
                 guard ["host", "nonHost", "unknown"].contains(text),
                       Self.refreshSelectionPreconditions.contains(fields["local_precondition"] ?? "") else { return nil }
+            case "preservation_evidence":
+                guard Self.preservationEvidenceKinds.contains(text),
+                      fields["refresh_target_scope"] == "nonHost",
+                      fields["local_precondition"] == "preservationEvidenceUnavailable",
+                      fields["refresh_failure_kind"] == "invalidParameters" else { return nil }
             case "preservation_portal_identity":
                 guard Self.preservationPortalIdentityKinds.contains(text),
                       fields["refresh_target_scope"] == "nonHost",
@@ -19129,3 +19153,4 @@ enum V3PendingCertificateRecoveryPolicy {
     }
 }
 // V3_PENDING_CERTIFICATE_RECOVERY_POLICY_END
+

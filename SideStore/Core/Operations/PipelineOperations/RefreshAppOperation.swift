@@ -31,12 +31,14 @@ struct V3RefreshSelectionFailure: Error, Sendable {
     let cmsSignerDiagnostic: String?
     let appleProfileOrigin: String?
     let portalIdentity: String?
+    let preservationEvidence: String?
     init(reason: Reason, scope: Scope, preservationConflict: String? = nil, cmsSignerDiagnostic: String? = nil,
-          appleProfileOrigin: String? = nil, portalIdentity: String? = nil) {
+          appleProfileOrigin: String? = nil, portalIdentity: String? = nil, preservationEvidence: String? = nil) {
         self.reason = reason; self.scope = scope; self.preservationConflict = preservationConflict
         self.cmsSignerDiagnostic = cmsSignerDiagnostic
         self.appleProfileOrigin = appleProfileOrigin
         self.portalIdentity = portalIdentity
+        self.preservationEvidence = preservationEvidence
     }
     // This producer is also extracted independently of the wire model. Validate
     // here AND at the receiving boundary; never forward arbitrary error text.
@@ -57,12 +59,19 @@ struct V3RefreshSelectionFailure: Error, Sendable {
     static let portalIdentityKinds: Set<String> = ["invalidHTTPResponse", "httpFailure", "missingStatus", "unsuccessfulStatus",
         "missingList", "nullList", "malformedList", "malformedRecord", "conflictingRecord", "requestUnavailable",
         "emptyList", "noExactMatch", "ambiguousMatch", "caseOnlyMatch"]
+    static let preservationEvidenceKinds: Set<String> = ["incompatibleMode", "missingCertificate", "missingReader",
+        "readFailed", "emptyInventory", "noMatchingProfile", "inventoryCountLimit", "emptyProfile",
+        "profileSizeLimit", "inventorySizeLimit", "processingTimeLimit", "missingOrigin", "candidateMismatch"]
     var facts: [String: String] {
         var result = ["refresh_failure_kind": "invalidParameters", "local_precondition": reason.rawValue,
                       "refresh_target_scope": scope.rawValue]
         if reason == .preservationPortalIdentityUnavailable, scope == .nonHost,
            let detail = portalIdentity, detail.utf8.count <= 32, Self.portalIdentityKinds.contains(detail) {
             result["preservation_portal_identity"] = detail
+        }
+        if reason == .preservationEvidenceUnavailable, scope == .nonHost,
+           let detail = preservationEvidence, detail.utf8.count <= 32, Self.preservationEvidenceKinds.contains(detail) {
+            result["preservation_evidence"] = detail
         }
         if reason == .preservationEvidenceUnavailable, scope == .nonHost,
            let origin = appleProfileOrigin, origin.utf8.count <= 32, Self.appleProfileOriginKinds.contains(origin) {
@@ -850,7 +859,7 @@ struct V3AppleProfileOriginEvidence: Sendable {
     let candidate: AppleProfileEvidence
     func authorizeCandidate(_ bytes: Data) throws {
         guard candidate.cmsData == bytes else {
-            throw V3PreservationRefreshState.failure(.preservationEvidenceUnavailable)
+            throw V3PreservationRefreshState.evidenceFailure("candidateMismatch")
         }
         try operation.authorize(candidate, exactCMS: bytes)
     }
@@ -882,6 +891,7 @@ struct V3PreservationRefreshState: Sendable {
         let started = ProcessInfo.processInfo.systemUptime
         try checkInventoryBounds(inventory)
         try checkWork(admission, started: started)
+        guard !inventory.isEmpty else { throw evidenceFailure("emptyInventory") }
         let raw = try payloads(inventory)
         let profilesByUUID = try exactProfilesByUUID(inventory)
         var inputs = raw.map { PreservedProfilePolicy.ProfileInput(raw: $0) }
@@ -905,7 +915,7 @@ struct V3PreservationRefreshState: Sendable {
 
     static func finish(prepared: Prepared, candidateData: Data, now: Date,
                        admission: (() throws -> Void)?, origin: V3AppleProfileOriginEvidence? = nil) throws -> Self {
-        guard let origin else { throw failure(.preservationEvidenceUnavailable) }
+        guard let origin else { throw evidenceFailure("missingOrigin") }
         let started = ProcessInfo.processInfo.systemUptime
         // The retained old inventory plus the new record must fit the same
         // bounded readback budget before any injection can be admitted.
@@ -967,13 +977,13 @@ struct V3PreservationRefreshState: Sendable {
         inventory.reduce(into: [:]) { $0[$1, default: 0] += 1 }
     }
     static func checkInventoryBounds(_ inventory: [Data]) throws {
-        guard inventory.count <= 512 else { throw failure(.preservationEvidenceUnavailable) }
+        guard inventory.count <= 512 else { throw evidenceFailure("inventoryCountLimit") }
         var total = 0
         for bytes in inventory {
             let (next, overflow) = total.addingReportingOverflow(bytes.count)
-            guard !overflow, !bytes.isEmpty, bytes.count <= 1_048_576, next <= 32 * 1024 * 1024 else {
-                throw failure(.preservationEvidenceUnavailable)
-            }
+            guard !bytes.isEmpty else { throw evidenceFailure("emptyProfile") }
+            guard bytes.count <= 1_048_576 else { throw evidenceFailure("profileSizeLimit") }
+            guard !overflow, next <= 32 * 1024 * 1024 else { throw evidenceFailure("inventorySizeLimit") }
             total = next
         }
     }
@@ -992,7 +1002,7 @@ struct V3PreservationRefreshState: Sendable {
         try Task.checkCancellation()
         try admission?()
         guard ProcessInfo.processInfo.systemUptime - started <= 20 else {
-            throw failure(.preservationEvidenceUnavailable)
+            throw evidenceFailure("processingTimeLimit")
         }
     }
     private static func historicalConstraintInput(_ bytes: Data, admission: (() throws -> Void)?,
@@ -1062,6 +1072,11 @@ struct V3PreservationRefreshState: Sendable {
         V3RefreshSelectionFailure(reason: reason, scope: .nonHost)
     }
 
+    // Diagnostic only: fixed categories do not authorize recovery or mutation.
+    static func evidenceFailure(_ detail: String) -> V3RefreshSelectionFailure {
+        V3RefreshSelectionFailure(reason: .preservationEvidenceUnavailable, scope: .nonHost, preservationEvidence: detail)
+    }
+
     static func originFailure(_ error: Error) -> V3RefreshSelectionFailure {
         let token: String
         switch error as? AppleProfileEvidenceError {
@@ -1085,7 +1100,7 @@ struct V3PreservationRefreshState: Sendable {
         let reason: V3RefreshSelectionFailure.Reason
         switch error as? PreservedProfilePolicy.Failure {
         case .missingHistoricalBinding: reason = .preservationIdentityUnavailable
-        case .missingInstalledProfile: reason = .preservationEvidenceUnavailable
+        case .missingInstalledProfile: return evidenceFailure("noMatchingProfile")
         case .malformedProfile: reason = .preservationMalformedProfile
         case .conflictingInstalledAuthority, .multipleIdentities, .alternateIdentity,
              .teamMismatch, .prefixMismatch, .signerMissing, .entitlementsDiffer,
@@ -1103,3 +1118,4 @@ struct V3PreservationRefreshState: Sendable {
             preservationConflict: (error as? PreservedProfilePolicy.Failure)?.preservationConflict)
     }
 }
+

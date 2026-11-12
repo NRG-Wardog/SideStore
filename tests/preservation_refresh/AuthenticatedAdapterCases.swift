@@ -145,7 +145,13 @@ enum AuthenticatedAdapterCases {
   }
   do {
    let c=makeContext();FixtureCMSBoundary.reset();let a=register(30,1000,now:now),candidate=register(32,2000,now:now)
-   let prepared=try prepare([a]);do {_ = try V3PreservationRefreshState.finish(prepared:prepared,candidateData:candidate.data,now:now,admission:nil);fatalError("candidate without provenance accepted")}catch{}
+   let prepared=try prepare([a]);do {_ = try V3PreservationRefreshState.finish(prepared:prepared,candidateData:candidate.data,now:now,admission:nil);fatalError("candidate without provenance accepted")}
+   catch let error as V3RefreshSelectionFailure { precondition(error.facts["preservation_evidence"] == "missingOrigin") }
+   let operation=AppleProfileOperation(target:"app",admission:{})
+   let evidence=AppleProfileEvidence(profile:candidate,role:.candidate,operationID:operation.id)
+   let origin=V3AppleProfileOriginEvidence(operation:operation,candidate:evidence)
+   do { try origin.authorizeCandidate(a.data);fatalError("mismatched candidate bytes admitted") }
+   catch let error as V3RefreshSelectionFailure { precondition(error.facts["preservation_evidence"] == "candidateMismatch") }
    precondition(Injection.shared.count==0);passed.append("candidate-static-pin-without-own-origin-rejected")
   }
   for mode in ["unrelated-addition","old-pruned","old-byte-drift","multiplicity"] {
@@ -227,3 +233,4 @@ enum AuthenticatedAdapterCases {
   FixtureCMSBoundary.reset();return passed
  }
 }
+
