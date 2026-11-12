@@ -49,6 +49,11 @@ class Contract(unittest.TestCase):
   self.assertNotIn('let installed:',consumer)
   self.assertIn('candidate.cmsData == bytes',consumer)
   self.assertIn('operation.authorize(candidate, exactCMS: bytes)',consumer)
+  self.assertIn('V3PreservationRefreshState.evidenceFailure("candidateMismatch")',consumer)
+  with tempfile.TemporaryDirectory() as t:
+   g.generate(Path(t));generated=(Path(t)/'Integration.swift').read_text()
+   self.assertIn('static func evidenceFailure(_ detail: String) -> Failure',generated)
+   self.assertIn('precondition(detail == "candidateMismatch")',generated)
  def test_visibility_checks_use_unflagged_actual_library(self):
   s=(HERE/'run.sh').read_text()
   self.assertIn('-D SIDESIGN_PROFILE_TRANSPORT_TESTING "$work/Integration.swift"',s)

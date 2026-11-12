@@ -10,6 +10,8 @@ on:
       - 'SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift'
       - 'AltStore/AppDelegate.swift'
       - 'tests/preservation_refresh/**'
+      - 'tests/preservation_origin/**'
+      - 'Dependencies/SideSign'
       - '.github/workflows/preservation-portal-contract.yml'
   workflow_dispatch:
 
@@ -27,3 +29,7 @@ jobs:
           submodules: false
       - name: Run actual preservation fetch and refresh fixtures
         run: bash tests/preservation_refresh/run.sh
+      - name: Materialize the exact SideSign gitlink for origin qualification
+        run: git submodule update --init --depth 1 Dependencies/SideSign
+      - name: Run actual origin transport and negative visibility fixtures
+        run: bash tests/preservation_origin/run.sh

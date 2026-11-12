@@ -16,7 +16,15 @@ def generate(out):
  library='\n'.join([(HERE/'SDKDoubles.swift').read_text(),modelsource,declarations,operation.read_text()])
  consumer=extract(refresh.read_text(),'struct V3AppleProfileOriginEvidence:')
  # Only error sink is doubled; exact authorization/installed-byte consumer stays production.
- error='enum V3PreservationRefreshState { enum Failure:Error { case preservationEvidenceUnavailable,preservationSnapshotChanged };static func failure(_ value:Failure)->Failure { value } }'
+ error='''enum V3PreservationRefreshState {
+ enum Failure: Error { case preservationEvidenceUnavailable, preservationSnapshotChanged }
+ static func failure(_ value: Failure) -> Failure { value }
+ // Error sink only. Keep the real consumer's exact-byte guard and authorize call.
+ static func evidenceFailure(_ detail: String) -> Failure {
+  precondition(detail == "candidateMismatch")
+  return .preservationEvidenceUnavailable
+ }
+}'''
  out.mkdir(parents=True,exist_ok=True);(out/'Library.swift').write_text(library)
  (out/'Integration.swift').write_text(library+'\n'+error+'\n'+consumer+'\n'+(HERE/'TransportCases.swift').read_text())
  inputs=[operation,models,profile,refresh,HERE/'SDKDoubles.swift',HERE/'TransportCases.swift',HERE/'expected-cases.json',HERE/'run.sh',HERE/'test_contract.py',Path(__file__)]
