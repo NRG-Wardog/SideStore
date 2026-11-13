@@ -2,7 +2,7 @@ name: Preservation portal identity contract
 
 on:
   push:
-    branches: ['validation/preservation-portal-identity-nov11']
+    branches: ['validation/preservation-portal-identity-nov11', 'validation/fallback-mapping-recovery-nov13']
   pull_request:
     paths:
       - 'SideStore/Core/Auth/DeveloperPortalProxy.swift'
@@ -11,6 +11,10 @@ on:
       - 'AltStore/AppDelegate.swift'
       - 'tests/preservation_refresh/**'
       - 'tests/preservation_origin/**'
+      - 'tests/reuse_main/**'
+      - 'tests/legacy_replacement_hooks/**'
+      - 'SideStore/Core/Operations/OperationContexts.swift'
+      - 'SideStore/Core/Operations/PipelineOperations/ResignAppOperation.swift'
       - 'Dependencies/SideSign'
       - '.github/workflows/preservation-portal-contract.yml'
   workflow_dispatch:
@@ -33,3 +37,9 @@ jobs:
         run: git submodule update --init --depth 1 Dependencies/SideSign
       - name: Run actual origin transport and negative visibility fixtures
         run: bash tests/preservation_origin/run.sh
+      - name: Qualify actual fallback mapping actor and wiring
+        run: V3_REQUIRE_SWIFT=1 python3 -B tests/reuse_main/test_contract.py -v
+      - name: Qualify actual strict signer hooks against pinned SideSign
+        run: V3_REQUIRE_SWIFT=1 python3 -B tests/legacy_replacement_hooks/test_contract.py -v
+      - name: Qualify actual SideSign policy and signer
+        run: bash Dependencies/SideSign/.ci/reuse-main/run.sh

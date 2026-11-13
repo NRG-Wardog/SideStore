@@ -288,6 +288,9 @@ class InstallAppOperationContext: PipelineOperationContext
     var validatedReuseMainGeneration: String?
     // Historical acknowledged installation evidence, never live installed-state proof.
     var acknowledgedReuseMainIdentity: V3ValidatedReuseMainRegistry.AcknowledgedIdentity?
+    // In-memory mappings returned by this install's successful portal group assignments.
+    // Never reconstructed from a profile, identifier suffix, or installed-app history.
+    var provisionedAppGroupMappings: [String: [String: String]] = [:]
     var validateExtensionSigningCapabilities = false
     var originalExtensionBundleIdentifiers: [String: String] = [:]
     var previouslyReusedExtensionIdentifiers: Set<String> = []

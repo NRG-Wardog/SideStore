@@ -225,7 +225,8 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
                 progress: nil)
         } else if context.validateExtensionSigningCapabilities {
             _ = try await signer.signApp(at: fileURL, provisioningProfiles: profiles,
-                extensionStrategy: .perExtensionPreservingCapabilities, progress: nil)
+                extensionStrategy: .perExtensionPreservingCapabilities,
+                provisionedAppGroupMappings: context.provisionedAppGroupMappings, progress: nil)
         } else {
             try await signer.signApp(at: fileURL, provisioningProfiles: profiles, progress: nil)
         }

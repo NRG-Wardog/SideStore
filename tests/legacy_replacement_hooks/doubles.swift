@@ -28,6 +28,7 @@ final class Handler {
 final class FixtureContext {
  var legacyReplacementBinding:V3LegacyReplacementBinding?;let handler=Handler()
  var bundleIdentifier="original.app";var customBundleIdentifier:String?;var targetBundleIdentifier:String {customBundleIdentifier ?? bundleIdentifier}
+ var provisionedAppGroupMappings:[String:[String:String]]=[:]
  var validateExtensionSigningCapabilities=false;var originalExtensionBundleIdentifiers:[String:String]=[:];var previouslyReusedExtensionIdentifiers:Set<String>=[]
  var useMainProfile=false;var validatedReuseMain=false;var overrideProvisioningProfile:ALTProvisioningProfile?
  var targetAppBundle:ALTApplication?;var temporaryDirectory=URL(fileURLWithPath:"/unused")
@@ -41,17 +42,17 @@ final class FixtureDB {
 }
 
 enum SignerError: Error { case invalidApp(cause:String) }
-struct StrategyApp { var entitlements:[String:any Sendable] }
+struct StrategyApp { var bundleIdentifier="synthetic.app"; var entitlements:[String:any Sendable] }
 struct StrategyProfile { var teamIdentifier="T" }
 final class StrategySigner {
  var observed:ExtensionSigningStrategy?; var required:[String:any Sendable]=[:];var signed:[String:any Sendable]=[:]
  func signApp(at:URL,provisioningProfiles:[ALTProvisioningProfile],progress:Progress?) async throws {
   _ = try await signApp(at:at,provisioningProfiles:provisioningProfiles,extensionStrategy:.perExtension,progress:progress)
  }
- func signApp(at:URL,provisioningProfiles:[ALTProvisioningProfile],extensionStrategy:ExtensionSigningStrategy,originalExtensionBundleIdentifiers:[String:String]=[:],previouslyReusedExtensionIdentifiers:Set<String>=[],progress:Progress?) async throws -> Bool {
+ func signApp(at:URL,provisioningProfiles:[ALTProvisioningProfile],extensionStrategy:ExtensionSigningStrategy,originalExtensionBundleIdentifiers:[String:String]=[:],previouslyReusedExtensionIdentifiers:Set<String>=[],provisionedAppGroupMappings:[String:[String:String]]=[:],progress:Progress?) async throws -> Bool {
   observed=extensionStrategy
   let app=StrategyApp(entitlements:required),matchedProfile=StrategyProfile(),filteredEntitlements=signed
-  try actualSignerCapabilityGuard(extensionStrategy:extensionStrategy,app:app,matchedProfile:matchedProfile,filteredEntitlements:filteredEntitlements)
+  try actualSignerCapabilityGuard(extensionStrategy:extensionStrategy,app:app,matchedProfile:matchedProfile,filteredEntitlements:filteredEntitlements,provisionedAppGroupMappings:provisionedAppGroupMappings)
   return true
  }
 }

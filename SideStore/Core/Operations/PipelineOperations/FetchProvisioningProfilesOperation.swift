@@ -12,6 +12,14 @@ import CoreData
 
 class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperationContext, [String: ALTProvisioningProfile]>, @unchecked Sendable {
     
+    private actor GroupAssignments {
+        var mappings: [String: [String: String]] = [:]
+        func reset() { mappings = [:] }
+        func record(bundleID: String, mapping: [String: String]) { mappings[bundleID] = mapping }
+        func snapshot() -> [String: [String: String]] { mappings }
+    }
+    private let groupAssignments = GroupAssignments()
+
     override func execute(parentProgress: Progress?) async throws -> [String: ALTProvisioningProfile] {
         let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[FetchProvisioningProfilesOperation] execute() started")
@@ -20,6 +28,8 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
             debugLog("[FetchProvisioningProfilesOperation] execute() took: \(String(format: "%.3fs", elapsed))")
         }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
+        context.provisionedAppGroupMappings = [:]
+        await groupAssignments.reset()
         if let error = self.context.error {
             self.debugLog("[FetchProvisioningProfiles] Context has a pre-existing error.")
             throw error
@@ -162,6 +172,11 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         self.debugLog("[FetchProvisioningProfiles] Total profiles prepared: \(profiles.count)")
         try await self.context.validateLegacyReplacementAdmission()
         try self.context.validateLegacyReplacementProfiles(profiles)
+        // Publish only a complete, successful provisioning run. Scope the map to
+        // the explicit experimental fallback, never refresh/replacement paths.
+        if context.validatedReuseMain && !context.useMainProfile && context.legacyReplacementBinding == nil {
+            context.provisionedAppGroupMappings = await groupAssignments.snapshot()
+        }
         return profiles
     }
 
@@ -648,9 +663,11 @@ private extension FetchProvisioningProfilesOperation{
             self.verboseLog("[FetchProvisioningProfiles] Active App Group count: \(appGroups.count)")
             
             var groups = [ALTAppGroup]()
+            var assignedMapping = [String: String]()
             
             for groupIdentifier in applicationGroups {
                 let adjustedGroupIdentifier = try await self.adjustedGroupIdentifier(for: groupIdentifier, appID: appID, targetAppBundle: targetAppBundle, team: team)
+                assignedMapping[groupIdentifier] = adjustedGroupIdentifier
                 guard seenGroupIDs.insert(adjustedGroupIdentifier).inserted else { continue }
                 
                 let group: ALTAppGroup
@@ -676,11 +693,15 @@ private extension FetchProvisioningProfilesOperation{
                         throw error
                     }
                 }
+                guard group.groupIdentifier == adjustedGroupIdentifier else {
+                    throw OperationError.invalidParameters("The assigned App Group identity changed.")
+                }
                 groups.append(group)
             }
             
             try await self.context.validateLegacyReplacementAdmission()
             try await DeveloperPortalProxy.shared.assignAppID(appID, to: Array(groups), team: team)
+            await groupAssignments.record(bundleID: appID.bundleIdentifier, mapping: assignedMapping)
             let groupIDs = groups.map { $0.groupIdentifier }
             self.debugLog("[FetchProvisioningProfiles] Assigned App ID to \(groupIDs.count) App Groups.")
             

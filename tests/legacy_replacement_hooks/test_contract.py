@@ -77,7 +77,7 @@ class Hooks(unittest.TestCase):
   signer=(ROOT/'Dependencies/SideSign/Sources/CodeSigning/CodeSignerAPI.swift').read_text()
   guard=decl(signer,'            if extensionStrategy != .perExtension,')
   actual+='\nfinal class StrategyOperation { let context:FixtureContext;init(_ c:FixtureContext){context=c};func fetchFlag(){'+flag+'};func sign(_ signer:StrategySigner) async throws {let fileURL=URL(fileURLWithPath:"/synthetic");let profiles:[ALTProvisioningProfile]=[]\n'+branches+'\n}}\n'
-  actual+='\nfunc actualSignerCapabilityGuard(extensionStrategy:ExtensionSigningStrategy,app:StrategyApp,matchedProfile:StrategyProfile,filteredEntitlements:[String:any Sendable]) throws {\n'+guard+'\n}\n'+policy
+  actual+='\nfunc actualSignerCapabilityGuard(extensionStrategy:ExtensionSigningStrategy,app:StrategyApp,matchedProfile:StrategyProfile,filteredEntitlements:[String:any Sendable],provisionedAppGroupMappings:[String:[String:String]]) throws {\n'+guard+'\n}\n'+policy
   fingerprint=(ROOT/'SideStore/Utils/common/AppBundleFingerprint.swift').read_text()
   fixture=(HERE/'doubles.swift').read_text()+binding+'\nextension FixtureContext {\n'+methods+'\n}\n'+fingerprint+actual+(HERE/'cases.swift').read_text()
   with tempfile.TemporaryDirectory() as d:
